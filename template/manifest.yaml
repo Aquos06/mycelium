@@ -1,0 +1,15 @@
+name: __NAME__
+version: 0.1.0
+purpose: Describe in one sentence what this module does for Hansen.
+need: The observed need that caused this module to be built.
+subscribes: []        # e.g. [sense.chat]
+emits: []             # e.g. [item.logged]       -> mod.__NAME__.item.logged
+requests: []          # e.g. [summary]           -> rpc.mod.__NAME__.summary
+hooks:
+  interval_seconds: []
+permissions:
+  network: false
+  actuation: false
+resources:
+  memory_mb: 256
+  cpus: 0.5

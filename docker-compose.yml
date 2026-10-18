@@ -1,0 +1,120 @@
+# mycelium core stack
+#   docker compose up -d --build              core: nats, postgres, tracer, supervisor
+#   docker compose --profile telegram up -d   + telegram bridge (needs TELEGRAM_* in .env)
+#   docker compose run --rm builder --name expenses --spec specs/expenses.md
+#
+# Modules are NOT in this file: the supervisor builds and starts them on request (rpc.sys.deploy).
+
+name: ${STACK:-mycelium}
+
+x-env: &core-env
+  NATS_URL: nats://nats:4222
+  DATABASE_URL: postgresql://mycelium:${POSTGRES_PASSWORD:-mycelium}@postgres:5432/mycelium
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "127.0.0.1:${NATS_PORT:-4222}:4222"
+      - "127.0.0.1:${NATS_MON_PORT:-8222}:8222"
+    volumes:
+      - nats-data:/data
+    networks: [mesh, modules]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: mycelium
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mycelium}
+      POSTGRES_DB: mycelium
+    ports:
+      - "127.0.0.1:${PG_PORT:-5432}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    networks: [mesh]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mycelium -d mycelium"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  tracer:
+    build: { context: ., dockerfile: services/tracer/Dockerfile }
+    image: ${REGISTRY:-mycelium}/tracer:${IMAGE_TAG:-dev}
+    environment: *core-env
+    networks: [mesh]
+    depends_on:
+      nats: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+
+  supervisor:
+    build: { context: ., dockerfile: services/supervisor/Dockerfile }
+    image: ${REGISTRY:-mycelium}/supervisor:${IMAGE_TAG:-dev}
+    environment:
+      <<: *core-env
+      MODULES_DIR: /workspace/modules
+      SDK_DIR: /workspace/sdk
+      STACK: ${STACK:-mycelium}
+      MODULE_NETWORK: ${STACK:-mycelium}-modules   # internal: bus only, no internet
+      INTERNET_NETWORK: ${STACK:-mycelium}-mesh    # attached only for permissions.network
+      RECONCILE_ON_START: ${RECONCILE_ON_START:-true}
+      APPROVED_ACTUATORS: ${APPROVED_ACTUATORS:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # the ONLY container with Docker access
+      - ./modules:/workspace/modules:ro
+      - ./sdk:/workspace/sdk:ro
+    networks: [mesh]
+    depends_on:
+      nats: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+
+  telegram:
+    profiles: [telegram]
+    build: { context: ., dockerfile: services/telegram/Dockerfile }
+    image: ${REGISTRY:-mycelium}/telegram:${IMAGE_TAG:-dev}
+    environment:
+      <<: *core-env
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    networks: [mesh]
+    depends_on:
+      nats: { condition: service_healthy }
+    restart: unless-stopped
+
+  builder:
+    profiles: [tools]
+    build: { context: ., dockerfile: builder/Dockerfile }
+    image: ${REGISTRY:-mycelium}/builder:${IMAGE_TAG:-dev}
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      NATS_URL: nats://nats:4222
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./modules:/workspace/modules
+      - ./template:/workspace/template:ro
+      - ./specs:/workspace/specs:ro
+      - ./builds:/workspace/builds
+    networks: [mesh]
+
+networks:
+  mesh:
+    name: ${STACK:-mycelium}-mesh
+  modules:
+    name: ${STACK:-mycelium}-modules
+    internal: true
+
+volumes:
+  nats-data:
+  pg-data:
