@@ -1,0 +1,142 @@
+# CD: every push to dev / stage / main
+#   1. full CI (reused)
+#   2. build + push images to GHCR, tagged <branch> and sha-<short>  (main also gets :latest)
+#   3. deploy to the matching environment on your self-hosted runner
+#        dev   -> development
+#        stage -> staging
+#        main  -> production  (protect it with required reviewers in repo settings)
+#
+# Deploy only runs when the repo variable DEPLOY_ENABLED == 'true' (set it once a runner exists).
+name: cd
+
+on:
+  push:
+    branches: [dev, stage, main]
+  workflow_dispatch:
+
+concurrency:
+  group: cd-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  images:
+    needs: ci
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { image: supervisor, context: ., dockerfile: services/supervisor/Dockerfile }
+          - { image: tracer, context: ., dockerfile: services/tracer/Dockerfile }
+          - { image: telegram, context: ., dockerfile: services/telegram/Dockerfile }
+          - { image: builder, context: ., dockerfile: builder/Dockerfile }
+          - { image: module-base, context: sdk, dockerfile: sdk/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+      - name: registry path (GHCR needs lowercase)
+        id: reg
+        run: echo "path=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ steps.reg.outputs.path }}/${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.ref_name == 'main' }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  deploy:
+    needs: images
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: [self-hosted, mycelium]
+    environment:
+      name: ${{ github.ref_name == 'main' && 'production' || github.ref_name == 'stage' && 'staging' || 'development' }}
+    env:
+      # per-environment variables (Settings -> Environments): STACK, NATS_PORT, NATS_MON_PORT, PG_PORT
+      STACK: ${{ vars.STACK }}
+      NATS_PORT: ${{ vars.NATS_PORT }}
+      NATS_MON_PORT: ${{ vars.NATS_MON_PORT }}
+      PG_PORT: ${{ vars.PG_PORT }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      APPROVED_ACTUATORS: ${{ vars.APPROVED_ACTUATORS }}
+    steps:
+      - uses: actions/checkout@v4
+      # each stack gets its own folder: the supervisor bind-mounts ./modules and ./sdk, so a later
+      # dev deploy must never rewrite files under a running staging/production stack
+      - name: stage release into a per-stack folder
+        id: dir
+        run: |
+          DEPLOY_DIR="$HOME/mycelium-deploy/${STACK:?set STACK for this environment}"
+          mkdir -p "$DEPLOY_DIR"
+          rm -rf "$DEPLOY_DIR"/{sdk,services,modules,template,builder,scripts,db,specs}
+          git archive HEAD | tar -x -C "$DEPLOY_DIR"
+          echo "path=$DEPLOY_DIR" >> "$GITHUB_OUTPUT"
+      - name: write .env
+        working-directory: ${{ steps.dir.outputs.path }}
+        run: |
+          REGISTRY="ghcr.io/${GITHUB_REPOSITORY,,}"
+          SHA_TAG="sha-$(git -C "$GITHUB_WORKSPACE" rev-parse --short=7 HEAD)"
+          {
+            echo "STACK=${STACK}"
+            echo "NATS_PORT=${NATS_PORT:-4222}"
+            echo "NATS_MON_PORT=${NATS_MON_PORT:-8222}"
+            echo "PG_PORT=${PG_PORT:-5432}"
+            echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD secret}"
+            echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
+            echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
+            echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
+            echo "APPROVED_ACTUATORS=${APPROVED_ACTUATORS}"
+            echo "REGISTRY=${REGISTRY}"
+            echo "IMAGE_TAG=${SHA_TAG}"
+            echo "HOST_UID=$(id -u)"
+            echo "HOST_GID=$(id -g)"
+          } > .env
+          chmod 600 .env
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: pull images
+        working-directory: ${{ steps.dir.outputs.path }}
+        run: docker compose pull tracer supervisor
+      - name: roll out
+        working-directory: ${{ steps.dir.outputs.path }}
+        # supervisor restarts with RECONCILE_ON_START=true and rebuilds every running module from this commit
+        run: |
+          PROFILES=""
+          [ -n "$TELEGRAM_BOT_TOKEN" ] && PROFILES="--profile telegram"
+          docker compose $PROFILES up -d --no-build --wait --wait-timeout 300
+      - name: smoke check
+        working-directory: ${{ steps.dir.outputs.path }}
+        run: |
+          python3 -m venv .deploy-venv
+          .deploy-venv/bin/pip install -q ./sdk
+          export NATS_URL="nats://localhost:${NATS_PORT:-4222}"
+          .deploy-venv/bin/python scripts/mctl.py --timeout 60 list
+          .deploy-venv/bin/python scripts/mctl.py --timeout 60 health

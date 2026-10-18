@@ -1,0 +1,12 @@
+.git
+.venv
+.deploy-venv
+**/__pycache__
+**/.pytest_cache
+.ruff_cache
+reports
+builds
+.env
+.env.*
+modules
+tests

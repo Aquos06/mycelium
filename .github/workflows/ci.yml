@@ -1,0 +1,139 @@
+# CI: runs on every pull request into dev / stage / main, and is reused by cd.yml on every push.
+# lint -> unit (+ every module's own tests) -> integration (real NATS + Postgres) -> e2e (full compose stack)
+name: ci
+
+on:
+  pull_request:
+    branches: [dev, stage, main]
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NATS_IMAGE: nats:2.10-alpine
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -e sdk -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - name: compose file is valid
+        run: cp .env.example .env && docker compose config -q
+
+  unit:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -e sdk -r requirements-dev.txt
+      - name: unit tests
+        run: pytest -q tests/unit --junitxml=reports/unit.xml
+      - name: module tests (each module isolated) + template smoke
+        run: python scripts/test_modules.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-report
+          path: reports/
+
+  integration:
+    needs: unit
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: mycelium
+          POSTGRES_PASSWORD: mycelium
+          POSTGRES_DB: mycelium
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mycelium -d mycelium"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      NATS_URL: nats://localhost:4222
+      DATABASE_URL: postgresql://mycelium:mycelium@localhost:5432/mycelium
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      # service containers can't take command args, and NATS needs -js for JetStream
+      - name: start NATS with JetStream
+        run: |
+          docker run -d --name nats -p 4222:4222 -p 8222:8222 ${{ env.NATS_IMAGE }} -js -m 8222
+          for i in $(seq 1 30); do curl -sf http://localhost:8222/healthz && break; sleep 1; done
+      - run: pip install -e sdk -r requirements-dev.txt
+      - name: integration tests
+        run: pytest -q -m integration tests/integration --junitxml=reports/integration.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-report
+          path: reports/
+
+  e2e:
+    needs: integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NATS_URL: nats://localhost:4222
+      DATABASE_URL: postgresql://mycelium:mycelium@localhost:5432/mycelium
+      STACK: mycelium-e2e
+    steps:
+      - uses: actions/checkout@v4
+      - name: configure stack
+        run: |
+          cp .env.example .env
+          sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=mycelium/' .env
+          sed -i 's/^STACK=.*/STACK=mycelium-e2e/' .env
+      - name: start the stack
+        run: docker compose up -d --build --wait --wait-timeout 300
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -e sdk -r requirements-dev.txt
+      - name: e2e tests
+        run: pytest -q -m e2e tests/e2e --junitxml=reports/e2e.xml
+      - name: dump logs on failure
+        if: failure()
+        run: |
+          docker compose logs --no-color > reports/compose.log 2>&1 || true
+          for c in $(docker ps -aq --filter label=mycelium.stack=mycelium-e2e); do
+            docker logs "$c" > "reports/module-$c.log" 2>&1 || true
+          done
+          tail -n 200 reports/compose.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-report
+          path: reports/
+      - name: tear down
+        if: always()
+        run: |
+          docker ps -aq --filter label=mycelium.stack=mycelium-e2e | xargs -r docker rm -f
+          docker compose down -v

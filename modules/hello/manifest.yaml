@@ -1,0 +1,15 @@
+name: hello
+version: 0.1.0
+purpose: Counts chat messages per day so the system has a first working module to deploy and query.
+need: Hand-written example that proves the deploy, event and request paths work end to end.
+subscribes: [sense.chat]
+emits: [message.counted]
+requests: [stats]
+hooks:
+  interval_seconds: [3600]
+permissions:
+  network: false
+  actuation: false
+resources:
+  memory_mb: 128
+  cpus: 0.25
