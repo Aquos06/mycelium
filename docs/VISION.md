@@ -191,8 +191,8 @@ things never become automatic: door locks, payments and messages to other people
 5. **Growth:** changing existing modules, the goals list and proposals, canary → promote / retire,
    earned autonomy.
 6. **Perception and devices:** new manifest permissions for devices, GPU and network, and backend
-   containers for wrapped open software; then screen, voice, camera (Frigate) and Home Assistant as
-   new input sources.
+   containers for wrapped open software; then cloud connectors (Gmail, Calendar, Drive), screen,
+   voice, camera (Frigate) and Home Assistant as new input sources.
 7. **Dashboard:** a host shell where modules mount their own panels, plus a trace viewer.
 
 When the builder fails on a spec, the fix goes into the contract, the template or the builder's
