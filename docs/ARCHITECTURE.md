@@ -423,7 +423,7 @@ knows which one it is talking to.
 | Channel | Status |
 |---|---|
 | Telegram | exists |
-| Own web app / mobile app (also hosts the dashboard) | new |
+| Own web app, chat tab (the same app holds the inbox, panels, settings and traces: §10) | new |
 | Voice: wake word + STT in, TTS out | new |
 | LINE, WhatsApp, others | new, as needed |
 
@@ -457,10 +457,32 @@ Raw pixels and audio never leave the box; only text crosses the bus.
 
 ---
 
-## 10. Dashboard — later
+## 10. Web app — new
 
-Host shell that lists modules and lets each one mount its own panel, plus a trace viewer that
-follows the `cause` chain of any notification back to its events. LAN only.
+Hansen's own front end: the full app, not a dashboard. Chat is one tab. Installable on the phone as
+a PWA, so there is one codebase for desktop and mobile.
+
+| Tab | What it does | Talks to |
+|---|---|---|
+| Chat | talk to the system; the web app is a channel (§8) | `sense.chat` / `out.*` |
+| Inbox | every open `out.ask`: approve a spec, an action, a third-party app; 👍/👎 on past notifications | `sense.feedback` |
+| Modules | list, health, usage metrics; each module's **panel** | `rpc.sys.list`, `rpc.mod.*` |
+| Settings | goals, quiet hours, attention budget, trust level per action kind, active and shadow providers, secrets | Main's policy, `providers.yaml` |
+| Builds | specs, build status, test output, rollback | `build.*`, `rpc.sys.rollback` |
+| Why | trace viewer: pick any notification, follow its `cause` chain back to the events | `traces`, `events` |
+
+**Module panels are data, not code.** A module declares its panel in the manifest as a list of
+widgets (table, stat, chart, form → `rpc.mod.<name>.<action>`); the app renders them. The builder
+only writes JSON that a schema validates, no frontend toolchain lives in a module container, and a
+panel cannot run code on the LAN. Escape hatch, later and approved like actuation: an iframe for a
+module that truly needs custom UI.
+
+**Stack.** Next.js as a mostly static SPA (its server features add little here), served by Caddy on
+the LAN, reached from outside through Tailscale. All logic stays in Python: the app talks only to a
+small **web gateway** service that bridges the bus to the browser over websockets and holds the one
+login. It never touches Postgres or NATS directly, and Next API routes hold no business logic, or
+there would be a second backend. The chat tab uses a chat component library rather than hand-written
+bubbles and streaming: wrap at the component level.
 
 ---
 
@@ -578,13 +600,46 @@ Docker networks enforce the access model, so a module cannot reach what its mani
 | `data` | Postgres, and only owners with `storage: postgres` |
 | `backend-<module>` | one wrapping module and its pinned backend container |
 | `egress` | only modules with `permissions.network: true` |
-| `lan` | Caddy, the web app, the dashboard |
+| `lan` | Caddy, the web app, the web gateway |
 
 ### Secrets
 
 A `secrets/` directory on the box, gitignored, readable only by the supervisor and the model
 gateway. Modules receive theirs as environment variables at container start, named in the manifest,
 approved by Hansen. GitHub environment secrets cover CI/CD. Nothing else holds a key.
+
+---
+
+## 13. Languages and libraries
+
+One language for everything the agent writes, because the builder's success rate is the experiment,
+and coding agents write Python more reliably than anything else.
+
+| Part | Language | Why |
+|---|---|---|
+| Host services | Python 3.12, asyncio, pydantic v2 | one language for one person; nothing here is CPU-bound |
+| Generated modules | **Python only** | one SDK, one contract, one test runner; stdlib `sqlite3` means zero dependencies by default |
+| Wrapped open software | anything | it is a container; this is how other languages get in |
+| Web app | TypeScript, Next.js | the one place Python is wrong (§10) |
+| Module panels | declarative JSON | validated by a schema, rendered by the app, cannot run code |
+| Specs, manifests, config | Markdown, YAML | already so |
+
+Libraries, and the ones deliberately not used:
+
+- **Model access:** the official `anthropic` SDK, and `openai` for anything OpenAI-compatible (vLLM,
+  Ollama). Inside the gateway, LiteLLM is a candidate provider adapter (many providers behind one
+  interface with cost tracking, which is the gateway's job); decide when the gateway is built.
+- **No LangChain, no LlamaIndex.** The planner is a small custom loop whose every step must be
+  readable in a trace; a framework puts layers between a decision and its explanation. Memory is
+  structure-first, and the embedding part is one `pgvector` query. Revisit only if the planner's tool
+  loop grows past about a thousand lines.
+- **Builder:** the Claude Agent SDK is its framework; nothing on top.
+- **Bus:** `nats-py`, behind the SDK's `Bus` interface so modules never see it.
+- **Type checking:** `pyright` in the host lint and in the builder's `verify()`. Type errors are the
+  cheapest class of generated-code bug to catch, and the manifest's payload declarations give it
+  something to check against.
+- **No Go or Rust in the host**, even though NATS is Go. A second language doubles the cost of every
+  change for a one-person project, and the heavy work (video, STT) is wrapped software.
 
 ---
 
@@ -635,4 +690,4 @@ real module exists.
    needs one). Memory: vault, index, `recall` / `remember` / `lookup`, nightly consolidation.
 5. Builder as a service, `change` mode with `/data` snapshots and rollback.
 6. Bridges and `wrap` mode: Home Assistant, Frigate; secrets and backend containers.
-7. Dashboard and trace viewer.
+7. Web app and web gateway: chat and inbox first, then settings, module panels, builds, trace viewer.
