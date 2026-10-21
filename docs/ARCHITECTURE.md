@@ -389,7 +389,8 @@ Inside Main:
 
 ## 6. Memory — new
 
-Structure first, embeddings as a way in. Answers `rpc.memory.*`.
+Structure first, embeddings as a way in. Answers `rpc.memory.*`. Full design, schema and examples in
+[MEMORY.md](MEMORY.md).
 
 | | |
 |---|---|
@@ -523,6 +524,7 @@ local, or one coding agent for another, is a config change, not a code change.
 | Slot | Used by | Providers | Default now |
 |---|---|---|---|
 | `gate` | Main | Jev (cloud); later a small local classifier trained on traces | Jev |
+| `rerank` | Memory recall | local cross-encoder (`bge-reranker-v2-m3`, GPU 1); Jev | local active, Jev shadow: note summaries are the most personal text the system has |
 | `planner` | Main | Claude API (token), vLLM or Ollama on GPU 0 (OpenAI-compatible endpoint) | Claude |
 | `embed` | Memory | local model on GPU 1, or an API | local |
 | `stt` / `tts` | Voice channel | faster-whisper / Piper (local) | local |
