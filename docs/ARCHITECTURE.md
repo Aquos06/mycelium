@@ -17,19 +17,19 @@ Docker socket, a model API).
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
-║ HANSEN                                                WORLD                                      ║
-║ phone · browser · voice                               devices · cameras · screen · mic           ║
+║ HANSEN                                        WORLD                                              ║
+║ phone · browser · voice                       devices · cameras · screen · mic · cloud accounts  ║
 ╚═══════════╤═════════════════════════════════════════════════════╤════════════════════════════════╝
-            │ messages, taps, speech                              │ states, frames, audio, pixels
+            │ messages, taps, speech                              │ states, frames, audio, mail
 ╔═══════════▼═════════════════════════════════════════════════════▼════════════════════════════════╗
-║ CHANNELS   talk with Hansen                           BRIDGES   sense and act on the world       ║
-║ telegram · web app · voice                            home assistant · frigate · screen · ambient║
-║ line · whatsapp · ...                                 raw pixels and audio become text here      ║
-╚═════╤═════════════════════════════════▲═══════════════════╤═════════════════════════════▲════════╝
-      │ sense.chat                      │ out.notify        │ sense.iot  sense.cam        │ out.ha
-      │ sense.feedback                  │ out.say           │ sense.screen  sense.voice   │
-      ▼                                 │ out.ask           ▼                             │
-╔═══════════════════════════════════════╧═════════════════════════════════════════════════╧════════╗
+║ CHANNELS   talk with Hansen                       BRIDGES   sense and act on the world           ║
+║ telegram · web app · voice                        home assistant · frigate · screen · ambient    ║
+║ line · whatsapp · ...                             connectors: gmail · calendar · drive · notion  ║
+╚═════╤═════════════════════════════════▲═══════════════════╤═════════════════════════▲════════════╝
+      │ sense.chat                      │ out.notify        │ sense.iot · sense.cam   │ out.ha
+      │ sense.feedback                  │ out.say           │ sense.screen · mail     │ out.mail
+      ▼                                 │ out.ask           ▼ sense.calendar · files  │ out.calendar
+╔═══════════════════════════════════════╧═════════════════════════════════════════════╧════════════╗
 ║ BUS   NATS + JetStream                                                                           ║
 ║ EVENTS stream   sense.* brain.* mod.* sys.* build.* out.* trace.*         stored, replayable     ║
 ║ requests        rpc.sys.* rpc.mod.* rpc.memory.* rpc.llm.*                never stored           ║
@@ -72,6 +72,7 @@ Docker socket, a model API).
 
  ●  the only places that hold something other than bus access: keys = API tokens,
     coder = Agent SDK, docker = the socket.   ☁ = leaves the box, text only.
+    raw pixels, audio and attachments become text at the edge; they never cross the bus.
 ```
 
 ---
@@ -90,12 +91,12 @@ flowchart TB
     classDef ext fill:#ffffff,stroke:#999,color:#444
 
     H(["Hansen<br/>phone · browser · voice"]):::ext
-    W(["World<br/>devices · cameras · screen · mic"]):::ext
+    W(["World<br/>devices · cameras · screen · mic · cloud accounts"]):::ext
 
     subgraph EDGE["Edge adapters, hand-written"]
         direction LR
         CH["Channels<br/>telegram ✓ · web app · voice · line / whatsapp"]:::extend
-        BR["Bridges<br/>home assistant · frigate · screen · ambient audio"]:::new
+        BR["Bridges<br/>home assistant · frigate · screen · ambient audio<br/>connectors: gmail · calendar · drive · notion"]:::new
     end
 
     BUS[["NATS + JetStream<br/>EVENTS stream · rpc · KV"]]:::exists
@@ -139,8 +140,9 @@ flowchart TB
 
     CH -->|"sense.chat · sense.feedback"| BUS
     BUS -->|"out.notify · out.say · out.ask"| CH
-    BR -->|"sense.iot · sense.cam · sense.screen · sense.voice"| BUS
-    BUS -->|"out.ha"| BR
+    BR -->|"sense.iot · sense.cam · sense.screen · sense.voice · sense.mail · sense.calendar · sense.files"| BUS
+    BUS -->|"out.ha · out.mail · out.calendar"| BR
+    BUS -.->|"rpc.connect.*"| BR
 
     BUS -->|"sense.* · brain.observe · sys.* · build.*"| MAIN
     MAIN -->|"out.* · build.request · trace.*"| BUS
@@ -195,7 +197,10 @@ flowchart TB
 | Main | channel | `out.notify`, `out.say` | event | a message; policy picks the channel |
 | Main | channel | `out.ask` | event | a question with choices; answer returns as `sense.feedback` |
 | Bridge | bus | `sense.iot`, `sense.cam`, `sense.screen`, `sense.voice` | event | text summaries only |
+| Connector | bus | `sense.mail`, `sense.calendar`, `sense.files` | event | metadata and a text summary per new item; bodies and attachments stay in the connector's own db and blobs |
+| Main / module | connector | `rpc.connect.<service>.<action>` | request | on-demand reads: search mail, list events, find a file, fetch one body |
 | Main / module | bridge | `out.ha` | event | a Home Assistant service call (actuation, gated) |
+| Main / module | connector | `out.mail`, `out.calendar` | event | send a mail, create an event (actuation; mail to other people never becomes automatic) |
 | Module | bus | `mod.<name>.<event>` | event | declared payload, validated by the SDK |
 | Module | Main | `brain.observe` | event | `{type, summary, severity, data}` |
 | Main / module | module | `rpc.mod.<name>.<action>` | request | declared params → declared returns |
@@ -452,6 +457,29 @@ else. Part of the host because they define the `sense.*` and `out.*` schemas eve
 | Frigate | MQTT `frigate/events` → `sense.cam` | — |
 | Screen | local capture → text summary → `sense.screen` | — |
 | Ambient audio (later, if ever) | STT → `sense.voice` | — |
+| **Connectors** (cloud accounts) | Gmail → `sense.mail`, Calendar → `sense.calendar`, Drive → `sense.files`; later Notion, GitHub, … | `out.mail`, `out.calendar`; `rpc.connect.*` for reads |
+
+### Connectors
+
+Cloud accounts are part of the world, so they are bridges, but they share one problem the device
+bridges don't have: OAuth. One hand-written `connectors` service owns that once, and each service is
+a thin adapter inside it.
+
+| | |
+|---|---|
+| Owns | OAuth tokens (in the secrets store), refresh, scopes, rate limits, sync cursors; its own db for bodies and metadata, blobs for attachments |
+| Consent | `mctl connect google` runs the installed-app OAuth flow in a browser; later the web app's Settings → Connections tab does the same |
+| Sync | polling (every 1–5 min is fine for one user; Gmail's `history` API, Calendar `syncToken`, Drive `changes`); webhooks only where they are free |
+| Emits | one event per new item with metadata and a short text summary. Full bodies never ride the bus: a module that needs one asks `rpc.connect.gmail.get` |
+| Acts | `out.mail`, `out.calendar` are actuation: approved per connector, asked per action, and sending mail to other people never climbs the autonomy ladder |
+| Google first | Gmail, Calendar and Drive sit under one consent screen and one client id, so one adapter covers the three most useful sources |
+| Wrap later? | if the adapter count passes about five, consider wrapping Nango (open-source OAuth + syncs for 250+ APIs) as the connector backend instead of writing more adapters |
+
+Mail is the richest input the system will have and the most sensitive, and it is the first place
+prompt injection will arrive (cross-cutting rule 8): mail content is data, never instructions, and
+nothing read from mail reaches a spec or an actuation without Hansen's approval. Retention tiering
+(rule 6) applies to `sense.mail` like any sense data; the connector's own db is what keeps the
+history.
 
 Raw pixels and audio never leave the box; only text crosses the bus.
 
@@ -689,5 +717,7 @@ real module exists.
 4. Per-owner Postgres databases, roles and the `data` network (memory is the first owner that
    needs one). Memory: vault, index, `recall` / `remember` / `lookup`, nightly consolidation.
 5. Builder as a service, `change` mode with `/data` snapshots and rollback.
-6. Bridges and `wrap` mode: Home Assistant, Frigate; secrets and backend containers.
+6. Bridges and `wrap` mode. Connectors first (Google: Gmail, Calendar, Drive under one consent,
+   CLI OAuth flow so the web app is not needed yet), then Home Assistant and Frigate; secrets and
+   backend containers.
 7. Web app and web gateway: chat and inbox first, then settings, module panels, builds, trace viewer.
