@@ -50,7 +50,7 @@ Docker socket, a model API).
         │                                            │ writes code  │ builds · runs   declared │
         │                                            │              │ provisions    subscribes │
 ╔═══════╪════════════════════════════════════════════▼══════════════▼══════════════════════════▼═══╗
-║       │   MODULES   generated, the only part that grows                                          ║
+║       │   MODULES   generated on demand, the only part that grows (these three are examples)     ║
 ║       │   ┌──────────────┐  ┌──────────────┐  ┌──────────────┬─────────────┐  each one:          ║
 ║       │   │ hello        │  │ expenses     │  │ cameras      │ frigate     │  own container      ║
 ║       │   │ sqlite       │  │ postgres     │  │ (wrapper)    │ (backend,   │  own database       ║
@@ -110,7 +110,7 @@ flowchart TB
         GW["Model gateway<br/>rpc.llm.* · budget · cost log · shadow"]:::new
     end
 
-    subgraph MODS["Modules, generated"]
+    subgraph MODS["Modules, generated on demand (examples)"]
         direction LR
         M1["hello<br/>sqlite"]:::gen
         M2["expenses<br/>postgres"]:::gen
@@ -315,6 +315,15 @@ Everything the system grows. One container each, one job each, contract in `temp
 | Publishes | `mod.<name>.<event>` (declared), `brain.observe` summaries |
 | Answers | `rpc.mod.<name>.<action>` (declared), `health` automatic |
 | Kinds | **plain** (re-created from scratch), **wrap** (thin module + backend container running open software), **bridge** (hand-written host adapter, e.g. Home Assistant → `sense.iot`) |
+
+**Where modules live.** Nothing is pre-built; a module exists only after Hansen asked for it. Once
+built it is real code that has to persist and have history (change builds, rollback), so generated
+modules go in their **own git repo**, private or local to the box, mounted at `modules/` by the
+supervisor and the builder. The builder makes one commit per build (`expenses v0.1.0`); that commit
+is the rollback point. This host repo keeps only `template/` and the hand-written reference module
+`hello` (the smoke test and the example the builder copies), so the public repo never holds
+Hansen's grown software and `make test` does not depend on what the system has built. Today `hello`
+still sits in `modules/`; the split happens before the first real build.
 
 **Manifest change needed first:** `emits` and `requests` become described, not just named, so the
 catalog and Main know what the fields mean:
