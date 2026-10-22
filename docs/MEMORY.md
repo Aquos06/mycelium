@@ -343,7 +343,7 @@ wrong answer can be traced to the wrong note being opened, or the right one not 
 
 | Step | What you get |
 |---|---|
-| **M1** vault format, indexer, `notes` + `links` + `facts` + `summaries`, lookup ladder (exact, alias, trgm), `remember` / `lookup` / `recall`, `mctl remember` / `mctl recall`, seed `hansen.md` | memory usable from the CLI; pure code, no model needed |
+| **M1** (done) vault format, indexer, `notes` + `links` + `facts` + `summaries`, lookup ladder (exact, alias, trgm), `remember` / `lookup` / `recall` / `reindex`, module notes on deploy, `mctl remember` / `lookup` / `recall` | memory usable from the CLI; pure code, no model needed. `services/memory/`, tests in `tests/unit/test_memory_*.py` and `tests/integration/test_memory_pg.py`, fixtures in `tests/fixtures/` |
 | **M2** Main v0: gateway (Claude), thread in KV, planner with the recall pack, traces, Telegram in and out | the chatbot core with memory, end to end |
 | **M3** nightly consolidation, day summaries, automatic module notes | memory that grows without being told to |
 | **M4** embeddings (local on GPU 1, or an API to start), week and month rollups, the `rerank` slot | fuzzy recall |
