@@ -4,8 +4,10 @@ A personal assistant that grows. It watches what you do, remembers it, and when 
 something it can't handle yet, it **builds itself a new module** — a small service with its own
 data and event hooks — and plugs it into the same bus as everything else.
 
-> Status: week 1 skeleton. Bus, event log, supervisor, module SDK + contract, one example module,
-> and the builder. The brain (Jev gate + planner), memory service and perception come next.
+> Status: week 1 skeleton plus memory v1. Bus, event log, supervisor, module SDK + contract, one
+> example module, the builder, and the memory service (markdown vault + index + recall, see
+> `docs/MEMORY.md`). The brain (Jev gate + planner) and perception come next. Design docs live in
+> `docs/`: `VISION.md`, `ARCHITECTURE.md`, `MEMORY.md`.
 
 ## How it fits together
 
@@ -47,11 +49,13 @@ data and event hooks — and plugs it into the same bus as everything else.
 ```bash
 cp .env.example .env            # set POSTGRES_PASSWORD at least
 make venv                       # local tools: sdk, pytest, ruff
-make up                         # nats, postgres, tracer, supervisor
+make up                         # nats, postgres, tracer, supervisor, memory
 make deploy-hello               # supervisor builds + starts modules/hello
 .venv/bin/python scripts/mctl.py pub sense.chat '{"text":"hi"}'
 .venv/bin/python scripts/mctl.py ask hello stats
 .venv/bin/python scripts/mctl.py list
+.venv/bin/python scripts/mctl.py remember mei "moving to Tainan in December" --type person --alias 小美
+.venv/bin/python scripts/mctl.py recall "what did 小美 say about Tainan?"
 ```
 
 Grow a module from a spec (needs `ANTHROPIC_API_KEY` in `.env`):
@@ -115,6 +119,7 @@ then add environment secrets, register a self-hosted runner labelled `mycelium`,
 ```
 sdk/                 mycelium_sdk package + module base image Dockerfile
 services/            supervisor, tracer, telegram
+services/memory/     vault (markdown notes) + Postgres index + recall; rpc.memory.*
 template/            new-module template + CONTRACT.md
 modules/             deployed modules (hello is hand-written, the rest get generated)
 builder/             spec -> module via Claude Agent SDK

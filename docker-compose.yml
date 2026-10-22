@@ -1,5 +1,5 @@
 # mycelium core stack
-#   docker compose up -d --build              core: nats, postgres, tracer, supervisor
+#   docker compose up -d --build              core: nats, postgres, tracer, supervisor, memory
 #   docker compose --profile telegram up -d   + telegram bridge (needs TELEGRAM_* in .env)
 #   docker compose run --rm builder --name expenses --spec specs/expenses.md
 #
@@ -80,6 +80,22 @@ services:
       postgres: { condition: service_healthy }
     restart: unless-stopped
 
+  memory:
+    build: { context: ., dockerfile: services/memory/Dockerfile }
+    image: ${REGISTRY:-mycelium}/memory:${IMAGE_TAG:-dev}
+    environment:
+      <<: *core-env
+      MEMORY_VAULT_DIR: /vault
+      MEMORY_SCHEMA: memory
+      MEMORY_TZ: ${MEMORY_TZ:-Asia/Taipei}
+    volumes:
+      - vault:/vault       # the markdown vault: the curated memory, human-editable (docs/MEMORY.md)
+    networks: [mesh]
+    depends_on:
+      nats: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+
   telegram:
     profiles: [telegram]
     build: { context: ., dockerfile: services/telegram/Dockerfile }
@@ -118,3 +134,4 @@ networks:
 volumes:
   nats-data:
   pg-data:
+  vault:
