@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .base import Tool, ToolContext
 
@@ -16,15 +17,34 @@ NoteType = Literal["self", "person", "place", "project", "thing", "routine", "mo
 
 
 class RememberArgs(BaseModel):
-    note: str = Field(min_length=1, description="entity slug, lowercase, e.g. mei or ramen-place-xinyi")
+    note: str = Field(
+        min_length=1,
+        description="entity slug (mei, ramen-place-xinyi) or the note path the memory pack shows (people/mei.md)",
+    )
     type: NoteType | None = Field(default=None, description="only used when the note is new")
     aliases: list[str] = Field(default_factory=list, description="other names, e.g. 小美")
-    fact: str | None = Field(default=None, description="one line, past tense, e.g. 'is moving to Tainan in December'")
+    fact: str | None = Field(
+        default=None,
+        description="what happened or is true, one line, past tense, without the date: 'is moving to Tainan in December'",
+    )
     day: date | None = Field(default=None, description="YYYY-MM-DD the fact is about; default today")
     summary: str | None = Field(default=None, description="replace the note's current-state paragraph")
 
+    @field_validator("note")
+    @classmethod
+    def _slug(cls, v: str) -> str:
+        """The slug, also when the planner hands back the path it saw in the pack (people/mei.md -> mei)."""
+        v = v.strip().lower().removesuffix(".md").rsplit("/", 1)[-1]
+        if not v:
+            raise ValueError("note is required")
+        return v
+
     @model_validator(mode="after")
-    def _day_needs_a_fact(self) -> RememberArgs:
+    def _date_goes_in_day(self) -> RememberArgs:
+        """'2026-10-23 moved to Tainan' -> day=2026-10-23, fact='moved to Tainan'; a day without a fact is a mistake."""
+        if self.fact and (m := re.match(r"^(\d{4}-\d{2}-\d{2})\s+(.+)$", self.fact.strip())):
+            self.fact = m.group(2)
+            self.day = self.day or date.fromisoformat(m.group(1))
         if self.day is not None and not self.fact:
             raise ValueError("day only makes sense together with a fact")
         return self

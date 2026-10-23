@@ -6,6 +6,7 @@ import time
 from datetime import date
 
 import pytest
+from pydantic import ValidationError
 
 from main.prompt import render_pack, system_prompt
 from main.schemas import ModuleInfo, PlanTrace
@@ -444,3 +445,26 @@ async def test_turns_on_one_thread_are_serialized_and_threads_run_in_parallel(wo
     second = next(r for r in world.llm_requests if r["messages"][-1]["content"] == "two")
     assert second["messages"][:2] == [{"role": "user", "content": "one"}, {"role": "assistant", "content": "re:one"}]
     assert [t.text for t in (await world.svc.store.load("cli", "x")).turns] == ["other", "re:other"]
+
+
+def test_remember_args_accept_the_pack_path_and_split_a_leading_date():
+    from datetime import date
+
+    from main.tools import RememberArgs
+
+    a = RememberArgs(note="people/mei.md", fact="2026-10-23 is moving to Tainan in December")
+    assert a.note == "mei" and a.fact == "is moving to Tainan in December" and a.day == date(2026, 10, 23)
+    b = RememberArgs(note=" Mei ", fact="likes ramen", day=date(2026, 10, 1))
+    assert b.note == "mei" and b.day == date(2026, 10, 1)
+    assert (
+        RememberArgs(note="summaries/2026/10/14.md", fact="x").note == "14"
+    )  # a slug, even a silly one; memory decides
+
+
+def test_ask_module_args_accept_the_prefixed_request_name_the_prompt_shows():
+    from main.tools import AskModuleArgs
+
+    assert AskModuleArgs(module="hello", action="hello.stats").action == "stats"
+    assert AskModuleArgs(module="hello", action="stats").action == "stats"
+    with pytest.raises(ValidationError):
+        AskModuleArgs(module="hello", action="other.stats")  # a different module's request is not a slip

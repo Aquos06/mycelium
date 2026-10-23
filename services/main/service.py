@@ -168,7 +168,7 @@ class MainService:
             llm_calls.append(LlmCall.model_validate(r))
             calls = r.get("tool_calls") or []
             if not calls:
-                reply_text = str(r.get("text") or "")
+                reply_text = str(r.get("text") or "").strip()  # reasoning models lead with blank lines
                 break
 
             content: list[dict[str, Any]] = []
@@ -188,7 +188,7 @@ class MainService:
                 results.append(outcome.tool_result(c["id"], MAX_TOOL_RESULT_CHARS))
             messages.append({"role": "user", "content": results})
             if asked:
-                reply_text = str(r.get("text") or "")
+                reply_text = str(r.get("text") or "").strip()  # reasoning models lead with blank lines
                 break
         else:
             error = f"planner did not finish in {self.max_rounds} rounds"
