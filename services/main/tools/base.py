@@ -13,26 +13,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation, ValidationError
 
-from mycelium_sdk import Bus, validation_message
+from mycelium_sdk import Bus, input_schema, validation_message
 
 NAME_PATTERN = r"^[a-z][a-z0-9_]{0,40}$"
 
-
-def input_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """The model's JSON schema trimmed for a model's eyes: no titles or defaults, `X | None` shown as X."""
-    return _trim(model.model_json_schema())
-
-
-def _trim(node: Any) -> Any:
-    if isinstance(node, list):
-        return [_trim(n) for n in node]
-    if not isinstance(node, dict):
-        return node
-    if "anyOf" in node:
-        options = [o for o in node["anyOf"] if o != {"type": "null"}]
-        if len(options) == 1:  # Optional[X]: the field is already not required, so just describe X
-            node = {k: v for k, v in {**node, **options[0]}.items() if k != "anyOf"}
-    return {k: _trim(v) for k, v in node.items() if k not in ("title", "default")}
+__all__ = ["Tool", "ToolContext", "ToolOutcome", "ToolRegistry", "ToolSpec", "input_schema", "validation_message"]
 
 
 class ToolContext(BaseModel):
