@@ -7,10 +7,11 @@ Two implementations behind one protocol, like the bus and the registry: InMemory
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from .vault import Fact
 
@@ -18,33 +19,32 @@ FUZZY_THRESHOLD = 0.3  # pg_trgm's default similarity_threshold
 SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 
-@dataclass
-class NoteRecord:
+class NoteRecord(BaseModel):
     name: str
     path: str
     type: str
-    aliases: list[str] = field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
     summary: str = ""
-    links: list[str] = field(default_factory=list)
+    links: list[str] = Field(default_factory=list)
     body_hash: str = ""
     updated_at: datetime | None = None
 
 
-@dataclass(frozen=True)
-class FactRecord:
+class FactRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     note: str
     day: date
     text: str
     source: str | None = None
 
 
-@dataclass
-class SummaryRecord:
+class SummaryRecord(BaseModel):
     period: str
     key: str
     path: str
     text: str
-    links: list[str] = field(default_factory=list)
+    links: list[str] = Field(default_factory=list)
     body_hash: str = ""
 
 
@@ -100,7 +100,9 @@ class InMemoryIndex:
             if existing.path == record.path and existing.name != record.name:
                 await self.delete_note(existing.path)
         self.notes[record.name] = record
-        self._facts[record.name] = [FactRecord(record.name, f.day, f.text, f.source) for f in facts]
+        self._facts[record.name] = [
+            FactRecord(note=record.name, day=f.day, text=f.text, source=f.source) for f in facts
+        ]
         self._hashes[record.path] = record.body_hash
 
     async def delete_note(self, path: str) -> None:
@@ -297,7 +299,7 @@ class PostgresIndex:
             name.lower() if name else None,
             day,
         )
-        return [FactRecord(r["note"], r["day"], r["text"], r["source"]) for r in rows]
+        return [FactRecord(note=r["note"], day=r["day"], text=r["text"], source=r["source"]) for r in rows]
 
     async def summary(self, period: str, key: str) -> SummaryRecord | None:
         row = await self.pool.fetchrow(
@@ -308,7 +310,12 @@ class PostgresIndex:
         if not row:
             return None
         return SummaryRecord(
-            row["period"], row["key"], row["path"], row["text"], list(row["links"] or []), row["body_hash"]
+            period=row["period"],
+            key=row["key"],
+            path=row["path"],
+            text=row["text"],
+            links=list(row["links"] or []),
+            body_hash=row["body_hash"],
         )
 
     async def vocabulary(self) -> list[tuple[str, str]]:

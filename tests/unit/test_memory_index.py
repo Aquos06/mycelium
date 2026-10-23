@@ -63,7 +63,12 @@ async def test_index_file_replaces_links_and_facts(tmp_path):
     vault = Vault(tmp_path)
     index = InMemoryIndex()
     note = Note(
-        "bike", "things/bike.md", "thing", [], "Bike. [[garage]]", ["garage"], [Fact(date(2026, 1, 1), "bought", None)]
+        name="bike",
+        path="things/bike.md",
+        type="thing",
+        summary="Bike. [[garage]]",
+        links=["garage"],
+        facts=[Fact(day=date(2026, 1, 1), text="bought")],
     )
     vault.write(note)
     await index_file(vault, index, "things/bike.md")

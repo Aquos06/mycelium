@@ -19,8 +19,12 @@ def test_parse_note_frontmatter_summary_links_facts():
     assert note.summary == "Friend from the climbing gym, lives in [[taipei]]."
     assert note.links == ["taipei", "ramen-place-xinyi"]  # in order of first appearance, no dupes
     assert note.facts == [
-        Fact(date(2026, 10, 14), "dinner at [[ramen-place-xinyi]], she's moving to Tainan in Dec", "ev:48213"),
-        Fact(date(2026, 9, 2), 'recommended the book "Project Hail Mary"', "ev:41077"),
+        Fact(
+            day=date(2026, 10, 14),
+            text="dinner at [[ramen-place-xinyi]], she's moving to Tainan in Dec",
+            source="ev:48213",
+        ),
+        Fact(day=date(2026, 9, 2), text='recommended the book "Project Hail Mary"', source="ev:41077"),
     ]
 
 
@@ -29,7 +33,7 @@ def test_parse_note_without_frontmatter_uses_folder_for_type():
     assert note.type == "place"
     assert note.aliases == []
     assert note.summary == "A place."
-    assert note.facts == [Fact(date(2026, 1, 2), "went there", None)]
+    assert note.facts == [Fact(day=date(2026, 1, 2), text="went there")]
 
 
 @pytest.mark.parametrize(
@@ -67,7 +71,7 @@ def test_facts_render_newest_first():
         aliases=[],
         summary="X.",
         links=[],
-        facts=[Fact(date(2026, 1, 1), "old", None), Fact(date(2026, 2, 1), "new", "hansen")],
+        facts=[Fact(day=date(2026, 1, 1), text="old"), Fact(day=date(2026, 2, 1), text="new", source="hansen")],
     )
     lines = render_note(note).splitlines()
     assert lines[-2:] == ["- 2026-02-01 new  (hansen)", "- 2026-01-01 old"]
@@ -118,7 +122,7 @@ def test_vault_write_then_read(tmp_path):
         aliases=["my bike"],
         summary="Grey gravel bike.",
         links=[],
-        facts=[Fact(date(2026, 10, 1), "new chain", "hansen")],
+        facts=[Fact(day=date(2026, 10, 1), text="new chain", source="hansen")],
     )
     vault.write(note)
     assert (tmp_path / "things/bike.md").exists()

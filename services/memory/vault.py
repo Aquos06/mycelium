@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field
 
 TYPES = ("self", "person", "place", "project", "thing", "routine", "module")
 FOLDER_TYPES = {
@@ -45,31 +45,30 @@ WEEK_RE = re.compile(r"^summaries/(\d{4})/W(\d{2})\.md$")
 MONTH_RE = re.compile(r"^summaries/(\d{4})/(\d{2})\.md$")
 
 
-@dataclass(frozen=True)
-class Fact:
+class Fact(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     day: date
     text: str
-    source: str | None = None
+    source: str | None = None  # ev:<id> | hansen | consolidation | sys
 
 
-@dataclass
-class Note:
+class Note(BaseModel):
     name: str
     path: str
     type: str
-    aliases: list[str] = field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
     summary: str = ""
-    links: list[str] = field(default_factory=list)
-    facts: list[Fact] = field(default_factory=list)
+    links: list[str] = Field(default_factory=list)  # derived from [[links]] in summary and facts
+    facts: list[Fact] = Field(default_factory=list)
 
 
-@dataclass
-class Summary:
+class Summary(BaseModel):
     period: str  # day | week | month
     key: str  # 2026-10-14 | 2026-W42 | 2026-10
     path: str
     text: str
-    links: list[str] = field(default_factory=list)
+    links: list[str] = Field(default_factory=list)
 
 
 def type_for_path(path: str) -> str:
@@ -116,7 +115,7 @@ def parse_note(path: str, text: str) -> Note:
         m = FACT_RE.match(line)
         if m:
             summary_done = True
-            facts.append(Fact(date.fromisoformat(m.group(1)), m.group(2).strip(), m.group(3)))
+            facts.append(Fact(day=date.fromisoformat(m.group(1)), text=m.group(2).strip(), source=m.group(3)))
             continue
         if not line.strip():
             if in_summary:

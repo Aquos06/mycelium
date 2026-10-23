@@ -1,11 +1,12 @@
 """The memory service on the bus.
 
-    rpc.memory.remember   {note, type?, aliases?, summary?, fact?: {day?, text}, source?}
-    rpc.memory.lookup     {name}
-    rpc.memory.recall     {query, budget?, today?}
+    rpc.memory.remember   RememberRequest
+    rpc.memory.lookup     LookupRequest
+    rpc.memory.recall     RecallRequest
     rpc.memory.reindex    {}
     sys.module.deployed   -> writes modules/<name>.md from the manifest
 
+Request payloads are validated with the pydantic models below (the contract Main codes against).
 Replies are {"ok": true, ...} or {"ok": false, "error": ...}, like the supervisor's.
 """
 
@@ -14,7 +15,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import date
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from mycelium_sdk.bus import Bus, Message
 
@@ -22,11 +25,98 @@ from .events import EventSource
 from .index import Index
 from .indexer import index_file, reindex
 from .recall import lookup, recall
-from .vault import NAME_RE, TYPES, Fact, Note, Vault
+from .vault import NAME_RE, Fact, Note, Vault
 
 log = logging.getLogger("mycelium.memory")
 
 DEFAULT_BUDGET = 8
+
+NoteType = Literal["self", "person", "place", "project", "thing", "routine", "module"]
+
+
+def _collapse(text: str) -> str:
+    return " ".join(text.split())
+
+
+class FactIn(BaseModel):
+    text: str = Field(min_length=1)
+    day: date | None = None  # default: today
+
+    @field_validator("text")
+    @classmethod
+    def _text(cls, v: str) -> str:
+        v = _collapse(v)
+        if not v:
+            raise ValueError("fact.text is required")
+        return v
+
+
+class RememberRequest(BaseModel):
+    note: str
+    type: NoteType | None = None  # used only when the note does not exist yet
+    aliases: list[str] = Field(default_factory=list)
+    summary: str | None = None  # replaces the note's first paragraph
+    fact: FactIn | None = None
+    source: str | None = None  # ev:<id> | hansen | consolidation | sys
+
+    @field_validator("note")
+    @classmethod
+    def _note(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not NAME_RE.match(v):
+            raise ValueError(f"bad note name: {v!r}")
+        return v
+
+    @field_validator("aliases")
+    @classmethod
+    def _aliases(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for a in v:
+            a = a.strip().lower()
+            if a and a not in out:
+                out.append(a)
+        return out
+
+    @field_validator("summary")
+    @classmethod
+    def _summary(cls, v: str | None) -> str | None:
+        return _collapse(v) if v is not None else None
+
+    @model_validator(mode="after")
+    def _something_to_remember(self) -> RememberRequest:
+        if self.fact is None and not self.summary:
+            raise ValueError("a fact or a summary is required")
+        return self
+
+
+class LookupRequest(BaseModel):
+    name: str = Field(min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name is required")
+        return v
+
+
+class RecallRequest(BaseModel):
+    query: str = Field(min_length=1)
+    budget: int = Field(default=DEFAULT_BUDGET, ge=1, le=50)
+    today: date | None = None  # for replays and tests; default: the service's clock
+
+    @field_validator("query")
+    @classmethod
+    def _query(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("query is required")
+        return v
+
+
+def _validation_message(e: ValidationError) -> str:
+    return "; ".join(f"{'.'.join(str(p) for p in err['loc']) or 'request'}: {err['msg']}" for err in e.errors())
 
 
 class MemoryService:
@@ -58,6 +148,8 @@ class MemoryService:
         async def handler(msg: Message) -> None:
             try:
                 payload = {"ok": True, **await fn(msg.data)}
+            except ValidationError as e:
+                payload = {"ok": False, "error": _validation_message(e)}
             except (ValueError, KeyError, TypeError) as e:
                 payload = {"ok": False, "error": str(e)}
             except Exception as e:  # never let a handler take the service down
@@ -71,47 +163,32 @@ class MemoryService:
     # ---- handlers ------------------------------------------------------------------------
 
     async def remember(self, data: dict[str, Any]) -> dict[str, Any]:
-        name = str(data.get("note", "")).strip().lower()
-        if not NAME_RE.match(name):
-            raise ValueError(f"bad note name: {name!r}")
-        fact = data.get("fact")
-        summary = data.get("summary")
-        if not fact and not summary:
-            raise ValueError("a fact or a summary is required")
+        req = RememberRequest.model_validate(data)
 
-        existing = await self.index.get(name)
+        existing = await self.index.get(req.note)
         if existing:
             note = self.vault.read(existing.path)
             created = False
         else:
-            note_type = str(data.get("type") or "thing")
-            if note_type not in TYPES:
-                raise ValueError(f"unknown note type: {note_type!r}")
-            note = Note(name=name, path=self.vault.path_for(name, note_type), type=note_type)
+            note_type = req.type or "thing"
+            note = Note(name=req.note, path=self.vault.path_for(req.note, note_type), type=note_type)
             created = True
 
-        for alias in data.get("aliases") or []:
-            a = str(alias).strip().lower()
-            if a and a not in note.aliases:
-                note.aliases.append(a)
-        if summary:
-            note.summary = " ".join(str(summary).split())
-        if fact:
-            text = " ".join(str(fact.get("text", "")).split())
-            if not text:
-                raise ValueError("fact.text is required")
-            day = date.fromisoformat(fact["day"]) if fact.get("day") else self.today()
-            note.facts.insert(0, Fact(day, text, data.get("source")))
+        for alias in req.aliases:
+            if alias not in note.aliases:
+                note.aliases.append(alias)
+        if req.summary:
+            note.summary = req.summary
+        if req.fact:
+            note.facts.insert(0, Fact(day=req.fact.day or self.today(), text=req.fact.text, source=req.source))
 
         self.vault.write(note)
         await index_file(self.vault, self.index, note.path)
         return {"path": note.path, "created": created}
 
     async def lookup(self, data: dict[str, Any]) -> dict[str, Any]:
-        name = str(data.get("name", "")).strip()
-        if not name:
-            raise ValueError("name is required")
-        matches = await lookup(self.index, name)
+        req = LookupRequest.model_validate(data)
+        matches = await lookup(self.index, req.name)
         return {
             "matches": [
                 {"name": m.record.name, "path": m.record.path, "type": m.record.type, "via": m.via, "score": m.score}
@@ -120,12 +197,8 @@ class MemoryService:
         }
 
     async def recall(self, data: dict[str, Any]) -> dict[str, Any]:
-        query = str(data.get("query", "")).strip()
-        if not query:
-            raise ValueError("query is required")
-        budget = int(data.get("budget") or DEFAULT_BUDGET)
-        today = date.fromisoformat(data["today"]) if data.get("today") else self.today()
-        return await recall(self.vault, self.index, query, today=today, budget=budget)
+        req = RecallRequest.model_validate(data)
+        return await recall(self.vault, self.index, req.query, today=req.today or self.today(), budget=req.budget)
 
     async def reindex(self, _data: dict[str, Any]) -> dict[str, Any]:
         stats = await reindex(self.vault, self.index)
@@ -139,16 +212,17 @@ class MemoryService:
         try:
             manifest = await self._manifest_for(name)
             existing = await self.index.get(name)
-            note = (
-                self.vault.read(existing.path)
-                if existing
-                else Note(name=name, path=self.vault.path_for(name, "module"), type="module")
-            )
+            if existing:
+                note = self.vault.read(existing.path)
+            else:
+                note = Note(name=name, path=self.vault.path_for(name, "module"), type="module")
             purpose = str(manifest.get("purpose") or f"Module {name}.").strip()
             requests = [f"`rpc.mod.{name}.{a}`" for a in manifest.get("requests") or []]
             asks = f" Exact data lives in the module: ask {', '.join(requests)}." if requests else ""
             note.summary = f"{purpose}{asks}"
-            note.facts.insert(0, Fact(self.today(), f"deployed v{version}" if version else "deployed", "sys"))
+            note.facts.insert(
+                0, Fact(day=self.today(), text=f"deployed v{version}" if version else "deployed", source="sys")
+            )
             self.vault.write(note)
             await index_file(self.vault, self.index, note.path)
         except Exception:

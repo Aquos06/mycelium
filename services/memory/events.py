@@ -7,22 +7,40 @@ trace is a decision about an event that is already in the log.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 NOT_MATERIAL = ("trace.", "rpc.", "_INBOX", "$")
 
 
-@dataclass
-class Event:
+class Event(BaseModel):
+    """One row of the `events` table (or one line of a .jsonl fixture), validated on the way in."""
+
+    model_config = ConfigDict(frozen=True)
+
     id: int
     ts: datetime
     subject: str
-    source: str
-    payload: dict[str, Any]
+    source: str = ""
+    is_request: bool = False
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def _payload_from_json(cls, v: Any) -> Any:
+        if v is None:
+            return {}
+        if isinstance(v, str):  # asyncpg hands jsonb back as text unless a codec is registered
+            return json.loads(v)
+        return v
+
+    def localised(self, zone: ZoneInfo) -> Event:
+        ts = self.ts if self.ts.tzinfo else self.ts.replace(tzinfo=zone)
+        return self.model_copy(update={"ts": ts.astimezone(zone)})
 
 
 def is_memory_material(subject: str, is_request: bool) -> bool:
@@ -51,19 +69,9 @@ class JsonlEvents:
         for line in self.path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            row = json.loads(line)
-            if not is_memory_material(row["subject"], bool(row.get("is_request"))):
-                continue
-            ts = datetime.fromisoformat(row["ts"])
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=zone)
-            if not (start <= ts < end):
-                continue
-            out.append(
-                Event(
-                    int(row["id"]), ts.astimezone(zone), row["subject"], row.get("source", ""), row.get("payload") or {}
-                )
-            )
+            event = Event.model_validate_json(line).localised(zone)
+            if is_memory_material(event.subject, event.is_request) and start <= event.ts < end:
+                out.append(event)
         out.sort(key=lambda e: (e.ts, e.id))
         return out
 
@@ -79,7 +87,7 @@ class PostgresEvents:
         zone = ZoneInfo(tz)
         start, end = day_bounds(day, tz)
         rows = await self.pool.fetch(
-            """SELECT id, ts, subject, source, payload FROM events
+            """SELECT id, ts, subject, source, is_request, payload FROM events
                WHERE ts >= $1 AND ts < $2 AND NOT is_request AND subject NOT LIKE 'trace.%'
                  AND ($3::text IS NULL OR source LIKE $3)
                ORDER BY ts, id""",
@@ -87,10 +95,4 @@ class PostgresEvents:
             end,
             self.source_filter,
         )
-        out = []
-        for r in rows:
-            payload = r["payload"]
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            out.append(Event(r["id"], r["ts"].astimezone(zone), r["subject"], r["source"], payload or {}))
-        return out
+        return [Event.model_validate(dict(r)).localised(zone) for r in rows]

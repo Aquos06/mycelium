@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
 from datetime import UTC, datetime
+
+from pydantic import BaseModel
 
 from .index import Index, NoteRecord, SummaryRecord
 from .vault import Vault, parse_note, parse_summary
 
 
-@dataclass
-class IndexStats:
+class IndexStats(BaseModel):
     notes: int = 0
     summaries: int = 0
     skipped: int = 0
@@ -29,7 +29,9 @@ async def index_file(vault: Vault, index: Index, path: str) -> bool:
         return False
     if path.startswith("summaries/"):
         s = parse_summary(path, text)
-        await index.upsert_summary(SummaryRecord(s.period, s.key, s.path, s.text, s.links, body_hash=h))
+        await index.upsert_summary(
+            SummaryRecord(period=s.period, key=s.key, path=s.path, text=s.text, links=s.links, body_hash=h)
+        )
     else:
         n = parse_note(path, text)
         record = NoteRecord(
