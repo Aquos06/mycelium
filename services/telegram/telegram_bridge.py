@@ -14,12 +14,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from mycelium_sdk import Bus, Envelope, Message, NatsBus
+from mycelium_sdk import Bus, Envelope, Message, NatsBus, ServiceSettings
 
 log = logging.getLogger("mycelium.telegram")
 
@@ -208,18 +207,22 @@ class TelegramBridge:
                 await asyncio.sleep(5)
 
 
+class TelegramSettings(ServiceSettings):
+    bot_token: str = Field(min_length=1, validation_alias="TELEGRAM_BOT_TOKEN")
+    chat_id: int = Field(validation_alias="TELEGRAM_CHAT_ID", description="the one chat the bridge talks to")
+
+
 async def main() -> None:
     import httpx
 
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = int(os.environ["TELEGRAM_CHAT_ID"])
-    bus = NatsBus(os.environ.get("NATS_URL", "nats://nats:4222"), name="telegram")
+    s = TelegramSettings()
+    logging.basicConfig(level=s.log_level)
+    bus = NatsBus(s.nats_url, name="telegram")
     await bus.connect()
     async with httpx.AsyncClient(timeout=70) as http:
-        bridge = TelegramBridge(bus, TelegramAPI(token, http), chat_id)
+        bridge = TelegramBridge(bus, TelegramAPI(s.bot_token, http), s.chat_id)
         await bridge.start()
-        log.info("telegram bridge ready for chat %s", chat_id)
+        log.info("telegram bridge ready for chat %s", s.chat_id)
         await bridge.poll()
 
 

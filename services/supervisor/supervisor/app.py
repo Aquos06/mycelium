@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import signal
 from pathlib import Path
 from typing import Any
@@ -174,29 +173,29 @@ class Supervisor:
 async def main() -> None:
     from .docker_ops import RealDockerOps
     from .registry import PostgresRegistry
+    from .settings import SupervisorSettings
 
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    nats_url = os.environ.get("NATS_URL", "nats://nats:4222")
-    bus = NatsBus(nats_url, name="supervisor")
+    s = SupervisorSettings()
+    logging.basicConfig(level=s.log_level)
+    bus = NatsBus(s.nats_url, name="supervisor")
     await bus.connect()
-    registry = PostgresRegistry(os.environ["DATABASE_URL"])
+    registry = PostgresRegistry(s.database_url)
     await registry.connect()
-    stack = os.environ.get("STACK", "mycelium")
     docker = RealDockerOps(
-        nats_url=nats_url,
-        bus_network=os.environ.get("MODULE_NETWORK", f"{stack}-modules"),
-        internet_network=os.environ.get("INTERNET_NETWORK", f"{stack}-mesh"),
-        stack=stack,
+        nats_url=s.nats_url,
+        bus_network=s.module_network or "",
+        internet_network=s.internet_network or "",
+        stack=s.stack,
     )
     sup = Supervisor(
         bus=bus,
         docker=docker,
         registry=registry,
-        modules_dir=Path(os.environ.get("MODULES_DIR", "/workspace/modules")),
-        sdk_dir=Path(os.environ.get("SDK_DIR", "/workspace/sdk")),
-        approved_actuators={s for s in os.environ.get("APPROVED_ACTUATORS", "").split(",") if s},
+        modules_dir=s.modules_dir,
+        sdk_dir=s.sdk_dir,
+        approved_actuators=s.approved,
     )
-    await sup.start(reconcile=os.environ.get("RECONCILE_ON_START", "true").lower() == "true")
+    await sup.start(reconcile=s.reconcile_on_start)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
