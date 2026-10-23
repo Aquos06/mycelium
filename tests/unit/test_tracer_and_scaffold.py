@@ -48,6 +48,18 @@ async def test_recorder_inserts_and_skips():
     assert pool.rows == [("mod.hello.message.counted", "hello", False, '{"count": 1}')]
 
 
+async def test_traces_also_land_in_the_traces_table_and_votes_attach_to_plans():
+    pool = FakePool()
+    r = Recorder(pool)
+    await r.record("trace.plan", b'{"id": "p1", "cause": "c1", "reply_id": "s1", "source": "main"}', False)
+    assert pool.rows[1] == ("plan", "c1", '{"id": "p1", "cause": "c1", "reply_id": "s1", "source": "main"}')
+    await r.record("trace.feedback", b'{"id": "f1", "cause": "c2", "ref": "s1", "vote": -1}', False)
+    assert pool.rows[3][0] == "feedback"
+    assert pool.rows[4] == (-1, "s1")  # UPDATE traces SET feedback = -1 WHERE reply_id = s1
+    await r.record("trace.feedback", b'{"ref": "s1", "answer": "9pm"}', False)
+    assert len(pool.rows) == 7  # events + traces rows, no UPDATE for an answer
+
+
 def test_scaffold_renders_template(tmp_path):
     d = scaffold("widgets", tmp_path)
     m = load_manifest(d / "manifest.yaml")
