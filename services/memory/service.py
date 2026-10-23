@@ -1,12 +1,13 @@
 """The memory service on the bus.
 
-    rpc.memory.remember   RememberRequest
-    rpc.memory.lookup     LookupRequest
-    rpc.memory.recall     RecallRequest
-    rpc.memory.reindex    {}
-    sys.module.deployed   -> writes modules/<name>.md from the manifest
+    rpc.memory.remember     RememberRequest    -> RememberReply
+    rpc.memory.lookup       LookupRequest      -> LookupReply
+    rpc.memory.recall       RecallRequest      -> RecallPack
+    rpc.memory.reindex      {}                 -> IndexStats
+    rpc.memory.consolidate  ConsolidateRequest -> ConsolidationReport   (default: yesterday)
+    sys.module.deployed     -> writes modules/<name>.md from the manifest
 
-Request payloads are validated with the pydantic models below (the contract Main codes against).
+Payloads are validated with the models in schemas/rpc.py (the contract Main codes against).
 Replies are {"ok": true, ...} or {"ok": false, "error": ...}, like the supervisor's.
 """
 
@@ -14,105 +15,32 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import date
-from typing import Any, Literal
+from datetime import date, timedelta
+from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ValidationError
 
 from mycelium_sdk import Bus, Message, validation_message
 
-from .events import EventSource
+from .consolidate import Consolidator
 from .index import Index
 from .indexer import index_file, reindex
 from .recall import lookup, recall
-from .vault import NAME_RE, Fact, Note, Vault
+from .schemas import (
+    NAME_RE,
+    ConsolidateRequest,
+    Fact,
+    LookupMatch,
+    LookupReply,
+    LookupRequest,
+    Note,
+    RecallRequest,
+    RememberReply,
+    RememberRequest,
+)
+from .vault import Vault
 
 log = logging.getLogger("mycelium.memory")
-
-DEFAULT_BUDGET = 8
-
-NoteType = Literal["self", "person", "place", "project", "thing", "routine", "module"]
-
-
-def _collapse(text: str) -> str:
-    return " ".join(text.split())
-
-
-class FactIn(BaseModel):
-    text: str = Field(min_length=1)
-    day: date | None = None  # default: today
-
-    @field_validator("text")
-    @classmethod
-    def _text(cls, v: str) -> str:
-        v = _collapse(v)
-        if not v:
-            raise ValueError("fact.text is required")
-        return v
-
-
-class RememberRequest(BaseModel):
-    note: str
-    type: NoteType | None = None  # used only when the note does not exist yet
-    aliases: list[str] = Field(default_factory=list)
-    summary: str | None = None  # replaces the note's first paragraph
-    fact: FactIn | None = None
-    source: str | None = None  # ev:<id> | hansen | consolidation | sys
-
-    @field_validator("note")
-    @classmethod
-    def _note(cls, v: str) -> str:
-        v = v.strip().lower()
-        if not NAME_RE.match(v):
-            raise ValueError(f"bad note name: {v!r}")
-        return v
-
-    @field_validator("aliases")
-    @classmethod
-    def _aliases(cls, v: list[str]) -> list[str]:
-        out: list[str] = []
-        for a in v:
-            a = a.strip().lower()
-            if a and a not in out:
-                out.append(a)
-        return out
-
-    @field_validator("summary")
-    @classmethod
-    def _summary(cls, v: str | None) -> str | None:
-        return _collapse(v) if v is not None else None
-
-    @model_validator(mode="after")
-    def _something_to_remember(self) -> RememberRequest:
-        if self.fact is None and not self.summary:
-            raise ValueError("a fact or a summary is required")
-        return self
-
-
-class LookupRequest(BaseModel):
-    name: str = Field(min_length=1)
-
-    @field_validator("name")
-    @classmethod
-    def _name(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("name is required")
-        return v
-
-
-class RecallRequest(BaseModel):
-    query: str = Field(min_length=1)
-    budget: int = Field(default=DEFAULT_BUDGET, ge=1, le=50)
-    today: date | None = None  # for replays and tests; default: the service's clock
-
-    @field_validator("query")
-    @classmethod
-    def _query(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("query is required")
-        return v
 
 
 class MemoryService:
@@ -121,13 +49,13 @@ class MemoryService:
         bus: Bus,
         vault: Vault,
         index: Index,
-        events: EventSource | None = None,
+        consolidator: Consolidator | None = None,
         today: Callable[[], date] = date.today,
     ) -> None:
         self.bus = bus
         self.vault = vault
         self.index = index
-        self.events = events
+        self.consolidator = consolidator
         self.today = today
 
     async def start(self) -> None:
@@ -138,12 +66,14 @@ class MemoryService:
         await self.bus.subscribe("rpc.memory.lookup", self._wrap(self.lookup), queue="memory")
         await self.bus.subscribe("rpc.memory.recall", self._wrap(self.recall), queue="memory")
         await self.bus.subscribe("rpc.memory.reindex", self._wrap(self.reindex), queue="memory")
+        await self.bus.subscribe("rpc.memory.consolidate", self._wrap(self.consolidate), queue="memory")
         await self.bus.subscribe("sys.module.deployed", self.on_module_deployed, queue="memory")
 
     def _wrap(self, fn):
         async def handler(msg: Message) -> None:
             try:
-                payload = {"ok": True, **await fn(msg.data)}
+                reply: BaseModel = await fn(msg.data)
+                payload = {"ok": True, **reply.model_dump(mode="json")}
             except ValidationError as e:
                 payload = {"ok": False, "error": validation_message(e)}
             except (ValueError, KeyError, TypeError) as e:
@@ -158,7 +88,7 @@ class MemoryService:
 
     # ---- handlers ------------------------------------------------------------------------
 
-    async def remember(self, data: dict[str, Any]) -> dict[str, Any]:
+    async def remember(self, data: dict[str, Any]) -> RememberReply:
         req = RememberRequest.model_validate(data)
 
         existing = await self.index.get(req.note)
@@ -180,25 +110,31 @@ class MemoryService:
 
         self.vault.write(note)
         await index_file(self.vault, self.index, note.path)
-        return {"path": note.path, "created": created}
+        return RememberReply(path=note.path, created=created)
 
-    async def lookup(self, data: dict[str, Any]) -> dict[str, Any]:
+    async def lookup(self, data: dict[str, Any]) -> LookupReply:
         req = LookupRequest.model_validate(data)
         matches = await lookup(self.index, req.name)
-        return {
-            "matches": [
-                {"name": m.record.name, "path": m.record.path, "type": m.record.type, "via": m.via, "score": m.score}
+        return LookupReply(
+            matches=[
+                LookupMatch(name=m.record.name, path=m.record.path, type=m.record.type, via=m.via, score=m.score)
                 for m in matches
             ]
-        }
+        )
 
-    async def recall(self, data: dict[str, Any]) -> dict[str, Any]:
+    async def recall(self, data: dict[str, Any]):
         req = RecallRequest.model_validate(data)
         return await recall(self.vault, self.index, req.query, today=req.today or self.today(), budget=req.budget)
 
-    async def reindex(self, _data: dict[str, Any]) -> dict[str, Any]:
-        stats = await reindex(self.vault, self.index)
-        return {"notes": stats.notes, "summaries": stats.summaries, "skipped": stats.skipped}
+    async def reindex(self, _data: dict[str, Any]):
+        return await reindex(self.vault, self.index)
+
+    async def consolidate(self, data: dict[str, Any]):
+        req = ConsolidateRequest.model_validate(data)
+        if self.consolidator is None:
+            raise ValueError("consolidation is not configured (no event source)")
+        day = req.day or self.today() - timedelta(days=1)
+        return await self.consolidator.run(day, cause=str(data.get("id")) if data.get("id") else None)
 
     async def on_module_deployed(self, msg: Message) -> None:
         name = str(msg.data.get("name", "")).strip().lower()

@@ -484,3 +484,56 @@ async def test_requests_are_served_concurrently():
     )
     assert all(r["ok"] for r in replies) and time.monotonic() - t0 < 0.25  # not 3 x 0.1 in a row
     assert (await svc.bus.request("rpc.llm.usage", {}))["calls"] == 3  # the counter survived concurrent updates
+
+
+# ---- forced tool (structured output) ---------------------------------------------------------------
+
+
+async def test_tool_choice_forces_the_tool_on_both_wire_shapes():
+    with pytest.raises(ValidationError, match="tool_choice"):
+        CompletionRequest(messages=[{"role": "user", "content": "x"}], tools=[REMEMBER_TOOL], tool_choice="other")
+    req = CompletionRequest(messages=[{"role": "user", "content": "x"}], tools=[REMEMBER_TOOL], tool_choice="remember")
+
+    resp = SimpleNamespace(
+        content=[SimpleNamespace(type="tool_use", id="t", name="remember", input={"note": "mei"})],
+        stop_reason="tool_use",
+        model="m",
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+    )
+    client = SimpleNamespace(messages=FakeMessages(resp))
+    await ClaudeProvider("claude", "m", api_key="k", client=client).complete(req)
+    assert client.messages.kwargs["tool_choice"] == {"type": "tool", "name": "remember"}
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "hi"}}]})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await OpenAICompatProvider("local", "m", "http://ollama:11434/v1", http=http).complete(req)
+    assert seen["body"]["tool_choice"] == {"type": "function", "function": {"name": "remember"}}
+
+
+def test_shipped_yaml_has_the_consolidate_slot_on_a_cheap_model():
+    cfg = GatewayConfig.from_yaml(REPO / "services/gateway/providers.yaml")
+    slot = cfg.slots["consolidate"]
+    assert slot.active == "claude" and slot.providers["claude"].max_tokens >= 4096
+    assert slot.providers["claude"].price_in_per_m < cfg.slots["planner"].providers["claude"].price_in_per_m
+
+
+def test_from_yaml_fills_env_placeholders_with_defaults(tmp_path):
+    from gateway.schemas.config import expand_env
+
+    assert expand_env("a=${X:-dflt} b=${Y} c=${Z:-}", {"Y": "set"}) == "a=dflt b=set c="
+    assert expand_env("${X:-dflt}", {"X": ""}) == "dflt"  # compose passes empty for unset .env keys
+    y = tmp_path / "p.yaml"
+    y.write_text(
+        "planner:\n  active: ${PLANNER_PROVIDER:-claude}\n  claude: {model: m}\n"
+        "  vllm: {kind: vllm, endpoint: ${VLLM_ENDPOINT:-http://vllm:8000/v1}, model: ${VLLM_MODEL:-Qwen/Q}}\n"
+    )
+    cfg = GatewayConfig.from_yaml(y, env={})
+    assert cfg.slots["planner"].active == "claude" and cfg.slots["planner"].providers["vllm"].model == "Qwen/Q"
+    cfg = GatewayConfig.from_yaml(y, env={"PLANNER_PROVIDER": "vllm", "VLLM_ENDPOINT": "http://192.168.0.107:8000/v1"})
+    assert cfg.slots["planner"].active == "vllm"
+    assert cfg.slots["planner"].providers["vllm"].endpoint == "http://192.168.0.107:8000/v1"

@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import signal
 from typing import Any
 
+from pydantic import Field
+
+from mycelium_sdk import ServiceSettings
 from mycelium_sdk.subjects import EVENT_STREAM_SUBJECTS
 
 log = logging.getLogger("mycelium.tracer")
@@ -105,14 +107,22 @@ class Recorder:
         await nc.subscribe(">", cb=on_msg)
 
 
+class TracerSettings(ServiceSettings):
+    database_url: str = Field(validation_alias="DATABASE_URL")
+    event_retention_days: int = Field(
+        default=365, ge=1, validation_alias="EVENT_RETENTION_DAYS", description="JetStream keeps raw events this long"
+    )
+
+
 async def main() -> None:
     import asyncpg
     import nats
 
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    nc = await nats.connect(os.environ.get("NATS_URL", "nats://nats:4222"), name="tracer", max_reconnect_attempts=-1)
-    await ensure_stream(nc, int(os.environ.get("EVENT_RETENTION_DAYS", "365")))
-    pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=4)
+    s = TracerSettings()
+    logging.basicConfig(level=s.log_level)
+    nc = await nats.connect(s.nats_url, name="tracer", max_reconnect_attempts=-1)
+    await ensure_stream(nc, s.event_retention_days)
+    pool = await asyncpg.create_pool(s.database_url, min_size=1, max_size=4)
     await Recorder(pool).attach(nc)
     log.info("tracer recording")
     stop = asyncio.Event()

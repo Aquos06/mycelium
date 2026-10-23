@@ -64,7 +64,9 @@ async def test_recall_by_date_follows_links_from_the_day_summary():
     index = InMemoryIndex()
     await reindex(vault, index)
 
-    pack = await recall(vault, index, "who did I have dinner with last Wednesday?", today=TODAY, budget=8)
+    pack = (
+        await recall(vault, index, "who did I have dinner with last Wednesday?", today=TODAY, budget=8)
+    ).model_dump()
 
     assert pack["query"] == "who did I have dinner with last Wednesday?"
     assert pack["used"] == {"dates": ["2026-10-14"], "names": [], "embedding": False}
@@ -84,7 +86,7 @@ async def test_recall_by_name_opens_note_and_one_hop():
     index = InMemoryIndex()
     await reindex(vault, index)
 
-    pack = await recall(vault, index, "what did 小美 say about Tainan?", today=TODAY, budget=8)
+    pack = (await recall(vault, index, "what did 小美 say about Tainan?", today=TODAY, budget=8)).model_dump()
 
     assert pack["used"]["names"] == ["mei"] and pack["used"]["dates"] == []
     notes = [item["note"] for item in pack["items"]]
@@ -101,7 +103,7 @@ async def test_recall_always_includes_today_and_yesterday_when_they_exist():
     index = InMemoryIndex()
     await reindex(vault, index)
     # the fixture has a summary for 10-14 only; asking on 10-15 should include it as "yesterday"
-    pack = await recall(vault, index, "anything new?", today=date(2026, 10, 15), budget=8)
+    pack = (await recall(vault, index, "anything new?", today=date(2026, 10, 15), budget=8)).model_dump()
     assert [i["note"] for i in pack["items"]] == ["summaries/2026/10/14.md"]
     assert pack["items"][0]["why"] == "yesterday"
 
@@ -110,7 +112,9 @@ async def test_recall_respects_budget():
     vault = Vault(FIXTURES)
     index = InMemoryIndex()
     await reindex(vault, index)
-    pack = await recall(vault, index, "dinner with 小美 at Menya Xinyi last Wednesday", today=TODAY, budget=2)
+    pack = (
+        await recall(vault, index, "dinner with 小美 at Menya Xinyi last Wednesday", today=TODAY, budget=2)
+    ).model_dump()
     assert len(pack["items"]) == 2
     assert pack["budget"] == {"notes_opened": 2, "max": 2}
 
@@ -119,6 +123,6 @@ async def test_recall_with_nothing_to_go_on_returns_empty_pack():
     vault = Vault(FIXTURES)
     index = InMemoryIndex()
     await reindex(vault, index)
-    pack = await recall(vault, index, "tell me a joke", today=TODAY, budget=8)
+    pack = (await recall(vault, index, "tell me a joke", today=TODAY, budget=8)).model_dump()
     assert pack["items"] == []
     assert pack["used"]["embedding"] is False  # no embeddings yet; the fallback reports it was not used

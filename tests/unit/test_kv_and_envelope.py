@@ -137,3 +137,28 @@ async def test_bus_accepts_pydantic_models_directly():
     env = Envelope(source="gateway")
     await bus.publish("trace.x", env)
     assert seen == [env.model_dump(mode="json")] and bus.published[0][1]["source"] == "gateway"
+
+
+def test_input_schema_inlines_nested_models_and_trims():
+    from typing import Literal
+
+    from pydantic import Field
+
+    from mycelium_sdk import input_schema
+
+    class Item(BaseModel):
+        name: str = Field(description="slug")
+        kind: Literal["a", "b"] | None = None
+
+    class Digest(BaseModel):
+        summary: str
+        items: list[Item] = Field(default_factory=list)
+        main: Item | None = None
+
+    schema = input_schema(Digest)
+    assert "$defs" not in schema and "$ref" not in json.dumps(schema) and "title" not in json.dumps(schema)
+    item = schema["properties"]["items"]["items"]
+    assert item["type"] == "object" and item["required"] == ["name"]
+    assert item["properties"]["kind"] == {"enum": ["a", "b"], "type": "string"}
+    assert schema["properties"]["main"]["properties"]["name"] == {"description": "slug", "type": "string"}
+    assert schema["required"] == ["summary"]

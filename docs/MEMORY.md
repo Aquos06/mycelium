@@ -219,6 +219,25 @@ belong to (each with its `ev:<id>`), creates notes for new entities, and adds li
 monthly rollups are written from the days when the period closes. When a note's dated history grows
 long, consolidation rewrites its first paragraph (current state) and keeps the bullets.
 
+**Built (M3, `services/memory/consolidate.py`).** The pass is one forced tool call, `write_day`, on
+the gateway's `consolidate` slot (a cheap model; `providers.yaml`). The prompt carries the day's
+events, one line each with its id, and the known notes with their aliases; the answer is validated
+as `DayDigest` (summary, facts with the event ids they come from, state updates), and an invalid
+answer goes back to the model once with the field errors. It runs for yesterday at
+`MEMORY_CONSOLIDATE_AT` (03:30 local by default) and for any day on `rpc.memory.consolidate {day}`,
+`mctl consolidate 2026-10-14`. Idempotent per day: the summary is rewritten, a fact is skipped when
+the note already has one from the same event or the same line on that day, so a prompt change can be
+replayed over past days. A fact whose event ids the model got wrong is kept with `consolidation` as
+provenance. The prompt lists the facts already recorded for that day (from `remember` during the day,
+or an earlier run), so the model adds only what is new, and it is told that the assistant's own
+`out.*` replies are not facts about anyone. After the model answers, ordinary code wraps known names
+and aliases it left bare in `[[slug|name]]`, so the day summary links like the rest of the vault and
+recall can hop from it. Every run publishes `trace.consolidate` with counts and cost. Rollups come
+with M4.
+
+First live run (2026-10-23, a reasoning model on vLLM): a day of 44 events took one call of about
+25 s, the summary came back in English with links, and recall hopped from it to the notes it named.
+
 **Modules.** On `sys.module.deployed`, memory writes or updates `modules/<name>.md` from the
 manifest: purpose, the requests it answers, and the rule that exact data is fetched from the module.
 
@@ -341,10 +360,16 @@ wrong answer can be traced to the wrong note being opened, or the right one not 
 
 ## Build order
 
+`services/memory/` has the same shape as the gateway: `schemas/` holds every pydantic shape (vault
+notes and facts, index records, events, `rpc.memory.*` requests and replies, the recall pack, the
+consolidation digest and report); `index/` and `events/` are the two pluggable backends (in-memory
+and Postgres; jsonl and Postgres); `vault.py`, `indexer.py`, `recall.py`, `consolidate.py` and
+`schedule.py` are the logic; `service.py` the rpc handlers; `settings.py` the environment.
+
 | Step | What you get |
 |---|---|
 | **M1** (done) vault format, indexer, `notes` + `links` + `facts` + `summaries`, lookup ladder (exact, alias, trgm), `remember` / `lookup` / `recall` / `reindex`, module notes on deploy, `mctl remember` / `lookup` / `recall` | memory usable from the CLI; pure code, no model needed. `services/memory/`, tests in `tests/unit/test_memory_*.py` and `tests/integration/test_memory_pg.py`, fixtures in `tests/fixtures/` |
 | **M2** (done) Main v0: gateway (Claude or a local OpenAI-compatible model, `services/gateway/`), thread in NATS KV, planner with the recall pack and the `remember` / `recall` / `ask_module` / `ask` tools (`services/main/`), `trace.plan` per answer, Telegram in and out with `out.ask` buttons, `mctl chat` | the chatbot core with memory, end to end. Tests in `tests/unit/test_gateway.py`, `test_main.py`, `test_telegram.py` |
-| **M3** nightly consolidation, day summaries, automatic module notes | memory that grows without being told to |
+| **M3** (done) nightly consolidation (`services/memory/consolidate.py`, `schedule.py`): one forced tool call on the `consolidate` slot writes the day summary, dated facts with `ev:<id>`, new notes and state updates; `rpc.memory.consolidate` / `mctl consolidate` replay any day; `trace.consolidate` per run | memory that grows without being told to. Tests in `tests/unit/test_memory_consolidate.py` |
 | **M4** embeddings (local on GPU 1, or an API to start), week and month rollups, the `rerank` slot | fuzzy recall |
 | **M5** the eval set | you know when memory gets worse |

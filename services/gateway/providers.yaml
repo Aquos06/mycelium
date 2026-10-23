@@ -4,11 +4,15 @@
 # mistral, gemini, xai, openai_compat. A kind brings its default endpoint and key env var, so a provider
 # is usually just `kind` + `model`; set `endpoint` / `key_env` only to override, `headers` / `extra_body`
 # for vendor extras. Prices feed the monthly budget counter only: check the vendor's pricing page.
+#
+# ${VAR:-default} is filled from the gateway's environment (.env via compose), so this file stays the same
+# on every box: PLANNER_PROVIDER / CONSOLIDATE_PROVIDER pick the active provider, VLLM_ENDPOINT / VLLM_MODEL
+# point at a vLLM that is not the compose one.
 
 budget_usd_month: 30
 
 planner:
-  active: claude
+  active: ${PLANNER_PROVIDER:-claude}
   shadow: null              # e.g. `ollama` once `make local` runs it next to the gateway
   claude:
     kind: claude
@@ -24,5 +28,25 @@ planner:
     kind: ollama            # http://ollama:11434/v1, no key; docker compose --profile local
     model: qwen2.5:14b
   vllm:
-    kind: vllm              # http://vllm:8000/v1, no key; docker compose --profile gpu
-    model: Qwen/Qwen2.5-14B-Instruct
+    kind: vllm              # no key; a reasoning model spends tokens thinking before it answers, hence max_tokens
+    endpoint: ${VLLM_ENDPOINT:-http://vllm:8000/v1}
+    model: ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}
+    max_tokens: 4096
+
+consolidate:                # memory's nightly job: one structured call per day, so the cheap model
+  active: ${CONSOLIDATE_PROVIDER:-claude}
+  claude:
+    kind: claude
+    model: claude-haiku-5-5
+    max_tokens: 4096
+    price_in_per_m: 1.0
+    price_out_per_m: 5.0
+  ollama:
+    kind: ollama
+    model: qwen2.5:14b
+    max_tokens: 4096
+  vllm:
+    kind: vllm
+    endpoint: ${VLLM_ENDPOINT:-http://vllm:8000/v1}
+    model: ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}
+    max_tokens: 8192

@@ -11,6 +11,7 @@
     python scripts/mctl.py remember mei "moving to Tainan in December" --type person --alias 小美
     python scripts/mctl.py lookup 小美
     python scripts/mctl.py recall "who did I have dinner with last Wednesday?"
+    python scripts/mctl.py consolidate 2026-10-14                 # (re)run the nightly consolidation for a day
     python scripts/mctl.py chat "what did 小美 recommend?"        # talk to Main from the terminal
     python scripts/mctl.py answer <ref> "9pm"                     # answer an out.ask shown by chat
     python scripts/mctl.py usage                                  # gateway spend this month
@@ -88,6 +89,9 @@ async def run(args) -> int:
             )
         elif args.cmd == "reindex":
             reply = await bus.request("rpc.memory.reindex", {}, timeout=args.timeout)
+        elif args.cmd == "consolidate":
+            payload = {"day": args.day} if args.day else {}
+            reply = await bus.request("rpc.memory.consolidate", payload, timeout=args.timeout)
         elif args.cmd == "chat":
             return await converse(bus, "sense.chat", {"text": args.text}, args.thread, args.timeout)
         elif args.cmd == "answer":
@@ -141,6 +145,8 @@ def main() -> int:
     rc.add_argument("query")
     rc.add_argument("--budget", type=int, default=8)
     sub.add_parser("reindex")
+    co = sub.add_parser("consolidate", help="run the nightly consolidation for a day (default yesterday)")
+    co.add_argument("day", nargs="?", help="YYYY-MM-DD")
     ch = sub.add_parser("chat", help="send one message to Main on the cli channel and print the reply")
     ch.add_argument("text")
     ch.add_argument("--thread", default="default", help="conversation thread (history is kept per thread)")

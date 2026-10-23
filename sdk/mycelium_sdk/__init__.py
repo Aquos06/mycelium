@@ -7,6 +7,8 @@
 - module:    Module base runtime (subscribe, answer requests, emit, observe, intervals)
 - subjects:  subject naming helpers and wildcard matching
 - validation: one formatter for pydantic errors in rpc replies
+- schema:    a pydantic model as a tool's input_schema for a model
+- settings:  ServiceSettings, the base for each service's environment (pydantic-settings)
 """
 
 from .bus import Bus, InMemoryBus, Message, NatsBus, Payload
@@ -14,6 +16,8 @@ from .envelope import Envelope, new_id, now_iso
 from .kv import KV, InMemoryKV, NatsKV, kv_key
 from .manifest import Manifest, ManifestError, load_manifest, validate_manifest
 from .module import Module
+from .schema import input_schema
+from .settings import ServiceSettings, timezone
 from .subjects import subject_matches
 from .validation import validation_message
 
@@ -37,4 +41,7 @@ __all__ = [
     "Module",
     "subject_matches",
     "validation_message",
+    "input_schema",
+    "ServiceSettings",
+    "timezone",
 ]

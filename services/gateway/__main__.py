@@ -1,10 +1,7 @@
-"""Entrypoint: python -m gateway
+"""Entrypoint: python -m gateway. The environment is read and validated by GatewaySettings (settings.py).
 
-Env:
-    NATS_URL            nats://nats:4222
-    GATEWAY_CONFIG      /srv/gateway/providers.yaml
-    <KEY ENV VARS>      ANTHROPIC_API_KEY, OPENAI_API_KEY, ... whatever the configured kinds need
-                        (schemas/kinds.py) — the only place a model key lives
+Model keys are the exception: providers.yaml names the env var per provider (`key_env`) and the
+gateway reads it when it builds that provider. This is the only place a model key lives.
 """
 
 from __future__ import annotations
@@ -18,14 +15,16 @@ from mycelium_sdk import NatsBus, NatsKV
 
 from .schemas import GatewayConfig
 from .service import GatewayService
+from .settings import GatewaySettings
 
 log = logging.getLogger("mycelium.gateway")
 
 
 async def main() -> None:
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    config = GatewayConfig.from_yaml(os.environ.get("GATEWAY_CONFIG", "/srv/gateway/providers.yaml"))
-    bus = NatsBus(os.environ.get("NATS_URL", "nats://nats:4222"), name="gateway")
+    s = GatewaySettings()
+    logging.basicConfig(level=s.log_level)
+    config = GatewayConfig.from_yaml(s.config)
+    bus = NatsBus(s.nats_url, name="gateway")
     await bus.connect()
     kv = await NatsKV(bus.nc, "gateway").open()
     service = GatewayService(bus, config, kv)

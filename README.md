@@ -6,9 +6,10 @@ data and event hooks — and plugs it into the same bus as everything else.
 
 > Status: the chatbot core works end to end. Bus, event log, supervisor, module SDK + contract, one
 > example module, the builder, the memory service (markdown vault + index + recall, `docs/MEMORY.md`),
-> the model gateway (Claude or a local OpenAI-compatible model behind one slot config) and Main v0
-> (recall → plan with tools → reply, threads in NATS KV, a trace per answer). Next: the gate and
-> state snapshot in Main, nightly consolidation, perception. Design docs live in `docs/`:
+> the model gateway (Claude, OpenAI, Ollama, vLLM and more behind one slot config), Main v0
+> (recall → plan with tools → reply, threads in NATS KV, a trace per answer) and nightly memory
+> consolidation (a day of events → day summary, dated facts, new notes). Next: the gate and state
+> snapshot in Main, embeddings and rollups (M4), perception. Design docs live in `docs/`:
 > `VISION.md`, `ARCHITECTURE.md`, `MEMORY.md`.
 
 ## How it fits together
@@ -63,6 +64,7 @@ make deploy-hello               # supervisor builds + starts modules/hello
 .venv/bin/python scripts/mctl.py list
 .venv/bin/python scripts/mctl.py remember mei "moving to Tainan in December" --type person --alias 小美
 .venv/bin/python scripts/mctl.py recall "what did 小美 say about Tainan?"
+.venv/bin/python scripts/mctl.py consolidate 2026-10-14                   # (re)run the nightly consolidation for a day
 ```
 
 Without `ANTHROPIC_API_KEY`, `chat` still works end to end but Main answers that it cannot reach its
@@ -123,7 +125,7 @@ then add environment secrets, register a self-hosted runner labelled `mycelium`,
 
 | Command | Needs | Covers |
 |---|---|---|
-| `make test-unit` | nothing | SDK, manifest rules, module runtime, supervisor logic (fake Docker), tracer, scaffolding, memory (fixture vault + events), gateway (fake providers), Main (scripted planner), Telegram (fake API) |
+| `make test-unit` | nothing | SDK, manifest rules, module runtime, supervisor logic (fake Docker), tracer, scaffolding, memory (fixture vault + events, consolidation with a scripted model), gateway (fake providers), Main (scripted planner), Telegram (fake API) |
 | `make test-modules` | nothing | every `modules/*/tests` in isolation + a freshly scaffolded template |
 | `make test-integration` | NATS + Postgres | real bus, real module over the wire, JetStream stream and KV, registry, tracer, memory index + recall on Postgres |
 | `make test-e2e` | `make up` | the deployed system |
@@ -133,7 +135,7 @@ then add environment secrets, register a self-hosted runner labelled `mycelium`,
 ```
 sdk/                 mycelium_sdk package + module base image Dockerfile
 services/            supervisor, tracer, telegram
-services/memory/     vault (markdown notes) + Postgres index + recall; rpc.memory.*
+services/memory/     vault (markdown notes) + index + recall + nightly consolidation; rpc.memory.*: schemas/, index/, events/ like the gateway
 services/gateway/    model gateway; rpc.llm.*: schemas/ (config, wire shapes, usage, traces), providers/ (claude, openai_compat), service.py
 services/main/       the planner: thread (KV) + recall pack -> tools/ (pydantic args + handler each) -> out.say / out.ask, trace.plan
 template/            new-module template + CONTRACT.md
