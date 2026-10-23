@@ -1,0 +1,28 @@
+# Which provider serves each model slot (ARCHITECTURE §11). Keys are named by env var, never written here.
+#
+# Kinds (services/gateway/schemas/kinds.py): claude, openai, ollama, vllm, openrouter, groq, deepseek,
+# mistral, gemini, xai, openai_compat. A kind brings its default endpoint and key env var, so a provider
+# is usually just `kind` + `model`; set `endpoint` / `key_env` only to override, `headers` / `extra_body`
+# for vendor extras. Prices feed the monthly budget counter only: check the vendor's pricing page.
+
+budget_usd_month: 30
+
+planner:
+  active: claude
+  shadow: null              # e.g. `ollama` once `make local` runs it next to the gateway
+  claude:
+    kind: claude
+    model: claude-sonnet-5-5
+    price_in_per_m: 3.0
+    price_out_per_m: 15.0
+  openai:
+    kind: openai            # OPENAI_API_KEY
+    model: gpt-5-mini
+    price_in_per_m: 0.25
+    price_out_per_m: 2.0
+  ollama:
+    kind: ollama            # http://ollama:11434/v1, no key; docker compose --profile local
+    model: qwen2.5:14b
+  vllm:
+    kind: vllm              # http://vllm:8000/v1, no key; docker compose --profile gpu
+    model: Qwen/Qwen2.5-14B-Instruct

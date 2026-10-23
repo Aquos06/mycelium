@@ -1,6 +1,8 @@
 # mycelium core stack
-#   docker compose up -d --build              core: nats, postgres, tracer, supervisor, memory
+#   docker compose up -d --build              core: nats, postgres, tracer, supervisor, memory, gateway, main
 #   docker compose --profile telegram up -d   + telegram bridge (needs TELEGRAM_* in .env)
+#   docker compose --profile local up -d      + ollama (local models; `make local` also pulls one)
+#   docker compose --profile gpu up -d        + vllm (NVIDIA GPU box only)
 #   docker compose run --rm builder --name expenses --spec specs/expenses.md
 #
 # Modules are NOT in this file: the supervisor builds and starts them on request (rpc.sys.deploy).
@@ -96,6 +98,76 @@ services:
       postgres: { condition: service_healthy }
     restart: unless-stopped
 
+  gateway:
+    build: { context: ., dockerfile: services/gateway/Dockerfile }
+    image: ${REGISTRY:-mycelium}/gateway:${IMAGE_TAG:-dev}
+    environment:
+      NATS_URL: nats://nats:4222
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      GATEWAY_CONFIG: /srv/gateway/providers.yaml
+      # model keys live here and in the builder, nowhere else: one env var per kind (schemas/kinds.py)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+    volumes:
+      - ./services/gateway/providers.yaml:/srv/gateway/providers.yaml:ro   # which provider serves each slot
+    networks: [mesh]
+    depends_on:
+      nats: { condition: service_healthy }
+    restart: unless-stopped
+
+  main:
+    build: { context: ., dockerfile: services/main/Dockerfile }
+    image: ${REGISTRY:-mycelium}/main:${IMAGE_TAG:-dev}
+    environment:
+      NATS_URL: nats://nats:4222
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MAIN_TZ: ${MAIN_TZ:-${MEMORY_TZ:-Asia/Taipei}}   # one TZ for memory and Main unless MAIN_TZ is set
+      MAIN_LLM_TIMEOUT: ${MAIN_LLM_TIMEOUT:-90}        # raise for a cold local model (ollama first load)
+    networks: [mesh]
+    depends_on:
+      nats: { condition: service_healthy }
+    restart: unless-stopped
+
+  ollama:
+    profiles: [local]        # local planner / shadow (providers.yaml kind: ollama). `make local` pulls the model.
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}   # pin via OLLAMA_IMAGE in .env once chosen
+    environment:
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-16384}   # default is small; the planner prompt needs room
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+    volumes:
+      - ollama-models:/root/.ollama
+    networks: [mesh]
+    restart: unless-stopped
+
+  vllm:
+    profiles: [gpu]          # the GPU box only (providers.yaml kind: vllm); needs the NVIDIA container toolkit
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}  # pin via VLLM_IMAGE in .env once chosen
+    command:
+      - --model
+      - ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}
+      - --max-model-len
+      - ${VLLM_MAX_MODEL_LEN:-16384}
+      - --enable-auto-tool-choice     # tools need these two flags; the parser matches the model family
+      - --tool-call-parser
+      - ${VLLM_TOOL_PARSER:-hermes}
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+    networks: [mesh]
+    restart: unless-stopped
+
   telegram:
     profiles: [telegram]
     build: { context: ., dockerfile: services/telegram/Dockerfile }
@@ -135,3 +207,5 @@ volumes:
   nats-data:
   pg-data:
   vault:
+  ollama-models:
+  hf-cache:

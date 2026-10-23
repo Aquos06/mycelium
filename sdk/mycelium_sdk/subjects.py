@@ -6,13 +6,14 @@ Events (fire-and-forget, recorded in the JetStream EVENTS stream):
     mod.<module>.<event>        module events, e.g. mod.finance.expense.logged
     sys.<event>                 supervisor events, e.g. sys.module.deployed
     build.<event>               builder events, e.g. build.done
-    out.<channel>               outputs: out.notify, out.say, out.ha
-    trace.<kind>                decision traces
+    out.<kind>                  outputs: out.say (reply on a thread), out.notify, out.ask (choices), out.ha
+    trace.<kind>                decision traces: trace.plan, trace.llm, trace.feedback
 
 Requests (request/reply, NOT stored in the stream so JetStream never answers them):
     rpc.sys.<action>            supervisor: deploy, stop, logs, list, health
     rpc.mod.<module>.<action>   ask a module something
-    rpc.memory.<action>         memory service (later)
+    rpc.memory.<action>         memory service: remember, lookup, recall, reindex
+    rpc.llm.<action>            model gateway: complete, usage
 """
 
 EVENT_PREFIXES = ("sense.", "brain.", "mod.", "sys.", "build.", "out.", "trace.")

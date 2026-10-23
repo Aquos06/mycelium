@@ -17,4 +17,4 @@ select = ["E", "F", "I", "B", "UP"]
 ignore = ["E501", "B008"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["mycelium_sdk", "supervisor", "app", "tracer", "memory", "new_module"]
+known-first-party = ["mycelium_sdk", "supervisor", "app", "tracer", "memory", "gateway", "main", "telegram_bridge", "new_module"]

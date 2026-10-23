@@ -1,8 +1,9 @@
-.PHONY: help venv up down logs ps deploy-hello test test-unit test-modules test-integration test-e2e lint fmt build-module
+.PHONY: help venv up local down logs ps deploy-hello test test-unit test-modules test-integration test-e2e lint fmt build-module
 
 PY ?= python3
 VENV ?= .venv
 BIN = $(VENV)/bin
+MODEL ?= qwen2.5:14b
 
 help:
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -11,8 +12,12 @@ venv: ## create .venv with sdk + dev deps
 	$(PY) -m venv $(VENV)
 	$(BIN)/pip install -q -e sdk -r requirements-dev.txt
 
-up: ## start core stack (nats, postgres, tracer, supervisor)
+up: ## start core stack (nats, postgres, tracer, supervisor, memory, gateway, main)
 	docker compose up -d --build
+
+local: ## start Ollama next to the stack and pull MODEL (default qwen2.5:14b); then set kind: ollama active or shadow
+	docker compose --profile local up -d ollama
+	docker compose exec ollama ollama pull $(MODEL)
 
 down: ## stop core stack and any modules
 	-docker ps -q --filter label=mycelium.module | xargs -r docker rm -f

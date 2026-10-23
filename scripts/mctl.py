@@ -11,6 +11,9 @@
     python scripts/mctl.py remember mei "moving to Tainan in December" --type person --alias 小美
     python scripts/mctl.py lookup 小美
     python scripts/mctl.py recall "who did I have dinner with last Wednesday?"
+    python scripts/mctl.py chat "what did 小美 recommend?"        # talk to Main from the terminal
+    python scripts/mctl.py answer <ref> "9pm"                     # answer an out.ask shown by chat
+    python scripts/mctl.py usage                                  # gateway spend this month
 
 NATS_URL defaults to nats://localhost:4222 (the port docker compose exposes).
 """
@@ -23,7 +26,34 @@ import json
 import os
 import sys
 
-from mycelium_sdk import NatsBus
+from mycelium_sdk import Envelope, NatsBus
+
+CLI_CHANNEL = "cli"
+
+
+async def converse(bus: NatsBus, subject: str, payload: dict, thread: str, timeout: float) -> int:
+    """Publish one message on the cli channel and print Main's reply (out.say or out.ask) for that thread."""
+    got: asyncio.Queue = asyncio.Queue()
+
+    async def on_out(msg):
+        if msg.data.get("channel") == CLI_CHANNEL and str(msg.data.get("thread")) == thread:
+            await got.put((msg.subject, msg.data))
+
+    await bus.subscribe("out.say", on_out)
+    await bus.subscribe("out.ask", on_out)
+    await bus.flush()
+    await bus.publish(subject, Envelope(source=CLI_CHANNEL).stamp(channel=CLI_CHANNEL, thread=thread, **payload))
+    try:
+        out_subject, data = await asyncio.wait_for(got.get(), timeout)
+    except TimeoutError:
+        print(f"no reply within {timeout:.0f}s (is `main` running?)", file=sys.stderr)
+        return 1
+    print(data.get("text", ""))
+    if out_subject == "out.ask":
+        print(
+            f"\n[choices: {' / '.join(data.get('choices') or [])}]  answer with: mctl answer {data.get('ref')} <choice>"
+        )
+    return 0
 
 
 async def run(args) -> int:
@@ -58,6 +88,14 @@ async def run(args) -> int:
             )
         elif args.cmd == "reindex":
             reply = await bus.request("rpc.memory.reindex", {}, timeout=args.timeout)
+        elif args.cmd == "chat":
+            return await converse(bus, "sense.chat", {"text": args.text}, args.thread, args.timeout)
+        elif args.cmd == "answer":
+            return await converse(
+                bus, "sense.feedback", {"ref": args.ref, "answer": args.text}, args.thread, args.timeout
+            )
+        elif args.cmd == "usage":
+            reply = await bus.request("rpc.llm.usage", {}, timeout=args.timeout)
         elif args.cmd in ("deploy", "stop"):
             reply = await bus.request(f"rpc.sys.{args.cmd}", {"name": args.name}, timeout=args.timeout)
         elif args.cmd == "logs":
@@ -103,6 +141,14 @@ def main() -> int:
     rc.add_argument("query")
     rc.add_argument("--budget", type=int, default=8)
     sub.add_parser("reindex")
+    ch = sub.add_parser("chat", help="send one message to Main on the cli channel and print the reply")
+    ch.add_argument("text")
+    ch.add_argument("--thread", default="default", help="conversation thread (history is kept per thread)")
+    an = sub.add_parser("answer", help="answer a question Main asked (the ref printed by chat)")
+    an.add_argument("ref")
+    an.add_argument("text")
+    an.add_argument("--thread", default="default")
+    sub.add_parser("usage", help="gateway spend and calls this month")
     return asyncio.run(run(ap.parse_args()))
 
 

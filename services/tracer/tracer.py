@@ -76,7 +76,24 @@ class Recorder:
             is_request,
             json.dumps(data, default=str),
         )
+        if subject.startswith("trace.") and not is_request:
+            await self.record_trace(subject[len("trace.") :], data)
         return True
+
+    async def record_trace(self, kind: str, data: dict[str, Any]) -> None:
+        """trace.* also lands in `traces` (kind, ref = cause, decision). A vote updates the plan it rates."""
+        await self.pool.execute(
+            "INSERT INTO traces (kind, ref, decision) VALUES ($1, $2, $3::jsonb)",
+            kind,
+            str(data["cause"]) if data.get("cause") is not None else None,
+            json.dumps(data, default=str),
+        )
+        if kind == "feedback" and data.get("vote") is not None and data.get("ref"):
+            await self.pool.execute(
+                "UPDATE traces SET feedback = $1 WHERE kind = 'plan' AND decision->>'reply_id' = $2",
+                int(data["vote"]),
+                str(data["ref"]),
+            )
 
     async def attach(self, nc) -> None:
         async def on_msg(msg):

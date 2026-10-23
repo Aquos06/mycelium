@@ -357,9 +357,24 @@ undeclared events today.
 
 ---
 
-## 5. Main — new
+## 5. Main — v0 built (the chat path)
 
 The judgment. Everything that decides, nothing that stores.
+
+**v0** (`services/main/`): `sense.chat` → recall pack from memory + the thread from NATS KV → planner
+through the gateway with four tools (`remember`, `recall`, `ask_module`, `ask`) → `out.say`, or
+`out.ask` when the planner needs Hansen's choice → one `trace.plan` with the pack, the tool calls,
+usage and cost, linked by `cause`. `sense.feedback` answers continue the thread; votes are traced.
+When the gateway fails or the budget is spent, Main still replies that it cannot reach its model and
+keeps the turn. Not yet: the gate, the state snapshot, the policy database, spec drafting;
+`brain.observe` is only logged.
+
+Tools (`services/main/tools/`) are pydantic: one argument model and one async handler per tool,
+held in a `ToolRegistry`. The `input_schema` the planner sees is generated from the argument model,
+and every call is validated against the same model before it touches the bus; a rejected call goes
+back to the planner as a tool error with the field path. Adding a tool is one model, one handler,
+one line in the registry, and later a module's manifest requests register themselves the same way.
+No agent framework sits in this loop: the gateway, budget, trace and shadow hooks are the loop.
 
 | | |
 |---|---|
@@ -428,7 +443,8 @@ knows which one it is talking to.
 
 | Channel | Status |
 |---|---|
-| Telegram | exists |
+| Telegram | exists: text in as `sense.chat`, `out.say` replies, `out.ask` as buttons, taps back as `sense.feedback` |
+| CLI (`mctl chat`, channel `cli`) | exists: the same path from a terminal, for tests and development |
 | Own web app, chat tab (the same app holds the inbox, panels, settings and traces: §10) | new |
 | Voice: wake word + STT in, TTS out | new |
 | LINE, WhatsApp, others | new, as needed |
@@ -515,7 +531,7 @@ bubbles and streaming: wrap at the component level.
 
 ---
 
-## 11. Models — new (the provider layer)
+## 11. Models — v0 built (the planner slot)
 
 Every host component that needs a model talks to a **slot**, never to a vendor. Each slot has
 several interchangeable **providers**, and one config file says which is active. Swapping cloud for
@@ -543,21 +559,48 @@ Two mechanisms:
   which agent is in use.
 
 ```yaml
-# providers.yaml
+# services/gateway/providers.yaml (v0: the planner slot; embed, rerank, stt come with their users)
+budget_usd_month: 30
 planner:
   active: claude
-  claude: {model: claude-sonnet-4-5, key_env: ANTHROPIC_API_KEY}
-  local:  {endpoint: http://vllm:8000/v1, model: qwen2.5-32b}
-  shadow: local          # runs beside the active one, logs disagreements, never acts
-coder:
-  active: claude-code
-embed:
-  active: local
+  shadow: ollama         # runs beside the active one, logs disagreements, never acts
+  claude: {kind: claude, model: claude-sonnet-5-5, price_in_per_m: 3.0, price_out_per_m: 15.0}
+  openai: {kind: openai, model: gpt-5-mini, price_in_per_m: 0.25, price_out_per_m: 2.0}
+  ollama: {kind: ollama, model: qwen2.5:14b}               # http://ollama:11434/v1, no key
+  vllm:   {kind: vllm, model: Qwen/Qwen2.5-14B-Instruct}   # http://vllm:8000/v1, no key
+```
+
+A provider's **kind** names the vendor and brings its protocol, default endpoint and key env var
+(`schemas/kinds.py`), so an entry is usually `kind` + `model`. Kinds: `claude` (Anthropic SDK) and
+the OpenAI-protocol family `openai`, `ollama`, `vllm`, `openrouter`, `groq`, `deepseek`, `mistral`,
+`gemini`, `xai`, plus `openai_compat` for any other `/v1/chat/completions` server. `endpoint` and
+`key_env` override the defaults; `headers` and `extra_body` carry vendor extras. Ollama and vLLM run
+as compose profiles (`local`, `gpu`) next to the gateway.
+
+The gateway (`services/gateway/`) answers `rpc.llm.complete` (Anthropic message shape, tools
+included; converted for OpenAI-compatible endpoints) and `rpc.llm.usage`. Every call publishes
+`trace.llm` with provider, tokens, cost and latency, never the content. The monthly budget is a
+counter in NATS KV; once spent, calls fail fast and Main goes log-only. The builder's `coder` slot
+stays outside this file (see below).
+
+```
+services/gateway/
+  schemas/          pydantic shapes, nothing else: kinds (KindInfo per vendor), config (GatewayConfig >
+                    SlotConfig > ProviderConfig), completion (CompletionRequest, CompletionResult,
+                    CompletionReply), usage (UsageRecord, UsageReply), trace (LlmTrace, ShadowTrace:
+                    envelopes published on trace.llm*)
+  providers/        one complete() per vendor behind the Provider protocol: claude (Anthropic SDK),
+                    openai_compat (the generic /v1/chat/completions client; converts the wire shape both
+                    ways), openai, ollama, vllm (its quirks each); build_provider picks by kind
+  service.py        the bus handlers: budget check -> call -> cost -> trace -> shadow
+  providers.yaml    the seed config; a settings page edits the same models later over rpc.llm.config.*
 ```
 
 Rules:
 
 - One slot can run two providers at once: the **active** one acts, the **shadow** one only logs.
+  Shadow calls are still billed and traced (`trace.llm` with `shadow: true`); a cloud shadow counts
+  against the budget like any call.
   That is how the planner moves local (cross-cutting rule 10): run the local model in shadow until
   the traces show it agrees often enough, then flip `active`.
 - Local providers are themselves open software, wrapped the usual way (vLLM, Ollama, faster-whisper
@@ -721,6 +764,8 @@ real module exists.
 2. Prove the builder on `specs/expenses.md`, with allowlist and static checks in `verify()`.
 3. Model gateway with the Claude API and one local (Ollama or vLLM) provider, shadow mode included.
    Main: snapshot, gate, planner, spec drafting; `out.ask` approvals on the Telegram channel.
+   *Done: gateway (both providers, shadow, budget, traces), Main v0 planner with tools, threads in
+   KV, `out.ask` buttons on Telegram, `mctl chat`. Open: snapshot, gate, spec drafting.*
 4. Per-owner Postgres databases, roles and the `data` network (memory is the first owner that
    needs one). Memory: vault, index, `recall` / `remember` / `lookup`, nightly consolidation.
 5. Builder as a service, `change` mode with `/data` snapshots and rollback.
