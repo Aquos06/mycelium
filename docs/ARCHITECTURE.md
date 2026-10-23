@@ -665,6 +665,11 @@ Libraries, and the ones deliberately not used:
   loop grows past about a thousand lines.
 - **Builder:** the Claude Agent SDK is its framework; nothing on top.
 - **Bus:** `nats-py`, behind the SDK's `Bus` interface so modules never see it.
+- **pydantic for every record, no dataclasses.** Bus payloads, Postgres rows, YAML and jsonl are
+  validated and coerced on the way in, and the model is the documented contract (`RememberRequest`
+  is what Main codes against). In-process values (a parsed note, an index record, a recall match)
+  are pydantic too, so there is one way to define a record across the host. Construct them with
+  keyword arguments.
 - **Type checking:** `pyright` in the host lint and in the builder's `verify()`. Type errors are the
   cheapest class of generated-code bug to catch, and the manifest's payload declarations give it
   something to check against.

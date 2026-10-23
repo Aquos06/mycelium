@@ -7,9 +7,10 @@ opens the same notes, and the pack says why each one was opened.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
+
+from pydantic import BaseModel
 
 from .index import FUZZY_THRESHOLD, Index, NoteRecord
 from .vault import Vault
@@ -125,8 +126,7 @@ async def find_names(query: str, index: Index) -> list[tuple[str, str, str]]:
     return found
 
 
-@dataclass
-class Match:
+class Match(BaseModel):
     record: NoteRecord
     via: str  # exact | alias | fuzzy
     score: float
@@ -135,10 +135,10 @@ class Match:
 async def lookup(index: Index, name: str) -> list[Match]:
     """The lookup ladder for one name: exact -> alias -> fuzzy. Stops at the first rung that matches."""
     if r := await index.get(name):
-        return [Match(r, "exact", 1.0)]
+        return [Match(record=r, via="exact", score=1.0)]
     if rs := await index.by_alias(name):
-        return [Match(r, "alias", 1.0) for r in rs]
-    return [Match(r, "fuzzy", round(score, 3)) for r, score in await index.fuzzy(name, limit=3)]
+        return [Match(record=r, via="alias", score=1.0) for r in rs]
+    return [Match(record=r, via="fuzzy", score=round(score, 3)) for r, score in await index.fuzzy(name, limit=3)]
 
 
 def _clip(text: str) -> str:
