@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from mycelium_sdk.bus import Bus, Message
+from mycelium_sdk import Bus, Message, validation_message
 
 from .events import EventSource
 from .index import Index
@@ -115,10 +115,6 @@ class RecallRequest(BaseModel):
         return v
 
 
-def _validation_message(e: ValidationError) -> str:
-    return "; ".join(f"{'.'.join(str(p) for p in err['loc']) or 'request'}: {err['msg']}" for err in e.errors())
-
-
 class MemoryService:
     def __init__(
         self,
@@ -149,7 +145,7 @@ class MemoryService:
             try:
                 payload = {"ok": True, **await fn(msg.data)}
             except ValidationError as e:
-                payload = {"ok": False, "error": _validation_message(e)}
+                payload = {"ok": False, "error": validation_message(e)}
             except (ValueError, KeyError, TypeError) as e:
                 payload = {"ok": False, "error": str(e)}
             except Exception as e:  # never let a handler take the service down

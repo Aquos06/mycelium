@@ -7,9 +7,10 @@ Everything is namespaced by STACK so dev / staging / production can share one Do
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+from pydantic import BaseModel, ConfigDict
 
 from mycelium_sdk import Manifest
 
@@ -19,8 +20,9 @@ LABEL = "mycelium.module"
 STACK_LABEL = "mycelium.stack"
 
 
-@dataclass
-class ContainerInfo:
+class ContainerInfo(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     name: str
     status: str
     image: str
