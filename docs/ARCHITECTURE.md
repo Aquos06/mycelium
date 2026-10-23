@@ -568,6 +568,9 @@ planner:
   openai: {kind: openai, model: gpt-5-mini, price_in_per_m: 0.25, price_out_per_m: 2.0}
   ollama: {kind: ollama, model: qwen2.5:14b}               # http://ollama:11434/v1, no key
   vllm:   {kind: vllm, model: Qwen/Qwen2.5-14B-Instruct}   # http://vllm:8000/v1, no key
+consolidate:             # memory's nightly job: one structured call per day, on the cheap model
+  active: claude
+  claude: {kind: claude, model: claude-haiku-5-5, max_tokens: 4096, price_in_per_m: 1.0, price_out_per_m: 5.0}
 ```
 
 A provider's **kind** names the vendor and brings its protocol, default endpoint and key env var
@@ -712,7 +715,9 @@ Libraries, and the ones deliberately not used:
   validated and coerced on the way in, and the model is the documented contract (`RememberRequest`
   is what Main codes against). In-process values (a parsed note, an index record, a recall match)
   are pydantic too, so there is one way to define a record across the host. Construct them with
-  keyword arguments.
+  keyword arguments. Each service's environment is one `Settings` model as well (`pydantic-settings`,
+  `mycelium_sdk.settings.ServiceSettings`): every field names its env var, defaults and validation
+  live on the field, and a bad value fails at start with the variable's name, not at 3 a.m.
 - **Type checking:** `pyright` in the host lint and in the builder's `verify()`. Type errors are the
   cheapest class of generated-code bug to catch, and the manifest's payload declarations give it
   something to check against.
@@ -768,6 +773,8 @@ real module exists.
    KV, `out.ask` buttons on Telegram, `mctl chat`. Open: snapshot, gate, spec drafting.*
 4. Per-owner Postgres databases, roles and the `data` network (memory is the first owner that
    needs one). Memory: vault, index, `recall` / `remember` / `lookup`, nightly consolidation.
+   *Done: memory v1 (M1) and nightly consolidation (M3: `rpc.memory.consolidate`, a forced tool call
+   on the `consolidate` slot, `trace.consolidate`). Open: per-owner databases and the `data` network.*
 5. Builder as a service, `change` mode with `/data` snapshots and rollback.
 6. Bridges and `wrap` mode. Connectors first (Google: Gmail, Calendar, Drive under one consent,
    CLI OAuth flow so the web app is not needed yet), then Home Assistant and Frigate; secrets and
