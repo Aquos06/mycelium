@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-for p in ("services/supervisor", "services/tracer", "scripts"):
+for p in ("services/supervisor", "services/tracer", "services", "scripts"):  # "services" -> import memory
     sys.path.insert(0, str(REPO / p))
 
 NATS_URL = os.environ.get("NATS_URL")
