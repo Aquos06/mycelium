@@ -148,6 +148,8 @@ class OpenAICompatProvider:
         }
         if req.tools:
             body["tools"] = to_openai_tools(req.tools)
+        if req.tool_choice:
+            body["tool_choice"] = {"type": "function", "function": {"name": req.tool_choice}}
         if req.temperature is not None:
             body["temperature"] = req.temperature
         body.update(self.extra_body)

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 ROLES = ("user", "assistant")
 
@@ -36,6 +36,7 @@ class CompletionRequest(BaseModel):
     system: str = ""
     messages: list[dict[str, Any]] = Field(min_length=1)
     tools: list[dict[str, Any]] = Field(default_factory=list)
+    tool_choice: str | None = None  # force this tool (by name): the reply is then always that tool call
     max_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=None, ge=0, le=2)
     cause: str | None = None  # id of the message this call serves; copied to trace.llm
@@ -59,6 +60,12 @@ class CompletionRequest(BaseModel):
             if not t.get("name") or not isinstance(t.get("input_schema"), dict):
                 raise ValueError(f"tools[{i}] needs a name and an input_schema")
         return v
+
+    @model_validator(mode="after")
+    def _tool_choice_is_offered(self) -> CompletionRequest:
+        if self.tool_choice is not None and self.tool_choice not in {t["name"] for t in self.tools}:
+            raise ValueError(f"tool_choice {self.tool_choice!r} is not one of the tools offered")
+        return self
 
 
 class CompletionResult(BaseModel):

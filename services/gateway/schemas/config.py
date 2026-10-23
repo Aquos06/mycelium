@@ -18,6 +18,8 @@ These same models are what a settings page will edit later (rpc.llm.config.*); t
 
 from __future__ import annotations
 
+import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
@@ -137,6 +139,20 @@ class GatewayConfig(BaseModel):
         return self
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> GatewayConfig:
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-        return cls.model_validate(raw)
+    def from_yaml(cls, path: str | Path, env: Mapping[str, str] | None = None) -> GatewayConfig:
+        """Load providers.yaml; `${VAR}` and `${VAR:-default}` in it are filled from the environment first."""
+        text = expand_env(Path(path).read_text(encoding="utf-8"), os.environ if env is None else env)
+        return cls.model_validate(yaml.safe_load(text) or {})
+
+
+_ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def expand_env(text: str, env: Mapping[str, str]) -> str:
+    """Shell-style `${VAR}` / `${VAR:-default}`; an unset or empty variable takes the default (or nothing)."""
+
+    def sub(m: re.Match[str]) -> str:
+        value = env.get(m.group(1), "")
+        return value if value != "" else (m.group(2) or "")
+
+    return _ENV_RE.sub(sub, text)

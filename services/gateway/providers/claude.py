@@ -71,6 +71,8 @@ class ClaudeProvider:
             kwargs["system"] = req.system
         if req.tools:
             kwargs["tools"] = req.tools
+        if req.tool_choice:
+            kwargs["tool_choice"] = {"type": "tool", "name": req.tool_choice}
         if req.temperature is not None:
             kwargs["temperature"] = req.temperature
         try:
