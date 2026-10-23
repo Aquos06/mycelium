@@ -8,11 +8,9 @@ from __future__ import annotations
 
 import re
 from datetime import date, timedelta
-from typing import Any
 
-from pydantic import BaseModel
-
-from .index import FUZZY_THRESHOLD, Index, NoteRecord
+from .index import FUZZY_THRESHOLD, Index
+from .schemas import Match, NoteRecord, RecallBudget, RecallItem, RecallPack, RecallUsed
 from .vault import Vault
 
 WEEKDAYS = {
@@ -126,12 +124,6 @@ async def find_names(query: str, index: Index) -> list[tuple[str, str, str]]:
     return found
 
 
-class Match(BaseModel):
-    record: NoteRecord
-    via: str  # exact | alias | fuzzy
-    score: float
-
-
 async def lookup(index: Index, name: str) -> list[Match]:
     """The lookup ladder for one name: exact -> alias -> fuzzy. Stops at the first rung that matches."""
     if r := await index.get(name):
@@ -157,17 +149,17 @@ async def _excerpt(index: Index, record: NoteRecord, days: list[date], words: se
     return _clip(record.summary)
 
 
-async def recall(vault: Vault, index: Index, query: str, today: date, budget: int = 8) -> dict[str, Any]:
-    items: list[dict[str, str]] = []
+async def recall(vault: Vault, index: Index, query: str, today: date, budget: int = 8) -> RecallPack:
+    items: list[RecallItem] = []
     opened: set[str] = set()
-    used: dict[str, Any] = {"dates": [], "names": [], "embedding": False}
+    used = RecallUsed()
     words = {w for w in re.findall(r"\w+", query.lower()) if len(w) >= 3}
     days: list[date] = []
 
     def add(path: str, why: str, excerpt: str) -> bool:
         if len(items) >= budget or path in opened:
             return False
-        items.append({"note": path, "why": why, "excerpt": excerpt})
+        items.append(RecallItem(note=path, why=why, excerpt=excerpt))
         opened.add(path)
         return True
 
@@ -181,7 +173,7 @@ async def recall(vault: Vault, index: Index, query: str, today: date, budget: in
 
     # 1. dates: the day summary, what it links to, then anything else with a fact that day
     for phrase, d in resolve_dates(query, today):
-        used["dates"].append(d.isoformat())
+        used.dates.append(d.isoformat())
         days.append(d)
         s = await index.summary("day", d.isoformat())
         if s:
@@ -193,7 +185,7 @@ async def recall(vault: Vault, index: Index, query: str, today: date, budget: in
 
     # 2. names: the note, then one hop
     for term, name, via in await find_names(query, index):
-        used["names"].append(name)
+        used.names.append(name)
         record = await index.get(name)
         if record is None:
             continue
@@ -211,4 +203,4 @@ async def recall(vault: Vault, index: Index, query: str, today: date, budget: in
             add(s.path, why, _clip(s.text))
 
     # 4. embeddings: not wired yet (M4); the pack says so
-    return {"query": query, "items": items, "used": used, "budget": {"notes_opened": len(items), "max": budget}}
+    return RecallPack(query=query, items=items, used=used, budget=RecallBudget(notes_opened=len(items), max=budget))

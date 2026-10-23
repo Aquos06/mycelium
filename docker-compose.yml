@@ -90,6 +90,7 @@ services:
       MEMORY_VAULT_DIR: /vault
       MEMORY_SCHEMA: memory
       MEMORY_TZ: ${MEMORY_TZ:-Asia/Taipei}
+      MEMORY_CONSOLIDATE_AT: ${MEMORY_CONSOLIDATE_AT:-03:30}   # nightly consolidation, local time; empty disables
     volumes:
       - vault:/vault       # the markdown vault: the curated memory, human-editable (docs/MEMORY.md)
     networks: [mesh]
@@ -105,6 +106,11 @@ services:
       NATS_URL: nats://nats:4222
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       GATEWAY_CONFIG: /srv/gateway/providers.yaml
+      # ${VAR:-default} placeholders in providers.yaml: which provider is active, where a LAN vLLM lives
+      PLANNER_PROVIDER: ${PLANNER_PROVIDER:-}
+      CONSOLIDATE_PROVIDER: ${CONSOLIDATE_PROVIDER:-}
+      VLLM_ENDPOINT: ${VLLM_ENDPOINT:-}
+      VLLM_MODEL: ${VLLM_MODEL:-}
       # model keys live here and in the builder, nowhere else: one env var per kind (schemas/kinds.py)
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

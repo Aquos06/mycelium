@@ -60,7 +60,9 @@ async def test_recall_against_postgres_matches_the_unit_example(schema):
     await index.ensure_schema()
     vault = Vault(FIXTURES / "vault")
     await reindex(vault, index)
-    pack = await recall(vault, index, "who did I have dinner with last Wednesday?", today=TODAY, budget=8)
+    pack = (
+        await recall(vault, index, "who did I have dinner with last Wednesday?", today=TODAY, budget=8)
+    ).model_dump()
     assert pack["items"][0]["note"] == "summaries/2026/10/14.md"
     assert {i["note"] for i in pack["items"][1:]} >= {"people/mei.md", "places/ramen-place-xinyi.md"}
 

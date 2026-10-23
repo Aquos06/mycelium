@@ -1,17 +1,7 @@
 """The vault: a folder of markdown notes, one per entity, plus day/week/month summaries.
 
-Files are the truth. Everything in the index is derived from what this module parses.
-
-Note layout (canonical, what render_note writes):
-
-    ---
-    type: person
-    aliases: [mei, 小美]
-    ---
-    First paragraph is the current state. It may contain [[links]].
-
-    - 2026-10-14 a dated fact, newest first, with provenance  (ev:48213)
-    - 2026-09-02 another one  (hansen)
+Files are the truth. Everything in the index is derived from what this module parses. The shapes
+(Note, Fact, Summary) live in schemas/vault.py; this module reads and writes them.
 """
 
 from __future__ import annotations
@@ -22,7 +12,10 @@ from datetime import date
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+
+from .schemas import NAME_RE, Fact, Note, NoteType, Summary
+
+__all__ = ["NAME_RE", "Fact", "Note", "NoteType", "Summary", "Vault"]
 
 TYPES = ("self", "person", "place", "project", "thing", "routine", "module")
 FOLDER_TYPES = {
@@ -36,8 +29,6 @@ FOLDER_TYPES = {
 TYPE_FOLDERS = {v: k for k, v in FOLDER_TYPES.items()}
 SOURCES = ("hansen", "consolidation", "sys")
 
-# note names are file stems: lowercase slug or CJK, no separators that could leave the folder
-NAME_RE = re.compile(r"^[a-z0-9぀-ヿ一-鿿][a-z0-9぀-ヿ一-鿿_-]{0,63}$")
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 FACT_RE = re.compile(r"^- (\d{4}-\d{2}-\d{2}) (.*?)(?:\s+\((ev:\d+|hansen|consolidation|sys)\))?\s*$")
 DAY_RE = re.compile(r"^summaries/(\d{4})/(\d{2})/(\d{2})\.md$")
@@ -45,30 +36,8 @@ WEEK_RE = re.compile(r"^summaries/(\d{4})/W(\d{2})\.md$")
 MONTH_RE = re.compile(r"^summaries/(\d{4})/(\d{2})\.md$")
 
 
-class Fact(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    day: date
-    text: str
-    source: str | None = None  # ev:<id> | hansen | consolidation | sys
-
-
-class Note(BaseModel):
-    name: str
-    path: str
-    type: str
-    aliases: list[str] = Field(default_factory=list)
-    summary: str = ""
-    links: list[str] = Field(default_factory=list)  # derived from [[links]] in summary and facts
-    facts: list[Fact] = Field(default_factory=list)
-
-
-class Summary(BaseModel):
-    period: str  # day | week | month
-    key: str  # 2026-10-14 | 2026-W42 | 2026-10
-    path: str
-    text: str
-    links: list[str] = Field(default_factory=list)
+def summary_path(day: date) -> str:
+    return f"summaries/{day:%Y/%m/%d}.md"
 
 
 def type_for_path(path: str) -> str:
@@ -200,6 +169,12 @@ class Vault:
         p = self._resolve(note.path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(render_note(note), encoding="utf-8")
+
+    def write_text(self, path: str, text: str) -> None:
+        """A summary file (notes go through write(), which renders them)."""
+        p = self._resolve(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
 
     def paths(self) -> list[str]:
         if not self.root.is_dir():

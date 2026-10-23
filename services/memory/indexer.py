@@ -5,16 +5,9 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 
-from pydantic import BaseModel
-
-from .index import Index, NoteRecord, SummaryRecord
+from .index import Index
+from .schemas import IndexStats, NoteRecord, SummaryRecord
 from .vault import Vault, parse_note, parse_summary
-
-
-class IndexStats(BaseModel):
-    notes: int = 0
-    summaries: int = 0
-    skipped: int = 0
 
 
 def content_hash(text: str) -> str:

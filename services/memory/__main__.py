@@ -1,26 +1,19 @@
-"""Entrypoint: python -m memory
-
-Env:
-    NATS_URL              nats://nats:4222
-    MEMORY_DATABASE_URL   falls back to DATABASE_URL until memory gets its own database (ARCHITECTURE §12)
-    MEMORY_SCHEMA         memory
-    MEMORY_VAULT_DIR      /vault
-    MEMORY_TZ             Asia/Taipei   (local day boundaries for consolidation)
-"""
+"""Entrypoint: python -m memory. The environment is read and validated by MemorySettings (settings.py)."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import signal
-from pathlib import Path
 
 from mycelium_sdk import NatsBus
 
+from .consolidate import Consolidator
 from .events import PostgresEvents
 from .index import PostgresIndex
+from .schedule import nightly
 from .service import MemoryService
+from .settings import MemorySettings
 from .vault import Vault
 
 log = logging.getLogger("mycelium.memory")
@@ -29,25 +22,37 @@ log = logging.getLogger("mycelium.memory")
 async def main() -> None:
     import asyncpg
 
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    dsn = os.environ.get("MEMORY_DATABASE_URL") or os.environ["DATABASE_URL"]
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4)
-    index = PostgresIndex(pool, schema=os.environ.get("MEMORY_SCHEMA", "memory"))
+    s = MemorySettings()
+    logging.basicConfig(level=s.log_level)
+    pool = await asyncpg.create_pool(s.database_url, min_size=1, max_size=4)
+    index = PostgresIndex(pool, schema=s.schema_name)
     await index.ensure_schema()
+    s.vault_dir.mkdir(parents=True, exist_ok=True)
 
-    vault_dir = Path(os.environ.get("MEMORY_VAULT_DIR", "/vault"))
-    vault_dir.mkdir(parents=True, exist_ok=True)
-
-    bus = NatsBus(os.environ.get("NATS_URL", "nats://nats:4222"), name="memory")
-    service = MemoryService(bus, Vault(vault_dir), index, events=PostgresEvents(pool))
+    bus = NatsBus(s.nats_url, name="memory")
+    vault = Vault(s.vault_dir)
+    consolidator = Consolidator(bus, vault, index, PostgresEvents(pool), tz=s.tz)
+    service = MemoryService(bus, vault, index, consolidator=consolidator)
     await service.start()
-    log.info("memory ready: vault=%s schema=%s", vault_dir, index.s)
 
     stop = asyncio.Event()
+    schedule = (
+        asyncio.create_task(nightly(consolidator.run, s.consolidate_at, s.tz, stop)) if s.consolidate_at else None
+    )
+    log.info(
+        "memory ready: vault=%s schema=%s tz=%s consolidate_at=%s",
+        s.vault_dir,
+        s.schema_name,
+        s.tz,
+        s.consolidate_at or "off",
+    )
+
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
     await stop.wait()
+    if schedule:
+        await schedule
     await bus.close()
     await pool.close()
 
