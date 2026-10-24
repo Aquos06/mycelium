@@ -38,13 +38,16 @@ def _inline(node: Any, defs: dict[str, Any], depth: int) -> Any:
     return {k: _inline(v, defs, depth) for k, v in node.items()}
 
 
-def _trim(node: Any) -> Any:
+def _trim(node: Any, properties: bool = False) -> Any:
+    """`properties` is True when the dict's keys are field names (a field may be called title or default)."""
     if isinstance(node, list):
         return [_trim(n) for n in node]
     if not isinstance(node, dict):
         return node
+    if properties:
+        return {k: _trim(v) for k, v in node.items()}
     if "anyOf" in node:
         options = [o for o in node["anyOf"] if o != {"type": "null"}]
         if len(options) == 1:  # Optional[X]: just describe X
             node = {k: v for k, v in {**node, **options[0]}.items() if k != "anyOf"}
-    return {k: _trim(v) for k, v in node.items() if k not in ("title", "default")}
+    return {k: _trim(v, properties=(k == "properties")) for k, v in node.items() if k not in ("title", "default")}
