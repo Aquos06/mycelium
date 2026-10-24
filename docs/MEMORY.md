@@ -322,7 +322,7 @@ No embedding was used. It would have been, had the question been "that place wit
 
 Recall has two kinds of work. **Finding candidates** (dates, names, links) needs no model: it is
 exact, free and testable, and a model that returns choices rather than text could not do it anyway.
-**Deciding among candidates** is score-shaped, and that is what the `rerank` slot (ARCHITECTURE §11)
+**Deciding among candidates** is score-shaped, and that is what the `decide` slot (ARCHITECTURE §11)
 is for:
 
 | Decision | Input | Returns |
@@ -334,11 +334,14 @@ is for:
 The first decision rides on the gate call Main already makes for every event (one more field in the
 same parallel call), so recall only runs when it is useful.
 
-Providers for the slot: **Jev** (cloud, scores in ~100 ms) and a **local cross-encoder reranker**
-(`bge-reranker-v2-m3` or similar on GPU 1, a few milliseconds). Note summaries are the most personal
-text the system has, so for recall the local reranker is `active` and Jev is `shadow`, the reverse of
-the gate. Recall v0 ships without the slot at all; it goes in when the logs show candidates exceeding
-the budget often or ambiguity cases piling up.
+Providers for the slot: **Laya** (`infra/laya/`, an open 421M decision model behind `laya-serve`:
+choice, score and yes/no questions over a state, a probability per option, one forward pass, tens of
+milliseconds on the GPU box) and **Jev** (cloud, the same question shapes). Note summaries are the most
+personal text the system has, so Laya is `active` and Jev is `shadow`. Recall v0 shipped without the
+slot; M4 puts it in and makes recall **multi-hop**: embeddings and the exact rungs only propose
+candidates, Laya decides which kind of memory the question needs, which candidates matter, and whether
+to hop again from the chosen notes (their links, their facts' entities, their neighbours) until the
+budget is spent or nothing new scores above the bar. Every decision lands in the pack's `why`.
 
 ## 5. How Main uses memory
 
@@ -374,5 +377,5 @@ and Postgres; jsonl and Postgres); `vault.py`, `indexer.py`, `recall.py`, `conso
 | **M1** (done) vault format, indexer, `notes` + `links` + `facts` + `summaries`, lookup ladder (exact, alias, trgm), `remember` / `lookup` / `recall` / `reindex`, module notes on deploy, `mctl remember` / `lookup` / `recall` | memory usable from the CLI; pure code, no model needed. `services/memory/`, tests in `tests/unit/test_memory_*.py` and `tests/integration/test_memory_pg.py`, fixtures in `tests/fixtures/` |
 | **M2** (done) Main v0: gateway (Claude or a local OpenAI-compatible model, `services/gateway/`), thread in NATS KV, planner with the recall pack and the `remember` / `recall` / `ask_module` / `ask` tools (`services/main/`), `trace.plan` per answer, Telegram in and out with `out.ask` buttons, `mctl chat` | the chatbot core with memory, end to end. Tests in `tests/unit/test_gateway.py`, `test_main.py`, `test_telegram.py` |
 | **M3** (done) nightly consolidation (`services/memory/consolidate.py`, `schedule.py`): one forced tool call on the `consolidate` slot writes the day summary, dated facts with `ev:<id>`, new notes and state updates; `rpc.memory.consolidate` / `mctl consolidate` replay any day; `trace.consolidate` per run | memory that grows without being told to. Tests in `tests/unit/test_memory_consolidate.py` |
-| **M4** embeddings (local on GPU 1, or an API to start), week and month rollups, the `rerank` slot | fuzzy recall |
+| **M4** week and month rollups, embeddings as a candidate source, the `decide` slot on Laya (`infra/laya/`) driving multi-hop recall | fuzzy recall that can explain each hop |
 | **M5** the eval set | you know when memory gets worse |

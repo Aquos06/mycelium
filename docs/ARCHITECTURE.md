@@ -539,8 +539,8 @@ local, or one coding agent for another, is a config change, not a code change.
 
 | Slot | Used by | Providers | Default now |
 |---|---|---|---|
-| `gate` | Main | Jev (cloud); later a small local classifier trained on traces | Jev |
-| `rerank` | Memory recall | local cross-encoder (`bge-reranker-v2-m3`, GPU 1); Jev | local active, Jev shadow: note summaries are the most personal text the system has |
+| `gate` | Main | Laya (open decision model, 421M, `infra/laya/` on the GPU box); Jev (cloud) | Laya active, Jev shadow |
+| `decide` | Memory recall | Laya: which kind of memory, which candidates matter, hop again?; a cross-encoder (`bge-reranker-v2-m3`) for pure relevance later; Jev | Laya active, Jev shadow: note summaries are the most personal text the system has |
 | `planner` | Main | Claude API (token), vLLM or Ollama on GPU 0 (OpenAI-compatible endpoint) | Claude |
 | `embed` | Memory | local model on GPU 1, or an API | local |
 | `stt` / `tts` | Voice channel | faster-whisper / Piper (local) | local |
@@ -559,7 +559,7 @@ Two mechanisms:
   which agent is in use.
 
 ```yaml
-# services/gateway/providers.yaml (v0: the planner slot; embed, rerank, stt come with their users)
+# services/gateway/providers.yaml (v0: the planner slot; embed, decide, stt come with their users)
 budget_usd_month: 30
 planner:
   active: claude
