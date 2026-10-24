@@ -142,7 +142,7 @@ template/            new-module template + CONTRACT.md
 modules/             deployed modules (hello is hand-written, the rest get generated)
 builder/             spec -> module via Claude Agent SDK
 specs/               needs written as specs (the builder's input)
-db/init.sql          events, modules, traces
+sdk/mycelium_sdk/db/ SQLAlchemy async engine + Alembic runner; the core tables (events, modules, traces) and their migrations
 tests/               unit, integration, e2e
 scripts/             mctl (CLI), new_module, test_modules, setup_github
 ```

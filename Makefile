@@ -1,4 +1,4 @@
-.PHONY: help venv up local down logs ps deploy-hello test test-unit test-modules test-integration test-e2e lint fmt build-module
+.PHONY: help venv up local down logs ps deploy-hello migrate migration test test-unit test-modules test-integration test-e2e lint fmt build-module
 
 PY ?= python3
 VENV ?= .venv
@@ -18,6 +18,14 @@ up: ## start core stack (nats, postgres, tracer, supervisor, memory, gateway, ma
 local: ## start Ollama next to the stack and pull MODEL (default qwen2.5:14b); then set kind: ollama active or shadow
 	docker compose --profile local up -d ollama
 	docker compose exec ollama ollama pull $(MODEL)
+
+migrate: ## run every owner's Alembic tree to head on the local Postgres (reads .env)
+	set -a; . ./.env; set +a; $(BIN)/python scripts/migrate.py
+
+migration: ## OWNER=core|memory NAME=add_x -> autogenerate a revision from the Table metadata against the local Postgres
+	set -a; . ./.env; set +a; export DATABASE_URL=$${DATABASE_URL:-postgresql://mycelium:$$POSTGRES_PASSWORD@localhost:$${PG_PORT:-5432}/mycelium}; \
+	$(BIN)/alembic -c $(if $(filter core,$(OWNER)),sdk/mycelium_sdk/db/migrations/core,services/memory/migrations)/alembic.ini \
+	  $(if $(filter core,$(OWNER)),,-x schema=memory) revision --autogenerate --rev-id $$(date +%Y%m%d%H%M%S) -m "$(NAME)"
 
 down: ## stop core stack and any modules
 	-docker ps -q --filter label=mycelium.module | xargs -r docker rm -f
