@@ -1,4 +1,4 @@
-"""The nightly tick: at a local time each day, consolidate yesterday.
+"""The nightly tick: at a local time each day, consolidate yesterday; at start, catch up the days that were missed.
 
 The time comes from MemorySettings.consolidate_at (MEMORY_CONSOLIDATE_AT=03:30; empty disables it,
 `mctl consolidate` still works).
@@ -47,3 +47,25 @@ async def nightly(
             await run(day)
         except Exception:
             log.exception("consolidation for %s failed", day)
+
+
+async def catch_up(
+    run: Callable[[date], Awaitable[object]],
+    has_summary: Callable[[date], Awaitable[bool]],
+    today: date,
+    days: int = 7,
+) -> list[date]:
+    """Consolidate the recent days that have no summary yet, oldest first: a restart or an outage across
+    the scheduled time must not lose a day. Days without events are cheap: run() skips them."""
+    done: list[date] = []
+    for back in range(days, 0, -1):
+        day = today - timedelta(days=back)
+        if await has_summary(day):
+            continue
+        log.info("catching up: no summary for %s", day)
+        try:
+            await run(day)
+            done.append(day)
+        except Exception:
+            log.exception("catch-up consolidation for %s failed", day)
+    return done

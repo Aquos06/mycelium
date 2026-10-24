@@ -34,7 +34,10 @@ class RememberArgs(BaseModel):
     @classmethod
     def _slug(cls, v: str) -> str:
         """The slug, also when the planner hands back the path it saw in the pack (people/mei.md -> mei)."""
-        v = v.strip().lower().removesuffix(".md").rsplit("/", 1)[-1]
+        v = v.strip().lower()
+        if v.startswith("summaries/"):
+            raise ValueError("a day summary is not a note; remember the person, place or thing it is about")
+        v = v.removesuffix(".md").rsplit("/", 1)[-1]
         if not v:
             raise ValueError("note is required")
         return v

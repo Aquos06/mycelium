@@ -162,3 +162,18 @@ def test_input_schema_inlines_nested_models_and_trims():
     assert item["properties"]["kind"] == {"enum": ["a", "b"], "type": "string"}
     assert schema["properties"]["main"]["properties"]["name"] == {"description": "slug", "type": "string"}
     assert schema["required"] == ["summary"]
+
+
+def test_input_schema_keeps_fields_named_title_or_default():
+    from pydantic import Field as F
+
+    from mycelium_sdk import input_schema
+
+    class NoteArgs(BaseModel):
+        title: str = F(description="the headline")
+        default: int = 3
+        body: str = ""
+
+    schema = input_schema(NoteArgs)
+    assert set(schema["properties"]) == {"title", "default", "body"} and schema["required"] == ["title"]
+    assert schema["properties"]["title"] == {"description": "the headline", "type": "string"}

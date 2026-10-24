@@ -172,6 +172,9 @@ class GatewayService:
             await self._trace(req, name, ok=False, latency_ms=_ms(t0), error=error, shadow=shadow)
             raise ProviderError(error) from None
         except ProviderError as e:
+            if req.tool_choice and "tool_choice" in str(e):  # a model that cannot be forced: ask once more, unforced
+                log.warning("%s rejected tool_choice=%r; retrying without forcing", name, req.tool_choice)
+                return await self._call(provider, req.model_copy(update={"tool_choice": None}), name, shadow)
             await self._trace(req, name, ok=False, latency_ms=_ms(t0), error=str(e), shadow=shadow)
             raise
         return result, _ms(t0)

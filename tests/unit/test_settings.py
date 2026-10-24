@@ -94,3 +94,11 @@ def test_supervisor_settings_derive_networks_from_the_stack():
     assert SupervisorSettings.model_validate({"DATABASE_URL": PG}).approved == set()
     with pytest.raises(ValidationError, match="STACK"):
         SupervisorSettings.model_validate({"DATABASE_URL": PG, "STACK": "Prod Stack"})
+
+
+def test_memory_today_is_the_local_date_not_the_containers_utc_clock():
+    from datetime import UTC, date, datetime
+
+    s = MemorySettings.model_validate({"DATABASE_URL": PG, "MEMORY_TZ": "Pacific/Kiritimati"})  # UTC+14
+    local = s.today()
+    assert isinstance(local, date) and local >= datetime.now(UTC).date()
