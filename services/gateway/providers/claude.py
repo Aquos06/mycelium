@@ -75,6 +75,8 @@ class ClaudeProvider:
             kwargs["tool_choice"] = {"type": "tool", "name": req.tool_choice}
         if req.temperature is not None:
             kwargs["temperature"] = req.temperature
+        if req.timeout:
+            kwargs["timeout"] = req.timeout  # the SDK's per-request timeout follows the caller's budget
         try:
             resp = await client.messages.create(**kwargs)
         except Exception as e:
