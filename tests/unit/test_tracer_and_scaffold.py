@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from mycelium_sdk import load_manifest
 from new_module import scaffold
@@ -32,32 +33,51 @@ def test_decode():
     assert decode(b"not json") == {"_raw": "not json"}
 
 
-class FakePool:
+class FakeEngine:
+    """Stands in for the async engine: compiles each statement for Postgres and records (table, params)."""
+
     def __init__(self):
         self.rows = []
 
-    async def execute(self, sql, *args):
-        self.rows.append(args)
+    def begin(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, stmt):
+        self.rows.append((stmt.table.name, stmt.compile(dialect=postgresql.dialect()).params))
 
 
 async def test_recorder_inserts_and_skips():
-    pool = FakePool()
-    r = Recorder(pool)
+    engine = FakeEngine()
+    r = Recorder(engine)
     assert await r.record("mod.hello.message.counted", b'{"count":1}', False)
     assert not await r.record("_INBOX.xyz", b"{}", False)
-    assert pool.rows == [("mod.hello.message.counted", "hello", False, '{"count": 1}')]
+    assert engine.rows == [
+        (
+            "events",
+            {"subject": "mod.hello.message.counted", "source": "hello", "is_request": False, "payload": {"count": 1}},
+        )
+    ]
 
 
 async def test_traces_also_land_in_the_traces_table_and_votes_attach_to_plans():
-    pool = FakePool()
-    r = Recorder(pool)
+    engine = FakeEngine()
+    r = Recorder(engine)
     await r.record("trace.plan", b'{"id": "p1", "cause": "c1", "reply_id": "s1", "source": "main"}', False)
-    assert pool.rows[1] == ("plan", "c1", '{"id": "p1", "cause": "c1", "reply_id": "s1", "source": "main"}')
+    table, params = engine.rows[1]
+    assert table == "traces" and params["kind"] == "plan" and params["ref"] == "c1"
+    assert params["decision"]["reply_id"] == "s1"
     await r.record("trace.feedback", b'{"id": "f1", "cause": "c2", "ref": "s1", "vote": -1}', False)
-    assert pool.rows[3][0] == "feedback"
-    assert pool.rows[4] == (-1, "s1")  # UPDATE traces SET feedback = -1 WHERE reply_id = s1
+    assert engine.rows[3][1]["kind"] == "feedback"
+    table, params = engine.rows[4]  # UPDATE traces SET feedback = -1 WHERE kind = 'plan' AND reply_id = 's1'
+    assert table == "traces" and params["feedback"] == -1 and {"plan", "s1"} <= set(params.values())
     await r.record("trace.feedback", b'{"ref": "s1", "answer": "9pm"}', False)
-    assert len(pool.rows) == 7  # events + traces rows, no UPDATE for an answer
+    assert len(engine.rows) == 7  # events + traces rows, no UPDATE for an answer
 
 
 def test_scaffold_renders_template(tmp_path):

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Protocol
 
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 from mycelium_sdk import Manifest
+from mycelium_sdk.db import CORE_MIGRATIONS, make_engine, migrate
+from mycelium_sdk.db.core import modules
 
 
 class Registry(Protocol):
@@ -36,34 +41,48 @@ class MemoryRegistry:
 
 
 class PostgresRegistry:
-    def __init__(self, dsn: str) -> None:
+    """The `modules` table (mycelium_sdk.db.core). connect() also runs the core migrations: the supervisor owns it."""
+
+    def __init__(self, dsn: str, engine: AsyncEngine | None = None) -> None:
         self.dsn = dsn
-        self.pool = None
+        self.engine = engine
 
     async def connect(self) -> None:
-        import asyncpg
-
-        self.pool = await asyncpg.create_pool(self.dsn, min_size=1, max_size=4)
+        if self.engine is None:
+            self.engine = make_engine(self.dsn)
+        await migrate(self.engine, CORE_MIGRATIONS)
 
     async def upsert(self, manifest: Manifest, status: str, image: str | None) -> None:
-        await self.pool.execute(
-            """
-            INSERT INTO modules (name, version, status, image, manifest, updated_at)
-            VALUES ($1, $2, $3, $4, $5::jsonb, now())
-            ON CONFLICT (name) DO UPDATE
-              SET version = EXCLUDED.version, status = EXCLUDED.status,
-                  image = EXCLUDED.image, manifest = EXCLUDED.manifest, updated_at = now()
-            """,
-            manifest.name,
-            manifest.version,
-            status,
-            image,
-            json.dumps(manifest.model_dump()),
+        stmt = pg_insert(modules).values(
+            name=manifest.name,
+            version=manifest.version,
+            status=status,
+            image=image,
+            manifest=manifest.model_dump(),
+            updated_at=func.now(),
         )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[modules.c.name],
+            set_={
+                "version": stmt.excluded.version,
+                "status": stmt.excluded.status,
+                "image": stmt.excluded.image,
+                "manifest": stmt.excluded.manifest,
+                "updated_at": func.now(),
+            },
+        )
+        async with self.engine.begin() as conn:
+            await conn.execute(stmt)
 
     async def set_status(self, name: str, status: str) -> None:
-        await self.pool.execute("UPDATE modules SET status=$2, updated_at=now() WHERE name=$1", name, status)
+        async with self.engine.begin() as conn:
+            await conn.execute(
+                update(modules).where(modules.c.name == name).values(status=status, updated_at=func.now())
+            )
 
     async def all(self) -> list[dict[str, Any]]:
-        rows = await self.pool.fetch("SELECT name, version, status, image, manifest FROM modules ORDER BY name")
-        return [{**dict(r), "manifest": json.loads(r["manifest"])} for r in rows]
+        stmt = select(
+            modules.c.name, modules.c.version, modules.c.status, modules.c.image, modules.c.manifest
+        ).order_by(modules.c.name)
+        async with self.engine.connect() as conn:
+            return [dict(r) for r in (await conn.execute(stmt)).mappings().all()]
