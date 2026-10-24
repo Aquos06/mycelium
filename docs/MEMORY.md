@@ -232,8 +232,11 @@ provenance. The prompt lists the facts already recorded for that day (from `reme
 or an earlier run), so the model adds only what is new, and it is told that the assistant's own
 `out.*` replies are not facts about anyone. After the model answers, ordinary code wraps known names
 and aliases it left bare in `[[slug|name]]`, so the day summary links like the rest of the vault and
-recall can hop from it. Every run publishes `trace.consolidate` with counts and cost. Rollups come
-with M4.
+recall can hop from it. Only notes that actually changed are rewritten, so a hand-edited note with
+nothing new is left alone. Every run, failed ones included, publishes `trace.consolidate` with counts
+and cost. At start the service catches up: any of the last seven days without a summary is
+consolidated first, so a restart or an outage across the scheduled time cannot lose a day. Rollups
+come with M4.
 
 First live run (2026-10-23, a reasoning model on vLLM): a day of 44 events took one call of about
 25 s, the summary came back in English with links, and recall hopped from it to the notes it named.
