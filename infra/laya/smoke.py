@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+import urllib.error
 import urllib.request
 
 REQUEST = {
@@ -46,8 +47,19 @@ def main(base: str, api_key: str | None = None) -> int:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(f"{base.rstrip('/')}/v1/systemone", data=json.dumps(REQUEST).encode(), headers=headers)
     t0 = time.monotonic()
-    with urllib.request.urlopen(req, timeout=120) as r:
-        body = json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            body = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            print(
+                "401 from laya-serve: auth is on. Either pass the key as the second argument, or, if you did not "
+                "mean to set one, remove the LAYA_API_KEY line from infra/laya/.env (an empty value still turns auth "
+                "on) and recreate the container with `docker compose up -d`."
+            )
+            return 2
+        print(f"{e.code} from laya-serve: {e.read().decode(errors='replace')[:500]}")
+        return 2
     ms = int((time.monotonic() - t0) * 1000)
     answers = body.get("answers", body)
     print(json.dumps(answers, indent=2, ensure_ascii=False))
@@ -59,4 +71,6 @@ def main(base: str, api_key: str | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8100", sys.argv[2] if len(sys.argv) > 2 else None))
+    sys.exit(
+        main(sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8100", sys.argv[2] if len(sys.argv) > 2 else None)
+    )
