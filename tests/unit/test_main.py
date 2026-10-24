@@ -456,9 +456,8 @@ def test_remember_args_accept_the_pack_path_and_split_a_leading_date():
     assert a.note == "mei" and a.fact == "is moving to Tainan in December" and a.day == date(2026, 10, 23)
     b = RememberArgs(note=" Mei ", fact="likes ramen", day=date(2026, 10, 1))
     assert b.note == "mei" and b.day == date(2026, 10, 1)
-    assert (
-        RememberArgs(note="summaries/2026/10/14.md", fact="x").note == "14"
-    )  # a slug, even a silly one; memory decides
+    with pytest.raises(ValidationError, match="summary"):  # a day summary is not an entity
+        RememberArgs(note="summaries/2026/10/14.md", fact="x")
 
 
 def test_ask_module_args_accept_the_prefixed_request_name_the_prompt_shows():
