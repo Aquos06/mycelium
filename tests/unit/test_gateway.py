@@ -169,7 +169,7 @@ def test_cost_from_prices():
 
 
 def test_shipped_providers_yaml_loads():
-    cfg = GatewayConfig.from_yaml(REPO / "services/gateway/providers.yaml")
+    cfg = GatewayConfig.from_yaml(REPO / "services/gateway/providers.yaml", env={})
     planner = cfg.slots["planner"]
     assert planner.active in planner.providers and cfg.budget_usd_month
     assert {p.kind for p in planner.providers.values()} == {"claude", "openai", "ollama", "vllm"}
@@ -516,7 +516,7 @@ async def test_tool_choice_forces_the_tool_on_both_wire_shapes():
 
 
 def test_shipped_yaml_has_the_consolidate_slot_on_a_cheap_model():
-    cfg = GatewayConfig.from_yaml(REPO / "services/gateway/providers.yaml")
+    cfg = GatewayConfig.from_yaml(REPO / "services/gateway/providers.yaml", env={})
     slot = cfg.slots["consolidate"]
     assert slot.active == "claude" and slot.providers["claude"].max_tokens >= 4096
     assert slot.providers["claude"].price_in_per_m < cfg.slots["planner"].providers["claude"].price_in_per_m
@@ -537,3 +537,20 @@ def test_from_yaml_fills_env_placeholders_with_defaults(tmp_path):
     cfg = GatewayConfig.from_yaml(y, env={"PLANNER_PROVIDER": "vllm", "VLLM_ENDPOINT": "http://192.168.0.107:8000/v1"})
     assert cfg.slots["planner"].active == "vllm"
     assert cfg.slots["planner"].providers["vllm"].endpoint == "http://192.168.0.107:8000/v1"
+
+
+async def test_a_model_that_rejects_a_forced_tool_is_asked_once_more_without_forcing():
+    svc = await _service(
+        [
+            ProviderError("claude: BadRequestError: tool_choice type 'tool' is not supported for this model"),
+            _result(tool_calls=[ToolCall(id="t1", name="remember", input={"note": "mei"})]),
+        ]
+    )
+    reply = await svc.bus.request(
+        "rpc.llm.complete",
+        {"messages": [{"role": "user", "content": "hi"}], "tools": [REMEMBER_TOOL], "tool_choice": "remember"},
+    )
+    assert reply["ok"] and reply["tool_calls"][0]["name"] == "remember"
+    requests = svc.providers[("planner", "claude")].requests
+    assert requests[0].tool_choice == "remember" and requests[1].tool_choice is None
+    assert len(svc.bus.events("trace.llm")) == 1  # the retry is the call that counts
