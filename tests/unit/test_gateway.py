@@ -277,6 +277,7 @@ async def test_openai_provider_posts_to_chat_completions():
         seen["url"] = str(request.url)
         seen["body"] = json.loads(request.content)
         seen["auth"] = request.headers.get("authorization")
+        seen["timeout"] = request.extensions.get("timeout")
         return httpx.Response(
             200,
             json={
@@ -287,12 +288,15 @@ async def test_openai_provider_posts_to_chat_completions():
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     p = OpenAICompatProvider("local", "qwen2.5:14b", "http://ollama:11434/v1/", api_key="k", http=http)
-    r = await p.complete(CompletionRequest(system="S", messages=[{"role": "user", "content": "hi"}], max_tokens=64))
+    r = await p.complete(
+        CompletionRequest(system="S", messages=[{"role": "user", "content": "hi"}], max_tokens=64, timeout=7)
+    )
     assert r.text == "hello" and r.stop_reason == "end_turn"
     assert seen["url"] == "http://ollama:11434/v1/chat/completions"
     assert seen["body"]["messages"][0] == {"role": "system", "content": "S"}
     assert seen["body"]["max_tokens"] == 64 and seen["body"]["model"] == "qwen2.5:14b"
     assert seen["auth"] == "Bearer k"
+    assert seen["timeout"]["read"] == 7.0  # the vendor call waits as long as the caller does, no longer
 
 
 class FakeMessages:
@@ -321,6 +325,7 @@ async def test_claude_provider_passes_system_and_tools():
     assert client.messages.kwargs["system"] == "S"
     assert client.messages.kwargs["tools"] == [REMEMBER_TOOL]
     assert client.messages.kwargs["max_tokens"] == 777
+    assert "timeout" not in client.messages.kwargs  # no caller budget: the SDK default
 
 
 async def test_claude_provider_without_key_fails_clearly():

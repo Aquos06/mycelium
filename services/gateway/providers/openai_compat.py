@@ -162,7 +162,12 @@ class OpenAICompatProvider:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         try:
-            r = await self._get_http().post(f"{self.endpoint}/chat/completions", json=self.body(req), headers=headers)
+            r = await self._get_http().post(
+                f"{self.endpoint}/chat/completions",
+                json=self.body(req),
+                headers=headers,
+                timeout=req.timeout or self.timeout,  # the caller's budget, not a fixed client default
+            )
             r.raise_for_status()
             data = r.json()
         except Exception as e:

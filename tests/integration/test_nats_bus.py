@@ -106,11 +106,18 @@ async def test_event_stream_created_and_requests_not_captured():
         reply = await nc.request(subj, b"{}", timeout=2)
         assert reply.data == b'{"real": true}'
 
-        # an event on mod.* is stored
-        before = (await js.stream_info("EVENTS")).state.messages
-        await nc.publish("mod.itest.happened", b'{"x": 1}')
+        # an event on mod.* is stored: look for this message, not for a count (live services publish too)
+        marker = uuid.uuid4().hex[:8]
+        await nc.publish(f"mod.itest.{marker}.happened", b'{"x": 1}')
         await nc.flush()
-        await asyncio.sleep(0.2)
-        assert (await js.stream_info("EVENTS")).state.messages == before + 1
+        for _ in range(20):
+            try:
+                stored = await js.get_last_msg("EVENTS", f"mod.itest.{marker}.happened")
+                break
+            except Exception:
+                await asyncio.sleep(0.1)
+        else:
+            raise AssertionError("published event never reached the EVENTS stream")
+        assert stored.data == b'{"x": 1}'
     finally:
         await nc.drain()

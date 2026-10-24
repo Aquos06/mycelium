@@ -195,6 +195,26 @@ class PostgresIndex:
             body_hash=row["body_hash"],
         )
 
+    async def summaries_in(self, period: str, keys: list[str]) -> list[SummaryRecord]:
+        """Several keys in one query, in the order asked."""
+        if not keys:
+            return []
+        s = self.t.summaries
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(select(s).where(s.c.period == period, s.c.key.in_(keys)))).mappings().all()
+        by_key = {
+            r["key"]: SummaryRecord(
+                period=r["period"],
+                key=r["key"],
+                path=r["path"],
+                text=r["text"],
+                links=list(r["links"] or []),
+                body_hash=r["body_hash"],
+            )
+            for r in rows
+        }
+        return [by_key[k] for k in keys if k in by_key]
+
     async def vocabulary(self) -> list[tuple[str, str]]:
         n = self.t.notes
         async with self.engine.connect() as conn:

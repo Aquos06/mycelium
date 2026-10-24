@@ -65,6 +65,7 @@ make deploy-hello               # supervisor builds + starts modules/hello
 .venv/bin/python scripts/mctl.py remember mei "moving to Tainan in December" --type person --alias 小美
 .venv/bin/python scripts/mctl.py recall "what did 小美 say about Tainan?"
 .venv/bin/python scripts/mctl.py consolidate 2026-10-14                   # (re)run the nightly consolidation for a day
+.venv/bin/python scripts/mctl.py rollup 2026-W42                          # (re)write a week or month summary from its days
 ```
 
 Without `ANTHROPIC_API_KEY`, `chat` still works end to end but Main answers that it cannot reach its

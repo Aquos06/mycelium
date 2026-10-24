@@ -235,8 +235,15 @@ and aliases it left bare in `[[slug|name]]`, so the day summary links like the r
 recall can hop from it. Only notes that actually changed are rewritten, so a hand-edited note with
 nothing new is left alone. Every run, failed ones included, publishes `trace.consolidate` with counts
 and cost. At start the service catches up: any of the last seven days without a summary is
-consolidated first, so a restart or an outage across the scheduled time cannot lose a day. Rollups
-come with M4.
+consolidated first, so a restart or an outage across the scheduled time cannot lose a day.
+
+**Rollups (M4).** When the consolidated day is a Sunday, the same job writes the week
+(`summaries/2026/W43.md`) from its seven day summaries with one more forced tool call, `write_period`;
+when it is the last day of a month, the month (`summaries/2026/10.md`) from its days. Any period can be
+(re)written on `rpc.memory.rollup {period, key}`, `mctl rollup 2026-W43`. Recall resolves "last week",
+"this month" and month names to the period summary and hops its links, so "what did I do last week"
+answers from one file instead of seven; while a period is still open, its day summaries stand in. Each
+rollup is traced on `trace.rollup`; a failed one is kept on the day's report and retried at the next start.
 
 First live run (2026-10-23, a reasoning model on vLLM): a day of 44 events took one call of about
 25 s, the summary came back in English with links, and recall hopped from it to the notes it named.
@@ -374,5 +381,5 @@ and Postgres; jsonl and Postgres); `vault.py`, `indexer.py`, `recall.py`, `conso
 | **M1** (done) vault format, indexer, `notes` + `links` + `facts` + `summaries`, lookup ladder (exact, alias, trgm), `remember` / `lookup` / `recall` / `reindex`, module notes on deploy, `mctl remember` / `lookup` / `recall` | memory usable from the CLI; pure code, no model needed. `services/memory/`, tests in `tests/unit/test_memory_*.py` and `tests/integration/test_memory_pg.py`, fixtures in `tests/fixtures/` |
 | **M2** (done) Main v0: gateway (Claude or a local OpenAI-compatible model, `services/gateway/`), thread in NATS KV, planner with the recall pack and the `remember` / `recall` / `ask_module` / `ask` tools (`services/main/`), `trace.plan` per answer, Telegram in and out with `out.ask` buttons, `mctl chat` | the chatbot core with memory, end to end. Tests in `tests/unit/test_gateway.py`, `test_main.py`, `test_telegram.py` |
 | **M3** (done) nightly consolidation (`services/memory/consolidate.py`, `schedule.py`): one forced tool call on the `consolidate` slot writes the day summary, dated facts with `ev:<id>`, new notes and state updates; `rpc.memory.consolidate` / `mctl consolidate` replay any day; `trace.consolidate` per run | memory that grows without being told to. Tests in `tests/unit/test_memory_consolidate.py` |
-| **M4** embeddings (local on GPU 1, or an API to start), week and month rollups, the `rerank` slot | fuzzy recall |
+| **M4** week and month rollups (done: `rollup()`, `rpc.memory.rollup`, period phrases in recall), embeddings as a candidate source, the `decide` slot driving multi-hop recall | fuzzy recall that can explain each hop |
 | **M5** the eval set | you know when memory gets worse |

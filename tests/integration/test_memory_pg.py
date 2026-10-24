@@ -55,6 +55,9 @@ async def test_index_round_trip_and_trgm(schema):
     facts = await index.facts(day=date(2026, 10, 14))
     assert {f.note for f in facts} == {"hansen", "mei", "ramen-place-xinyi", "expenses"}
     assert (await index.summary("week", "2026-W42")).links == ["mei", "mycelium"]
+    assert [s.key for s in await index.summaries_in("day", ["2026-10-13", "2026-10-14", "2026-10-15"])] == [
+        "2026-10-14"
+    ]
     assert ("小美", "mei") in await index.vocabulary()
 
     again = await reindex(Vault(FIXTURES / "vault"), index)

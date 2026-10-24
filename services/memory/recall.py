@@ -11,7 +11,7 @@ from datetime import date, timedelta
 
 from .index import FUZZY_THRESHOLD, Index
 from .schemas import Match, NoteRecord, RecallBudget, RecallItem, RecallPack, RecallUsed
-from .vault import Vault
+from .vault import Vault, month_key, period_days, week_key
 
 WEEKDAYS = {
     "monday": 0,
@@ -29,36 +29,52 @@ DATE_RE = re.compile(
     re.IGNORECASE,
 )
 # words that are capitalised in ordinary English and must never be fuzzy-matched into a person
-FUZZY_STOPWORDS = set(WEEKDAYS) | {
-    "january",
-    "february",
-    "march",
-    "april",
-    "may",
-    "june",
-    "july",
-    "august",
-    "september",
-    "october",
-    "november",
-    "december",
-    "today",
-    "yesterday",
-    "tomorrow",
-    "what",
-    "who",
-    "when",
-    "where",
-    "why",
-    "how",
-    "did",
-    "does",
-    "remember",
-    "tell",
-    "show",
+MONTHS = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
 }
+FUZZY_STOPWORDS = (
+    set(WEEKDAYS)
+    | set(MONTHS)
+    | {
+        "today",
+        "yesterday",
+        "tomorrow",
+        "week",
+        "month",
+        "this",
+        "last",
+        "what",
+        "who",
+        "when",
+        "where",
+        "why",
+        "how",
+        "did",
+        "does",
+        "remember",
+        "tell",
+        "show",
+    }
+)
 CJK_RE = re.compile(r"[぀-ヿ一-鿿]")
 EXCERPT_CHARS = 240
+AMBIGUOUS_MONTHS = {"may", "march"}  # also ordinary words: only with a preposition or capitalised
+PERIOD_RE = re.compile(
+    r"\b(?P<this_week>this week)\b|\b(?P<last_week>last week)\b|\b(?P<this_month>this month)\b"
+    r"|\b(?P<last_month>last month)\b|\b(?:in |during )?(?P<month>" + "|".join(MONTHS) + r")\b(?: (?P<year>\d{4}))?",
+    re.IGNORECASE,
+)
 
 
 def resolve_dates(query: str, today: date) -> list[tuple[str, date]]:
@@ -79,6 +95,35 @@ def resolve_dates(query: str, today: date) -> list[tuple[str, date]]:
             # the most recent such weekday strictly before today; same weekday as today means a week ago
             delta = (today.weekday() - WEEKDAYS[m.group("weekday").lower()]) % 7 or 7
             out.append((phrase, today - timedelta(days=delta)))
+    return out
+
+
+def resolve_periods(query: str, today: date) -> list[tuple[str, str, str]]:
+    """Week and month expressions in the query -> (phrase as written, period, key). A bare month name
+    means the most recent such month, so "October" in November is this year's and in March last year's."""
+    out: list[tuple[str, str, str]] = []
+    for m in PERIOD_RE.finditer(query):
+        phrase = m.group(0)
+        if m.group("this_week"):
+            out.append((phrase, "week", week_key(today)))
+        elif m.group("last_week"):
+            out.append((phrase, "week", week_key(today - timedelta(days=7))))
+        elif m.group("this_month"):
+            out.append((phrase, "month", month_key(today)))
+        elif m.group("last_month"):
+            out.append((phrase, "month", month_key(today.replace(day=1) - timedelta(days=1))))
+        elif m.group("month"):
+            word = m.group("month")
+            if word.lower() in AMBIGUOUS_MONTHS and not (
+                word[0].isupper() or phrase.lower().startswith(("in ", "during "))
+            ):
+                continue  # "what may I have forgotten"
+            n = MONTHS[word.lower()]
+            if m.group("year"):
+                year = int(m.group("year"))
+            else:
+                year = today.year if n <= today.month else today.year - 1
+            out.append((phrase, "month", f"{year}-{n:02d}"))
     return out
 
 
@@ -182,6 +227,19 @@ async def recall(vault: Vault, index: Index, query: str, today: date, budget: in
         for f in await index.facts(day=d):
             if record := await index.get(f.note):
                 await add_note(record, f"has a fact on {d.isoformat()}")
+
+    # 1b. periods: the week or month summary and what it links to; while the period is still open (no rollup
+    #     yet), its day summaries stand in for it
+    for phrase, period, key in resolve_periods(query, today):
+        used.periods.append(f"{period}:{key}")
+        period_dates = period_days(period, key)
+        days.extend(period_dates)
+        if s := await index.summary(period, key):
+            add(s.path, f"{phrase} = {key}", _clip(s.text))
+            await hop(s.path, s.links)
+        else:
+            for s in await index.summaries_in("day", [d.isoformat() for d in period_dates]):
+                add(s.path, f"{phrase}: day {s.key}", _clip(s.text))
 
     # 2. names: the note, then one hop
     for term, name, via in await find_names(query, index):

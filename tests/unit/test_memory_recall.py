@@ -69,7 +69,7 @@ async def test_recall_by_date_follows_links_from_the_day_summary():
     ).model_dump()
 
     assert pack["query"] == "who did I have dinner with last Wednesday?"
-    assert pack["used"] == {"dates": ["2026-10-14"], "names": [], "embedding": False}
+    assert pack["used"] == {"dates": ["2026-10-14"], "names": [], "periods": [], "embedding": False}
     notes = [item["note"] for item in pack["items"]]
     assert notes[0] == "summaries/2026/10/14.md"
     assert set(notes[1:]) >= {"people/mei.md", "places/ramen-place-xinyi.md"}
@@ -126,3 +126,61 @@ async def test_recall_with_nothing_to_go_on_returns_empty_pack():
     pack = (await recall(vault, index, "tell me a joke", today=TODAY, budget=8)).model_dump()
     assert pack["items"] == []
     assert pack["used"]["embedding"] is False  # no embeddings yet; the fallback reports it was not used
+
+
+# ---- periods (M4) --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("what did I do last week?", [("week", "2026-W42")]),  # today is Wed 2026-10-21, ISO week 43
+        ("this week so far", [("week", "2026-W43")]),
+        ("how was October?", [("month", "2026-10")]),
+        ("spending in September", [("month", "2026-09")]),
+        ("last month", [("month", "2026-09")]),
+        ("what about November?", [("month", "2025-11")]),  # not yet this year: the most recent one
+        ("what happened in October 2025", [("month", "2025-10")]),  # an explicit year wins
+        ("what may I have forgotten?", []),  # the verb, not the month
+        ("spending in May", [("month", "2026-05")]),
+        ("what did I do in march 2026", [("month", "2026-03")]),
+        ("nothing about time", []),
+    ],
+)
+def test_resolve_periods(query, expected):
+    from memory.recall import resolve_periods
+
+    assert [(p, k) for _, p, k in resolve_periods(query, TODAY)] == expected
+
+
+async def test_recall_by_period_opens_the_week_summary_and_hops():
+    vault = Vault(FIXTURES)
+    index = InMemoryIndex()
+    await reindex(vault, index)
+    pack = (await recall(vault, index, "what did I do last week?", today=TODAY, budget=8)).model_dump()
+    assert pack["items"][0]["note"] == "summaries/2026/W42.md" and pack["items"][0]["why"] == "last week = 2026-W42"
+    assert {i["note"] for i in pack["items"][1:]} >= {"people/mei.md", "projects/mycelium.md"}  # one hop
+    assert pack["used"]["periods"] == ["week:2026-W42"] and pack["used"]["dates"] == []
+
+
+async def test_an_open_period_falls_back_to_its_day_summaries():
+    vault = Vault(FIXTURES)
+    index = InMemoryIndex()
+    await reindex(vault, index)
+    # October 2026 has no month summary yet (the month is open); the fixture has the 2026-10-14 day
+    pack = (await recall(vault, index, "how is this month going?", today=TODAY, budget=8)).model_dump()
+    assert pack["used"]["periods"] == ["month:2026-10"]
+    assert pack["items"][0] == {
+        "note": "summaries/2026/10/14.md",
+        "why": "this month: day 2026-10-14",
+        "excerpt": pack["items"][0]["excerpt"],
+    }
+
+
+async def test_a_period_feeds_the_excerpts_of_the_notes_it_opens():
+    vault = Vault(FIXTURES)
+    index = InMemoryIndex()
+    await reindex(vault, index)
+    pack = (await recall(vault, index, "what did Mei do last week?", today=TODAY, budget=8)).model_dump()
+    mei = next(i for i in pack["items"] if i["note"] == "people/mei.md")
+    assert mei["excerpt"].startswith("2026-10-14 dinner at")  # the fact inside W42, not the note's summary

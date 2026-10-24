@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from memory.consolidate import (
     TOOL_NAME,
-    WRITE_DAY_TOOL,
+    WRITE_DAY,
     ConsolidationError,
     Consolidator,
     render_events,
@@ -116,7 +116,7 @@ def test_digest_schema_validates_slugs_and_text():
         DayDigest.model_validate({"summary": "x", "facts": [{"note": "../etc", "text": "y"}]})
     with pytest.raises(ValidationError, match="summary"):
         DayDigest.model_validate({"summary": "   "})
-    schema = WRITE_DAY_TOOL["input_schema"]
+    schema = WRITE_DAY.spec()["input_schema"]
     assert schema["required"] == ["summary"] and "title" not in json.dumps(schema)
     assert schema["properties"]["facts"]["items"]["properties"]["type"]["enum"][0] == "self"
 
@@ -353,3 +353,112 @@ async def test_catch_up_consolidates_recent_days_without_a_summary_oldest_first(
 
     done = await catch_up(run, has_summary, today=date(2026, 10, 24), days=5)
     assert ran == [date(2026, 10, 21), date(2026, 10, 23)] and done == ran
+
+
+# ---- rollups (M4) -------------------------------------------------------------------------------------
+
+
+def period_reply(summary, id="p1", cost=0.001):
+    return {
+        "ok": True,
+        "text": "",
+        "tool_calls": [{"id": id, "name": "write_period", "input": {"summary": summary}}],
+        "stop_reason": "tool_use",
+        "model": "claude-haiku-5-5",
+        "provider": "claude",
+        "usage": {"input_tokens": 400, "output_tokens": 120},
+        "cost_usd": cost,
+    }
+
+
+async def test_rollup_writes_the_week_from_its_day_summaries(world):
+    world.gw.replies = [
+        period_reply("Climbing twice; dinner with Mei at Menya Xinyi; Mei is moving to Tainan in December.")
+    ]
+    report = await world.c.rollup("week", "2026-W42", cause="w1")
+    req = world.gw.requests[0]
+    assert (
+        req["slot"] == "consolidate"
+        and req["tool_choice"] == "write_period"
+        and req["tools"][0]["name"] == "write_period"
+    )
+    prompt = req["messages"][0]["content"]
+    assert "Period: week 2026-W42 (2026-10-12 to 2026-10-18)." in prompt
+    assert "- 2026-10-14 (Wednesday): Climbing in the evening, then dinner with [[mei]]" in prompt
+    assert "write the week summary" in req["system"].lower() or "week summary" in req["system"]
+    assert report.sources == 1 and report.rounds == 1 and report.summary_path == "summaries/2026/W42.md"
+    text = (world.vault.root / "summaries/2026/W42.md").read_text()
+    assert "[[mei]]" in text and "[[ramen-place-xinyi|Menya Xinyi]]" in text  # auto-linked like the days
+    assert "mei" in (await world.index.summary("week", "2026-W42")).links
+    trace = world.bus.events("trace.rollup")[0][1]
+    assert (
+        trace["ok"]
+        and trace["cause"] == "w1"
+        and trace["report"]["period"] == "week"
+        and trace["report"]["key"] == "2026-W42"
+    )
+
+
+async def test_rollup_without_day_summaries_is_skipped_without_a_model_call(world):
+    report = await world.c.rollup("month", "2026-01")
+    assert report.skipped and report.reason == "no day summaries" and world.gw.requests == []
+    assert world.bus.events("trace.rollup")[0][1]["report"]["skipped"] is True
+
+
+async def test_a_sunday_closes_its_week_and_a_month_end_closes_the_month(world):
+    # Sunday 2026-10-18 has no events in the fixture and the fixture already has W42: a replayed eventless day
+    # must not pay for the week again
+    report = await world.c.run(date(2026, 10, 18))
+    assert report.skipped and [(r.period, r.key, r.reason) for r in report.rollups] == [
+        ("week", "2026-W42", "already written")
+    ]
+    assert world.gw.requests == []
+
+    # without the week on disk the same Sunday writes it
+    (world.vault.root / "summaries/2026/W42.md").unlink()
+    world.index.summaries.pop(("week", "2026-W42"))
+    world.gw.replies = [period_reply("The week.")]
+    report = await world.c.run(date(2026, 10, 18))
+    assert [(r.period, r.key) for r in report.rollups] == [("week", "2026-W42")] and report.rollups[0].sources == 1
+    assert (await world.index.summary("week", "2026-W42")).text == "The week."
+
+    # Saturday 2026-10-31 is the last day of October: the month from the days that have summaries
+    world.gw.replies = [period_reply("The month.")]
+    report = await world.c.run(date(2026, 10, 31))
+    assert [(r.period, r.key) for r in report.rollups] == [("month", "2026-10")] and report.rollups[0].sources == 1
+    assert (world.vault.root / "summaries/2026/10.md").read_text() == "The month.\n"
+    trace = world.bus.events("trace.consolidate")[-1][1]
+    assert trace["report"]["rollups"][0]["summary_path"] == "summaries/2026/10.md"
+
+    await world.c.run(date(2026, 10, 20))  # a Tuesday with no events: no rollup
+    assert len(world.bus.events("trace.rollup")) == 3
+
+
+async def test_a_failed_rollup_is_kept_on_the_days_report_and_retried_at_start(world):
+    (world.vault.root / "summaries/2026/W42.md").unlink()
+    world.index.summaries.pop(("week", "2026-W42"))
+    world.gw.replies = [{"ok": False, "error": "vllm: ConnectError: All connection attempts failed"}]
+    report = await world.c.run(date(2026, 10, 18))  # the day is fine (skipped), the week failed
+    assert report.skipped and report.rollups[0].error.startswith("vllm: ConnectError")
+    assert world.bus.events("trace.rollup")[0][1]["ok"] is False
+    assert world.bus.events("trace.consolidate")[0][1]["ok"] is True
+    # what the start-up catch-up would retry: the Sunday is within the window and its week has no summary
+    assert await world.c.rollups.missing(date(2026, 10, 24), days=7) == [("week", "2026-W42")]
+    world.gw.replies = [period_reply("W42 after all.")]
+    await world.c.rollup("week", "2026-W42")
+    assert await world.c.rollups.missing(date(2026, 10, 24), days=7) == []
+
+
+async def test_rpc_rollup_validates_the_key(world):
+    svc = MemoryService(world.bus, world.vault, world.index, consolidator=world.c, today=lambda: date(2026, 10, 24))
+    await svc.start()
+    world.gw.replies = [period_reply("W42.")]
+    reply = await world.bus.request("rpc.memory.rollup", {"period": "week", "key": "2026-W42"}, timeout=5)
+    assert reply["ok"] and reply["summary_path"] == "summaries/2026/W42.md" and reply["sources"] == 1
+    reply = await world.bus.request("rpc.memory.rollup", {"period": "week", "key": "2026-10"}, timeout=5)
+    assert not reply["ok"] and "not a week key" in reply["error"]
+    reply = await world.bus.request("rpc.memory.rollup", {"period": "week", "key": "2025-W53"}, timeout=5)
+    assert not reply["ok"] and "Invalid week" in reply["error"]  # 2025 has 52 ISO weeks
+    world.gw.replies = [period_reply("w42 lower-case.")]
+    reply = await world.bus.request("rpc.memory.rollup", {"period": "week", "key": "2026-w42"}, timeout=5)
+    assert reply["ok"] and reply["key"] == "2026-W42"
