@@ -7,6 +7,7 @@ import logging
 import signal
 
 from mycelium_sdk import NatsBus
+from mycelium_sdk.db import make_engine
 
 from .consolidate import Consolidator
 from .events import PostgresEvents
@@ -20,18 +21,16 @@ log = logging.getLogger("mycelium.memory")
 
 
 async def main() -> None:
-    import asyncpg
-
     s = MemorySettings()
     logging.basicConfig(level=s.log_level)
-    pool = await asyncpg.create_pool(s.database_url, min_size=1, max_size=4)
-    index = PostgresIndex(pool, schema=s.schema_name)
-    await index.ensure_schema()
+    engine = make_engine(s.database_url)
+    index = PostgresIndex(engine, schema=s.schema_name)
+    await index.ensure_schema()  # memory's Alembic tree, into its schema
     s.vault_dir.mkdir(parents=True, exist_ok=True)
 
     bus = NatsBus(s.nats_url, name="memory")
     vault = Vault(s.vault_dir)
-    consolidator = Consolidator(bus, vault, index, PostgresEvents(pool), tz=s.tz)
+    consolidator = Consolidator(bus, vault, index, PostgresEvents(engine), tz=s.tz)
     service = MemoryService(bus, vault, index, consolidator=consolidator)
     await service.start()
 
@@ -54,7 +53,7 @@ async def main() -> None:
     if schedule:
         await schedule
     await bus.close()
-    await pool.close()
+    await engine.dispose()
 
 
 if __name__ == "__main__":
