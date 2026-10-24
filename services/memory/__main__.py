@@ -9,7 +9,7 @@ import signal
 from mycelium_sdk import NatsBus
 from mycelium_sdk.db import make_engine
 
-from .consolidate import Consolidator
+from .consolidate import ConsolidationError, Consolidator
 from .events import PostgresEvents
 from .index import PostgresIndex
 from .schedule import catch_up, nightly
@@ -43,6 +43,11 @@ async def main() -> None:
 
     async def scheduled() -> None:
         await catch_up(consolidator.run, has_summary, s.today(), CATCH_UP_DAYS)
+        for period, key in await consolidator.rollups.missing(s.today(), CATCH_UP_DAYS):
+            try:
+                await consolidator.rollup(period, key)
+            except ConsolidationError as e:  # traced already; the next start tries again
+                log.warning("catch-up %s rollup %s failed: %s", period, key, e)
         await nightly(consolidator.run, s.consolidate_at, s.tz, stop)
 
     schedule = asyncio.create_task(scheduled()) if s.consolidate_at else None

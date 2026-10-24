@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from mycelium_sdk import Envelope
 
+from .periods import Period
 from .vault import NAME_RE, NoteType
 
 
@@ -89,6 +90,22 @@ class DayDigest(BaseModel):
 # ---- what memory sends and keeps -------------------------------------------------------------------
 
 
+class PeriodDigest(BaseModel):
+    """What the model returns for a week or a month: one summary written from the day summaries."""
+
+    summary: str = Field(
+        min_length=1, description="the period in four to eight sentences, [[slug]] around every note that matters"
+    )
+
+    @field_validator("summary")
+    @classmethod
+    def _summary(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("summary is required")
+        return v
+
+
 class ModelRequest(BaseModel):
     """rpc.llm.complete as consolidation fills it (the gateway validates it again as CompletionRequest)."""
 
@@ -100,6 +117,22 @@ class ModelRequest(BaseModel):
     max_tokens: int | None = Field(default=None, gt=0)  # None: the provider's setting
     cause: str | None = None
     timeout: float = Field(gt=0)
+
+
+class RollupReport(BaseModel):
+    """One week or month summary written from its day summaries; also the rpc.memory.rollup reply."""
+
+    period: Period
+    key: str  # 2026-W43 | 2026-10
+    sources: int = 0  # day summaries the period had
+    skipped: bool = False
+    reason: str | None = None
+    summary_path: str | None = None
+    rounds: int = 0
+    model: str | None = None
+    cost_usd: float = 0.0
+    latency_ms: int = 0
+    error: str | None = None  # set when the rollup failed and the day's report carries it anyway
 
 
 class ConsolidationReport(BaseModel):
@@ -118,6 +151,16 @@ class ConsolidationReport(BaseModel):
     model: str | None = None
     cost_usd: float = 0.0
     latency_ms: int = 0
+    rollups: list[RollupReport] = Field(default_factory=list)  # the week / month this day closed, if any
+
+
+class RollupTrace(Envelope):
+    """trace.rollup: one per week or month written, failed ones included."""
+
+    source: str = "memory"
+    ok: bool
+    report: RollupReport
+    error: str | None = None
 
 
 class ConsolidateTrace(Envelope):
