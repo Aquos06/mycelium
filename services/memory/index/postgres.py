@@ -1,4 +1,5 @@
-"""The Postgres index (asyncpg). `schema` lets tests, and later per-owner databases, keep their own tables."""
+"""The Postgres index: SQLAlchemy Core over the async engine. `schema` lets tests, and later per-owner
+databases, keep their own tables; ensure_schema() runs memory's Alembic tree into it."""
 
 from __future__ import annotations
 
@@ -7,11 +8,17 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import any_, delete, func, insert, select, text, union_all
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from mycelium_sdk.db import migrate
+
 from ..schemas import Fact, FactRecord, NoteRecord, SummaryRecord
+from .tables import IndexTables
 
 SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
-SCHEMA_SQL = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
-NOTE_COLS = "name, path, type, aliases, summary, body_hash, updated_at"
+MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
 
 
 def _note(row: Any, links: list[str] | None = None) -> NoteRecord:
@@ -28,135 +35,156 @@ def _note(row: Any, links: list[str] | None = None) -> NoteRecord:
 
 
 class PostgresIndex:
-    def __init__(self, pool, schema: str = "memory") -> None:
+    def __init__(self, engine: AsyncEngine, schema: str = "memory") -> None:
         if not SCHEMA_RE.match(schema):
             raise ValueError(f"bad schema name: {schema!r}")
-        self.pool = pool
+        self.engine = engine
         self.s = schema
+        self.t = IndexTables(schema)
 
     async def ensure_schema(self) -> None:
-        await self.pool.execute(SCHEMA_SQL.replace("{schema}", self.s))
+        await migrate(self.engine, MIGRATIONS, schema=self.s)
 
     async def _links_for(self, conn, note_ids: list[int]) -> dict[int, list[str]]:
         if not note_ids:
             return {}
-        rows = await conn.fetch(
-            f"SELECT from_note, to_name FROM {self.s}.links WHERE from_note = ANY($1::bigint[]) ORDER BY ord", note_ids
+        links = self.t.links
+        rows = await conn.execute(
+            select(links.c.from_note, links.c.to_name).where(links.c.from_note.in_(note_ids)).order_by(links.c.ord)
         )
         out: dict[int, list[str]] = {i: [] for i in note_ids}
-        for r in rows:
-            out[r["from_note"]].append(r["to_name"])
+        for from_note, to_name in rows:
+            out[from_note].append(to_name)
         return out
 
-    async def _notes(self, sql: str, *args: Any) -> list[NoteRecord]:
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(sql, *args)
+    async def _notes(self, stmt) -> list[NoteRecord]:
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().all()
             links = await self._links_for(conn, [r["id"] for r in rows])
             return [_note(r, links.get(r["id"])) for r in rows]
 
     async def body_hash(self, path: str) -> str | None:
-        row = await self.pool.fetchrow(
-            f"SELECT body_hash FROM {self.s}.notes WHERE path = $1 UNION ALL SELECT body_hash FROM {self.s}.summaries WHERE path = $1 LIMIT 1",
-            path,
-        )
-        return row["body_hash"] if row else None
+        n, s = self.t.notes, self.t.summaries
+        stmt = union_all(
+            select(n.c.body_hash).where(n.c.path == path), select(s.c.body_hash).where(s.c.path == path)
+        ).limit(1)
+        async with self.engine.connect() as conn:
+            return (await conn.execute(stmt)).scalar()
 
     async def upsert_note(self, record: NoteRecord, facts: list[Fact]) -> None:
-        async with self.pool.acquire() as conn, conn.transaction():
-            await conn.execute(f"DELETE FROM {self.s}.notes WHERE path = $1 AND name <> $2", record.path, record.name)
-            note_id = await conn.fetchval(
-                f"""INSERT INTO {self.s}.notes (name, path, type, aliases, summary, body_hash, updated_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, now())
-                    ON CONFLICT (name) DO UPDATE SET path = EXCLUDED.path, type = EXCLUDED.type, aliases = EXCLUDED.aliases,
-                        summary = EXCLUDED.summary, body_hash = EXCLUDED.body_hash, updated_at = now()
-                    RETURNING id""",
-                record.name,
-                record.path,
-                record.type,
-                record.aliases,
-                record.summary,
-                record.body_hash,
+        n, links, f = self.t.notes, self.t.links, self.t.facts
+        async with self.engine.begin() as conn:
+            await conn.execute(delete(n).where(n.c.path == record.path, n.c.name != record.name))
+            stmt = pg_insert(n).values(
+                name=record.name,
+                path=record.path,
+                type=record.type,
+                aliases=record.aliases,
+                summary=record.summary,
+                body_hash=record.body_hash,
+                updated_at=func.now(),
             )
-            await conn.execute(f"DELETE FROM {self.s}.links WHERE from_note = $1", note_id)
-            await conn.execute(f"DELETE FROM {self.s}.facts WHERE note_id = $1", note_id)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[n.c.name],
+                set_={
+                    "path": stmt.excluded.path,
+                    "type": stmt.excluded.type,
+                    "aliases": stmt.excluded.aliases,
+                    "summary": stmt.excluded.summary,
+                    "body_hash": stmt.excluded.body_hash,
+                    "updated_at": func.now(),
+                },
+            ).returning(n.c.id)
+            note_id = (await conn.execute(stmt)).scalar_one()
+            await conn.execute(delete(links).where(links.c.from_note == note_id))
+            await conn.execute(delete(f).where(f.c.note_id == note_id))
             if record.links:
-                await conn.executemany(
-                    f"INSERT INTO {self.s}.links (from_note, to_name, ord) VALUES ($1, $2, $3)",
-                    [(note_id, link, i) for i, link in enumerate(record.links)],
+                await conn.execute(
+                    insert(links),
+                    [{"from_note": note_id, "to_name": link, "ord": i} for i, link in enumerate(record.links)],
                 )
             if facts:
-                await conn.executemany(
-                    f"INSERT INTO {self.s}.facts (note_id, day, text, source) VALUES ($1, $2, $3, $4)",
-                    [(note_id, f.day, f.text, f.source) for f in facts],
+                await conn.execute(
+                    insert(f), [{"note_id": note_id, "day": x.day, "text": x.text, "source": x.source} for x in facts]
                 )
 
     async def delete_note(self, path: str) -> None:
-        await self.pool.execute(f"DELETE FROM {self.s}.notes WHERE path = $1", path)
+        n = self.t.notes
+        async with self.engine.begin() as conn:
+            await conn.execute(delete(n).where(n.c.path == path))
 
     async def upsert_summary(self, record: SummaryRecord) -> None:
-        await self.pool.execute(
-            f"""INSERT INTO {self.s}.summaries (period, key, path, text, links, body_hash)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (period, key) DO UPDATE SET path = EXCLUDED.path, text = EXCLUDED.text,
-                    links = EXCLUDED.links, body_hash = EXCLUDED.body_hash""",
-            record.period,
-            record.key,
-            record.path,
-            record.text,
-            record.links,
-            record.body_hash,
+        s = self.t.summaries
+        stmt = pg_insert(s).values(
+            period=record.period,
+            key=record.key,
+            path=record.path,
+            text=record.text,
+            links=record.links,
+            body_hash=record.body_hash,
         )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[s.c.period, s.c.key],
+            set_={
+                "path": stmt.excluded.path,
+                "text": stmt.excluded.text,
+                "links": stmt.excluded.links,
+                "body_hash": stmt.excluded.body_hash,
+            },
+        )
+        async with self.engine.begin() as conn:
+            await conn.execute(stmt)
 
     async def get(self, name: str) -> NoteRecord | None:
-        rows = await self._notes(f"SELECT id, {NOTE_COLS} FROM {self.s}.notes WHERE name = $1", name.lower())
+        n = self.t.notes
+        rows = await self._notes(select(n).where(n.c.name == name.lower()))
         return rows[0] if rows else None
 
     async def by_alias(self, alias: str) -> list[NoteRecord]:
-        return await self._notes(
-            f"SELECT id, {NOTE_COLS} FROM {self.s}.notes WHERE $1 = ANY(aliases) ORDER BY name", alias.lower()
-        )
+        n = self.t.notes
+        return await self._notes(select(n).where(alias.lower() == any_(n.c.aliases)).order_by(n.c.name))
 
-    async def fuzzy(self, text: str, limit: int = 3) -> list[tuple[NoteRecord, float]]:
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"""SELECT id, {NOTE_COLS},
-                           GREATEST(similarity(name, $1),
-                                    COALESCE((SELECT max(similarity(a, $1)) FROM unnest(aliases) a), 0)) AS score
-                    FROM {self.s}.notes
-                    WHERE name % $1 OR EXISTS (SELECT 1 FROM unnest(aliases) a WHERE a % $1)
-                    ORDER BY score DESC, name LIMIT $2""",
-                text.lower(),
-                limit,
-            )
+    async def fuzzy(self, text_: str, limit: int = 3) -> list[tuple[NoteRecord, float]]:
+        """pg_trgm's similarity on the name and every alias; kept as SQL because `%` and unnest read best as SQL."""
+        sql = text(
+            f"""SELECT id, name, path, type, aliases, summary, body_hash, updated_at,
+                       GREATEST(similarity(name, :q),
+                                COALESCE((SELECT max(similarity(a, :q)) FROM unnest(aliases) a), 0)) AS score
+                FROM "{self.s}".notes
+                WHERE name % :q OR EXISTS (SELECT 1 FROM unnest(aliases) a WHERE a % :q)
+                ORDER BY score DESC, name LIMIT :limit"""
+        )
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(sql, {"q": text_.lower(), "limit": limit})).mappings().all()
             links = await self._links_for(conn, [r["id"] for r in rows])
             return [(_note(r, links.get(r["id"])), float(r["score"])) for r in rows]
 
     async def backlinks(self, name: str) -> list[NoteRecord]:
-        return await self._notes(
-            f"""SELECT n.id, {", ".join("n." + c for c in NOTE_COLS.split(", "))}
-                FROM {self.s}.links l JOIN {self.s}.notes n ON n.id = l.from_note
-                WHERE l.to_name = $1 ORDER BY n.name""",
-            name.lower(),
-        )
+        n, links = self.t.notes, self.t.links
+        stmt = (
+            select(n).select_from(links.join(n, n.c.id == links.c.from_note)).where(links.c.to_name == name.lower())
+        ).order_by(n.c.name)
+        return await self._notes(stmt)
 
     async def facts(self, name: str | None = None, day: date | None = None) -> list[FactRecord]:
-        rows = await self.pool.fetch(
-            f"""SELECT n.name AS note, f.day, f.text, f.source
-                FROM {self.s}.facts f JOIN {self.s}.notes n ON n.id = f.note_id
-                WHERE ($1::text IS NULL OR n.name = $1) AND ($2::date IS NULL OR f.day = $2)
-                ORDER BY f.day DESC, f.id""",
-            name.lower() if name else None,
-            day,
+        n, f = self.t.notes, self.t.facts
+        stmt = select(n.c.name.label("note"), f.c.day, f.c.text, f.c.source).select_from(
+            f.join(n, n.c.id == f.c.note_id)
         )
+        if name is not None:
+            stmt = stmt.where(n.c.name == name.lower())
+        if day is not None:
+            stmt = stmt.where(f.c.day == day)
+        stmt = stmt.order_by(f.c.day.desc(), f.c.id)
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().all()
         return [FactRecord(note=r["note"], day=r["day"], text=r["text"], source=r["source"]) for r in rows]
 
     async def summary(self, period: str, key: str) -> SummaryRecord | None:
-        row = await self.pool.fetchrow(
-            f"SELECT period, key, path, text, links, body_hash FROM {self.s}.summaries WHERE period = $1 AND key = $2",
-            period,
-            key,
-        )
-        if not row:
+        s = self.t.summaries
+        async with self.engine.connect() as conn:
+            row = (await conn.execute(select(s).where(s.c.period == period, s.c.key == key))).mappings().first()
+        if row is None:
             return None
         return SummaryRecord(
             period=row["period"],
@@ -168,9 +196,11 @@ class PostgresIndex:
         )
 
     async def vocabulary(self) -> list[tuple[str, str]]:
-        rows = await self.pool.fetch(f"SELECT name, aliases FROM {self.s}.notes ORDER BY name")
+        n = self.t.notes
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(select(n.c.name, n.c.aliases).order_by(n.c.name))).all()
         out: list[tuple[str, str]] = []
-        for r in rows:
-            out.append((r["name"], r["name"]))
-            out.extend((a, r["name"]) for a in (r["aliases"] or []) if a != r["name"])
+        for name, aliases in rows:
+            out.append((name, name))
+            out.extend((a, name) for a in (aliases or []) if a != name)
         return out

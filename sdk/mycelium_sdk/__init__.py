@@ -9,6 +9,7 @@
 - validation: one formatter for pydantic errors in rpc replies
 - schema:    a pydantic model as a tool's input_schema for a model
 - settings:  ServiceSettings, the base for each service's environment (pydantic-settings)
+- db:        the async SQLAlchemy engine, Alembic migrate(), the core tables (import mycelium_sdk.db)
 """
 
 from .bus import Bus, InMemoryBus, Message, NatsBus, Payload

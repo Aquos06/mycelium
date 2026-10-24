@@ -6,12 +6,15 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pytest
+from sqlalchemy import insert, text
 
 from memory.events import PostgresEvents
-from memory.index import PostgresIndex
+from memory.index import MIGRATIONS, PostgresIndex
 from memory.indexer import reindex
 from memory.recall import recall
 from memory.vault import Vault
+from mycelium_sdk.db import CORE_MIGRATIONS, head, make_engine, migrate
+from mycelium_sdk.db.core import events
 from tests.conftest import DATABASE_URL, needs_pg
 
 pytestmark = [pytest.mark.integration, needs_pg]
@@ -23,21 +26,24 @@ TODAY = date(2026, 10, 21)
 
 @pytest.fixture
 async def schema():
-    """Each test gets its own Postgres schema so runs never collide."""
-    import asyncpg
-
+    """Each test gets its own Postgres schema so runs never collide; the core tree provides the extensions."""
     name = f"memtest_{uuid.uuid4().hex[:8]}"
-    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=2)
-    await pool.execute((REPO / "db/init.sql").read_text())
-    yield pool, name
-    await pool.execute(f"DROP SCHEMA IF EXISTS {name} CASCADE")
-    await pool.close()
+    engine = make_engine(DATABASE_URL, pool_size=2)
+    await migrate(engine, CORE_MIGRATIONS)
+    yield engine, name
+    async with engine.begin() as conn:
+        await conn.execute(text(f'DROP SCHEMA IF EXISTS "{name}" CASCADE'))
+    await engine.dispose()
 
 
 async def test_index_round_trip_and_trgm(schema):
-    pool, name = schema
-    index = PostgresIndex(pool, schema=name)
-    await index.ensure_schema()
+    engine, name = schema
+    index = PostgresIndex(engine, schema=name)
+    await index.ensure_schema()  # memory's Alembic tree into this schema, version table included
+    async with engine.connect() as conn:
+        version = (await conn.execute(text(f'SELECT version_num FROM "{name}".alembic_version'))).scalar_one()
+    assert version == head(MIGRATIONS)  # memory's own head, in this schema's version table
+
     stats = await reindex(Vault(FIXTURES / "vault"), index)
     assert stats.notes == 5 and stats.summaries == 2
 
@@ -49,14 +55,16 @@ async def test_index_round_trip_and_trgm(schema):
     facts = await index.facts(day=date(2026, 10, 14))
     assert {f.note for f in facts} == {"hansen", "mei", "ramen-place-xinyi", "expenses"}
     assert (await index.summary("week", "2026-W42")).links == ["mei", "mycelium"]
+    assert ("小美", "mei") in await index.vocabulary()
 
     again = await reindex(Vault(FIXTURES / "vault"), index)
     assert again.skipped == 7
+    await index.ensure_schema()  # idempotent
 
 
 async def test_recall_against_postgres_matches_the_unit_example(schema):
-    pool, name = schema
-    index = PostgresIndex(pool, schema=name)
+    engine, name = schema
+    index = PostgresIndex(engine, schema=name)
     await index.ensure_schema()
     vault = Vault(FIXTURES / "vault")
     await reindex(vault, index)
@@ -68,24 +76,30 @@ async def test_recall_against_postgres_matches_the_unit_example(schema):
 
 
 async def test_postgres_events_for_day(schema):
-    pool, _ = schema
+    engine, _ = schema
     marker = uuid.uuid4().hex[:8]
     rows = [json.loads(line) for line in (FIXTURES / "events" / "2026-10-14.jsonl").read_text().splitlines()]
     try:
-        for r in rows:
-            await pool.execute(
-                "INSERT INTO events (ts, subject, source, is_request, payload) VALUES ($1, $2, $3, $4, $5::jsonb)",
-                datetime.fromisoformat(r["ts"]),
-                r["subject"],
-                f"{marker}:{r['source']}",
-                r["is_request"],
-                json.dumps(r["payload"]),
+        async with engine.begin() as conn:
+            await conn.execute(
+                insert(events),
+                [
+                    {
+                        "ts": datetime.fromisoformat(r["ts"]),
+                        "subject": r["subject"],
+                        "source": f"{marker}:{r['source']}",
+                        "is_request": r["is_request"],
+                        "payload": r["payload"],
+                    }
+                    for r in rows
+                ],
             )
-        src = PostgresEvents(pool, source_filter=f"{marker}:%")
-        events = await src.for_day(date(2026, 10, 14), tz="Asia/Taipei")
-        assert len(events) == 14  # same count the unit test gets from the jsonl
-        assert events[0].payload["text"] == "coffee 85"
-        assert all(not e.subject.startswith(("rpc.", "trace.")) for e in events)
-        assert [e.id for e in events] == sorted(e.id for e in events)
+        src = PostgresEvents(engine, source_filter=f"{marker}:%")
+        found = await src.for_day(date(2026, 10, 14), tz="Asia/Taipei")
+        assert len(found) == 14  # same count the unit test gets from the jsonl
+        assert found[0].payload["text"] == "coffee 85"
+        assert all(not e.subject.startswith(("rpc.", "trace.")) for e in found)
+        assert [e.id for e in found] == sorted(e.id for e in found)
     finally:
-        await pool.execute("DELETE FROM events WHERE source LIKE $1", f"{marker}:%")
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM events WHERE source LIKE :p"), {"p": f"{marker}:%"})

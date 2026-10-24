@@ -15,8 +15,12 @@ import signal
 from typing import Any
 
 from pydantic import Field
+from sqlalchemy import insert, update
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from mycelium_sdk import ServiceSettings
+from mycelium_sdk.db import CORE_MIGRATIONS, make_engine, migrate
+from mycelium_sdk.db.core import events, traces
 from mycelium_sdk.subjects import EVENT_STREAM_SUBJECTS
 
 log = logging.getLogger("mycelium.tracer")
@@ -64,37 +68,34 @@ async def ensure_stream(nc, retention_days: int = 365) -> None:
 
 
 class Recorder:
-    def __init__(self, pool) -> None:
-        self.pool = pool
+    """Appends to `events` and `traces` (mycelium_sdk.db.core) through the async engine."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self.engine = engine
 
     async def record(self, subject: str, raw: bytes, is_request: bool) -> bool:
         if not should_record(subject):
             return False
         data = decode(raw)
-        await self.pool.execute(
-            "INSERT INTO events (subject, source, is_request, payload) VALUES ($1, $2, $3, $4::jsonb)",
-            subject,
-            source_of(subject, data),
-            is_request,
-            json.dumps(data, default=str),
-        )
-        if subject.startswith("trace.") and not is_request:
-            await self.record_trace(subject[len("trace.") :], data)
+        async with self.engine.begin() as conn:
+            await conn.execute(
+                insert(events).values(
+                    subject=subject, source=source_of(subject, data), is_request=is_request, payload=data
+                )
+            )
+            if subject.startswith("trace.") and not is_request:
+                await self._record_trace(conn, subject[len("trace.") :], data)
         return True
 
-    async def record_trace(self, kind: str, data: dict[str, Any]) -> None:
+    async def _record_trace(self, conn, kind: str, data: dict[str, Any]) -> None:
         """trace.* also lands in `traces` (kind, ref = cause, decision). A vote updates the plan it rates."""
-        await self.pool.execute(
-            "INSERT INTO traces (kind, ref, decision) VALUES ($1, $2, $3::jsonb)",
-            kind,
-            str(data["cause"]) if data.get("cause") is not None else None,
-            json.dumps(data, default=str),
-        )
+        ref = str(data["cause"]) if data.get("cause") is not None else None
+        await conn.execute(insert(traces).values(kind=kind, ref=ref, decision=data))
         if kind == "feedback" and data.get("vote") is not None and data.get("ref"):
-            await self.pool.execute(
-                "UPDATE traces SET feedback = $1 WHERE kind = 'plan' AND decision->>'reply_id' = $2",
-                int(data["vote"]),
-                str(data["ref"]),
+            await conn.execute(
+                update(traces)
+                .where(traces.c.kind == "plan", traces.c.decision["reply_id"].astext == str(data["ref"]))
+                .values(feedback=int(data["vote"]))
             )
 
     async def attach(self, nc) -> None:
@@ -115,15 +116,15 @@ class TracerSettings(ServiceSettings):
 
 
 async def main() -> None:
-    import asyncpg
     import nats
 
     s = TracerSettings()
     logging.basicConfig(level=s.log_level)
+    engine = make_engine(s.database_url)
+    await migrate(engine, CORE_MIGRATIONS)  # the tracer owns events and traces
     nc = await nats.connect(s.nats_url, name="tracer", max_reconnect_attempts=-1)
     await ensure_stream(nc, s.event_retention_days)
-    pool = await asyncpg.create_pool(s.database_url, min_size=1, max_size=4)
-    await Recorder(pool).attach(nc)
+    await Recorder(engine).attach(nc)
     log.info("tracer recording")
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -131,7 +132,7 @@ async def main() -> None:
         loop.add_signal_handler(sig, stop.set)
     await stop.wait()
     await nc.drain()
-    await pool.close()
+    await engine.dispose()
 
 
 if __name__ == "__main__":
