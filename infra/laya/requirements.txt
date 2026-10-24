@@ -1,0 +1,2 @@
+# pinned: bump on purpose, then rebuild and run smoke.py
+laya[serve]==0.4.14

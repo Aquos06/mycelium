@@ -1,0 +1,35 @@
+# Laya: the local decision model (https://huggingface.co/convaiinnovations/laya, Apache 2.0) behind its
+# own server, laya-serve. Jev-compatible POST /v1/systemone: a state plus typed questions in, an answer
+# with a probability per option out, one forward pass, no text generation.
+#
+#   docker compose up -d --build                                          CPU (LAYA_DEVICE=cpu in .env)
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build   with the NVIDIA GPU
+#   python3 smoke.py http://localhost:8100
+
+name: mycelium-infra
+
+services:
+  laya:
+    build: .
+    image: mycelium/laya:0.4.14
+    environment:
+      LAYA_HOST: 0.0.0.0
+      LAYA_PORT: "8000"
+      LAYA_DEVICE: ${LAYA_DEVICE:-cuda}          # cuda | cpu
+      LAYA_PRELOAD: ${LAYA_PRELOAD:-1}           # load the checkpoints at start, not on the first request
+      LAYA_API_KEY: ${LAYA_API_KEY:-}            # empty: open on the LAN; set it and the gateway sends the bearer
+      HF_HOME: /models
+    ports:
+      - "${LAYA_PORT:-8100}:8000"
+    volumes:
+      - laya-models:/models                       # the checkpoints (~0.8 GB each) survive rebuilds
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; r=urllib.request.urlopen(urllib.request.Request('http://localhost:8000/v1/systemone', data=json.dumps({'state': {'document': 'ok'}, 'questions': {'q': {'type': 'noul', 'instructions': 'Is this text non-empty?'}}}).encode(), headers={'Content-Type': 'application/json'}), timeout=20); assert r.status == 200"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 300s                          # first start downloads the checkpoints
+    restart: unless-stopped
+
+volumes:
+  laya-models:
