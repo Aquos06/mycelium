@@ -136,7 +136,7 @@ class Consolidator:
         tz: str,
         slot: str = "consolidate",
         timeout: float = 180.0,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,  # None: the provider's own max_tokens from providers.yaml decides
         max_event_chars: int = 24_000,
         max_rounds: int = 2,
     ) -> None:
@@ -152,27 +152,35 @@ class Consolidator:
         self.max_rounds = max_rounds
 
     async def run(self, day: date, cause: str | None = None) -> ConsolidationReport:
+        """One day. Every outcome, success or failure, is traced; a failure also raises ConsolidationError."""
         t0 = time.monotonic()
-        events = await self.events.for_day(day, self.tz)
-        if not events:
-            report = ConsolidationReport(day=day, skipped=True, reason="no events", latency_ms=_ms(t0))
-            await self._trace(report, ok=True, cause=cause)
-            return report
+        report = ConsolidationReport(day=day)
         try:
-            digest, report = await self._digest(day, events, cause)
+            events = await self.events.for_day(day, self.tz)
+            report.events = len(events)
+            if not events:
+                report.skipped, report.reason = True, "no events"
+            else:
+                digest = await self._digest(day, events, cause, report)
+                await self._apply(day, digest, events, report)
         except ConsolidationError as e:
-            failed = ConsolidationReport(day=day, events=len(events), latency_ms=_ms(t0))
-            await self._trace(failed, ok=False, cause=cause, error=str(e))
+            report.latency_ms = _ms(t0)
+            await self._trace(report, ok=False, cause=cause, error=str(e))
             raise
-        await self._apply(day, digest, events, report)
+        except Exception as e:  # reading events, writing the vault, indexing: a paid digest must not vanish silently
+            report.latency_ms = _ms(t0)
+            await self._trace(report, ok=False, cause=cause, error=f"{type(e).__name__}: {e}")
+            raise ConsolidationError(f"{type(e).__name__}: {e}") from e
         report.latency_ms = _ms(t0)
         await self._trace(report, ok=True, cause=cause)
         return report
 
     # ---- model -----------------------------------------------------------------------------
 
-    async def _digest(self, day: date, events: list[Event], cause: str | None) -> tuple[DayDigest, ConsolidationReport]:
-        report = ConsolidationReport(day=day, events=len(events))
+    async def _digest(
+        self, day: date, events: list[Event], cause: str | None, report: ConsolidationReport
+    ) -> DayDigest:
+        """Ask the model for the day; rounds, model and cost land on `report` even when this raises."""
         prompt = user_message(
             day,
             self.tz,
@@ -208,7 +216,7 @@ class Consolidator:
                 raise ConsolidationError(f"model did not call {TOOL_NAME}")
             call = calls[0]
             try:
-                return DayDigest.model_validate(call.get("input") or {}), report
+                return DayDigest.model_validate(call.get("input") or {})
             except ValidationError as e:
                 error = validation_message(e, "digest")
                 log.warning("digest for %s rejected (round %d): %s", day, report.rounds, error)
@@ -238,9 +246,10 @@ class Consolidator:
 
     async def _apply(self, day: date, digest: DayDigest, events: list[Event], report: ConsolidationReport) -> None:
         known_ids = {e.id for e in events}
-        vocabulary = await self.index.vocabulary()
         touched: dict[str, Note] = {}
+        changed: set[str] = set()
         created: set[str] = set()
+        pending: list[tuple[Note, str, str]] = []  # note, the fact as written, provenance
 
         async def note_for(slug: str, type: NoteType | None, aliases: list[str]) -> Note:
             if slug in touched:
@@ -251,9 +260,11 @@ class Consolidator:
                 note_type = type or "thing"
                 note = Note(name=slug, path=self.vault.path_for(slug, note_type), type=note_type)
                 created.add(slug)
+                changed.add(slug)
             for alias in aliases:
                 if alias not in note.aliases and alias != note.name:
                     note.aliases.append(alias)
+                    changed.add(slug)
             touched[slug] = note
             return note
 
@@ -261,24 +272,35 @@ class Consolidator:
             note = await note_for(f.note, f.type, f.aliases)
             ids = [i for i in f.events if i in known_ids]  # the model may misremember an id
             source = f"ev:{ids[0]}" if ids else "consolidation"
-            if _has_fact(note, day, f.text, source):
+            if _has_fact(note, day, f.text) or any(n is note and _plain(t) == _plain(f.text) for n, t, _ in pending):
                 report.facts_skipped += 1
                 continue
-            note.facts.insert(0, Fact(day=day, text=autolink(f.text, vocabulary), source=source))
-            report.facts_added += 1
+            pending.append((note, f.text, source))
 
         for u in digest.updates:
             if u.note not in touched and await self.index.get(u.note) is None:
                 log.info("update for unknown note %r ignored", u.note)
                 continue
             note = await note_for(u.note, None, [])
-            note.summary = u.summary
+            if note.summary != u.summary:
+                note.summary = u.summary
+                changed.add(u.note)
 
+        # link with what the vault knows now: this run's new notes and aliases included
+        vocabulary = await self.index.vocabulary()
         for note in touched.values():
-            self.vault.write(note)
-            await index_file(self.vault, self.index, note.path)
+            vocabulary.append((note.name, note.name))
+            vocabulary.extend((a, note.name) for a in note.aliases if a != note.name)
+        for note, text_, source in pending:
+            note.facts.insert(0, Fact(day=day, text=autolink(text_, vocabulary), source=source))
+            changed.add(note.name)
+            report.facts_added += 1
+
+        for slug in sorted(changed):  # only what changed: a hand-edited note with nothing new is left alone
+            self.vault.write(touched[slug])
+            await index_file(self.vault, self.index, touched[slug].path)
         report.notes_created = sorted(created)
-        report.notes_updated = sorted(set(touched) - created)
+        report.notes_updated = sorted(changed - created)
 
         path = summary_path(day)
         self.vault.write_text(path, autolink(digest.summary, vocabulary))
@@ -318,17 +340,20 @@ def autolink(text: str, vocabulary: list[tuple[str, str]]) -> str:
     return text
 
 
-def _has_fact(note: Note, day: date, text: str, source: str) -> bool:
-    """Idempotency: the same event already produced a fact that day, or the same line is already there."""
-    wanted = " ".join(text.split()).lower()
-    for f in note.facts:
-        if f.day != day:
-            continue
-        if source.startswith("ev:") and f.source == source:
-            return True
-        if " ".join(f.text.split()).lower() == wanted:
-            return True
-    return False
+def _plain(text: str) -> str:
+    """The line without link syntax ([[slug|label]] -> label, [[slug]] -> slug), collapsed, lowercased."""
+
+    def unlink(m: re.Match[str]) -> str:
+        inner = m.group(0)[2:-2]
+        return inner.split("|", 1)[1] if "|" in inner else inner.split("#", 1)[0]
+
+    return " ".join(LINK_RE.sub(unlink, text).split()).lower()
+
+
+def _has_fact(note: Note, day: date, text: str) -> bool:
+    """Idempotency: the same line is already on the note for that day, links or no links."""
+    wanted = _plain(text)
+    return any(f.day == day and _plain(f.text) == wanted for f in note.facts)
 
 
 def _ms(t0: float) -> int:

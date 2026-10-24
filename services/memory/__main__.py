@@ -12,12 +12,14 @@ from mycelium_sdk.db import make_engine
 from .consolidate import Consolidator
 from .events import PostgresEvents
 from .index import PostgresIndex
-from .schedule import nightly
+from .schedule import catch_up, nightly
 from .service import MemoryService
 from .settings import MemorySettings
 from .vault import Vault
 
 log = logging.getLogger("mycelium.memory")
+
+CATCH_UP_DAYS = 7  # at start, consolidate recent days a restart or outage skipped
 
 
 async def main() -> None:
@@ -31,13 +33,19 @@ async def main() -> None:
     bus = NatsBus(s.nats_url, name="memory")
     vault = Vault(s.vault_dir)
     consolidator = Consolidator(bus, vault, index, PostgresEvents(engine), tz=s.tz)
-    service = MemoryService(bus, vault, index, consolidator=consolidator)
+    service = MemoryService(bus, vault, index, consolidator=consolidator, today=s.today)
     await service.start()
 
     stop = asyncio.Event()
-    schedule = (
-        asyncio.create_task(nightly(consolidator.run, s.consolidate_at, s.tz, stop)) if s.consolidate_at else None
-    )
+
+    async def has_summary(day) -> bool:
+        return await index.summary("day", day.isoformat()) is not None
+
+    async def scheduled() -> None:
+        await catch_up(consolidator.run, has_summary, s.today(), CATCH_UP_DAYS)
+        await nightly(consolidator.run, s.consolidate_at, s.tz, stop)
+
+    schedule = asyncio.create_task(scheduled()) if s.consolidate_at else None
     log.info(
         "memory ready: vault=%s schema=%s tz=%s consolidate_at=%s",
         s.vault_dir,

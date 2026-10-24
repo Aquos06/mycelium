@@ -89,7 +89,7 @@ services:
       MEMORY_VAULT_DIR: /vault
       MEMORY_SCHEMA: memory
       MEMORY_TZ: ${MEMORY_TZ:-Asia/Taipei}
-      MEMORY_CONSOLIDATE_AT: ${MEMORY_CONSOLIDATE_AT:-03:30}   # nightly consolidation, local time; empty disables
+      MEMORY_CONSOLIDATE_AT: ${MEMORY_CONSOLIDATE_AT-03:30}    # nightly consolidation, local time; set empty to disable (`-`, not `:-`)
     volumes:
       - vault:/vault       # the markdown vault: the curated memory, human-editable (docs/MEMORY.md)
     networks: [mesh]

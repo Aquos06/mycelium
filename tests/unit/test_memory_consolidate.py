@@ -132,7 +132,9 @@ async def test_consolidation_writes_the_summary_facts_and_notes(world):
 
     req = world.gw.requests[0]
     assert req["slot"] == "consolidate" and req["tool_choice"] == TOOL_NAME and req["tools"][0]["name"] == TOOL_NAME
-    assert req["cause"] == "nightly-1" and req["timeout"] == world.c.timeout and req["max_tokens"] == 4096
+    assert (
+        req["cause"] == "nightly-1" and req["timeout"] == world.c.timeout and req.get("max_tokens") is None
+    )  # the provider's own setting decides
     prompt = req["messages"][0]["content"]
     assert "Day: Wednesday 2026-10-14 (Asia/Taipei)" in prompt
     assert "- mei (person; aliases: mei, 小美): Friend from the climbing gym" in prompt
@@ -142,10 +144,9 @@ async def test_consolidation_writes_the_summary_facts_and_notes(world):
     assert report.facts_added == 3 and report.facts_skipped == 1 and report.cost_usd == 0.002
     assert report.notes_created == ["tainan"] and report.notes_updated == [
         "hansen",
-        "mei",
         "mycelium",
         "ramen-place-xinyi",
-    ]
+    ]  # mei: nothing new, left untouched
 
     # the day summary replaces the fixture's and is indexed with its links
     assert report.summary_path == "summaries/2026/10/14.md"
@@ -265,3 +266,90 @@ async def test_prompt_lists_what_the_day_already_has_so_the_model_does_not_repea
     assert "Already recorded for this day (do not repeat):" in prompt
     assert "- mei: dinner at [[ramen-place-xinyi]], she's moving to Tainan in Dec (ev:48213)" in prompt
     assert "- hansen: switched the project docs to a layered architecture (ev:48204)" in prompt
+
+
+# ---- the review fixes ---------------------------------------------------------------------------------
+
+
+async def test_dedupe_sees_through_links_and_the_same_event_may_yield_two_facts(world):
+    digest = {
+        "summary": "A quiet day.",
+        "facts": [
+            {"note": "hansen", "text": "had dinner with Mei", "events": []},  # stored as [[mei]]
+            {"note": "hansen", "text": "booked the climbing slot", "events": [48209]},
+            {"note": "hansen", "text": "chalk bag is in the hallway closet", "events": [48209]},  # same event, new fact
+        ],
+    }
+    world.gw.replies = [tool_reply(digest), tool_reply(digest)]
+    first = await world.c.run(DAY)
+    assert first.facts_added == 3
+    assert world.vault.read("hansen.md").facts[2].text == "had dinner with [[mei]]"  # a name match links plainly
+    second = await world.c.run(DAY)
+    assert second.facts_added == 0 and second.facts_skipped == 3 and second.notes_updated == []
+
+
+async def test_notes_created_in_the_same_run_are_linked_in_the_summary(world):
+    digest = {
+        "summary": "She is moving to 台南 in December; dinner with Mei first.",
+        "facts": [
+            {
+                "note": "tainan",
+                "type": "place",
+                "aliases": ["台南"],
+                "text": "[[mei]] is moving here",
+                "events": [48213],
+            }
+        ],
+    }
+    world.gw.replies = [tool_reply(digest)]
+    report = await world.c.run(DAY)
+    assert report.notes_created == ["tainan"]
+    text = (world.vault.root / "summaries/2026/10/14.md").read_text()
+    assert "[[tainan|台南]]" in text and "[[mei]]" in text  # the alias keeps its label, the name links plainly
+
+
+async def test_a_failed_run_keeps_the_rounds_and_cost_it_paid_for(world):
+    world.gw.replies = [tool_reply({}, id="b1", cost=0.003), tool_reply({}, id="b2", cost=0.003)]
+    with pytest.raises(ConsolidationError, match="no valid digest after 2 rounds"):
+        await world.c.run(DAY, cause="n3")
+    trace = world.bus.events("trace.consolidate")[0][1]
+    assert trace["ok"] is False and trace["report"]["rounds"] == 2 and trace["report"]["cost_usd"] == 0.006
+    assert trace["report"]["model"] == "claude-haiku-5-5" and trace["report"]["events"] == 14
+
+
+async def test_a_failure_after_the_model_call_is_traced_too(world, monkeypatch):
+    world.gw.replies = [tool_reply(DIGEST)]
+
+    def boom(note):
+        raise OSError("vault is read-only")
+
+    monkeypatch.setattr(world.vault, "write", boom)
+    with pytest.raises(ConsolidationError, match="OSError: vault is read-only"):
+        await world.c.run(DAY)
+    trace = world.bus.events("trace.consolidate")[0][1]
+    assert trace["ok"] is False and "OSError" in trace["error"] and trace["report"]["rounds"] == 1
+
+
+async def test_max_tokens_is_the_providers_unless_the_job_sets_it(world):
+    world.gw.replies = [tool_reply(DIGEST)]
+    world.c.max_tokens = 8192
+    await world.c.run(DAY)
+    assert world.gw.requests[0]["max_tokens"] == 8192
+
+
+async def test_catch_up_consolidates_recent_days_without_a_summary_oldest_first():
+    from memory.schedule import catch_up
+
+    ran: list[date] = []
+    summaries = {date(2026, 10, 22), date(2026, 10, 20)}
+
+    async def run(day):
+        if day == date(2026, 10, 19):
+            raise RuntimeError("model down")  # logged, the others still run
+        ran.append(day)
+
+    async def has_summary(day):
+        return day in summaries
+
+    done = await catch_up(run, has_summary, today=date(2026, 10, 24), days=5)
+    assert ran == [date(2026, 10, 21), date(2026, 10, 23)] and done == ran

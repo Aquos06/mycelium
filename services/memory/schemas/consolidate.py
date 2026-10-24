@@ -97,7 +97,7 @@ class ModelRequest(BaseModel):
     messages: list[dict[str, Any]]
     tools: list[dict[str, Any]]
     tool_choice: str
-    max_tokens: int = Field(gt=0)
+    max_tokens: int | None = Field(default=None, gt=0)  # None: the provider's setting
     cause: str | None = None
     timeout: float = Field(gt=0)
 

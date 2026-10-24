@@ -91,7 +91,7 @@ async def run(args) -> int:
             reply = await bus.request("rpc.memory.reindex", {}, timeout=args.timeout)
         elif args.cmd == "consolidate":
             payload = {"day": args.day} if args.day else {}
-            reply = await bus.request("rpc.memory.consolidate", payload, timeout=args.timeout)
+            reply = await bus.request("rpc.memory.consolidate", payload, timeout=max(args.timeout, 400.0))
         elif args.cmd == "chat":
             return await converse(bus, "sense.chat", {"text": args.text}, args.thread, args.timeout)
         elif args.cmd == "answer":

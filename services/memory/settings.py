@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import AliasChoices, Field, field_validator
 
@@ -34,3 +35,7 @@ class MemorySettings(ServiceSettings):
     @classmethod
     def _empty_means_off(cls, v: Any) -> Any:
         return None if isinstance(v, str) and not v.strip() else v
+
+    def today(self) -> date:
+        """The local date: what "yesterday" and a fact without a day mean. The container's clock is UTC."""
+        return datetime.now(ZoneInfo(self.tz)).date()
