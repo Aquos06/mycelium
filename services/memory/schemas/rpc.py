@@ -5,6 +5,7 @@
     rpc.memory.recall       RecallRequest     -> RecallPack (recall.py)
     rpc.memory.reindex      {}                -> IndexStats (index.py)
     rpc.memory.consolidate  ConsolidateRequest -> ConsolidationReport (consolidate.py)
+    rpc.memory.rollup       RollupRequest      -> RollupReport (consolidate.py)
 
 The handler adds ok=true; errors are {"ok": false, "error": "<field>: <message>"}.
 """
@@ -15,6 +16,7 @@ from datetime import date
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .periods import Period, parse_period_key
 from .vault import NAME_RE, NoteType
 
 DEFAULT_BUDGET = 8
@@ -120,3 +122,13 @@ class RecallRequest(BaseModel):
 
 class ConsolidateRequest(BaseModel):
     day: date | None = None  # default: yesterday by the service's clock
+
+
+class RollupRequest(BaseModel):
+    period: Period
+    key: str  # 2026-W43 | 2026-10, any case
+
+    @model_validator(mode="after")
+    def _key_matches_period(self) -> RollupRequest:
+        self.key = parse_period_key(self.period, self.key)  # raises a ValueError naming the problem
+        return self

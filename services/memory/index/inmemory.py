@@ -89,6 +89,10 @@ class InMemoryIndex:
     async def summary(self, period: str, key: str) -> SummaryRecord | None:
         return self.summaries.get((period, key))
 
+    async def summaries_in(self, period: str, keys: list[str]) -> list[SummaryRecord]:
+        found = [self.summaries.get((period, k)) for k in keys]
+        return [s for s in found if s is not None]
+
     async def vocabulary(self) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
         for r in self.notes.values():

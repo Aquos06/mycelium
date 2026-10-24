@@ -14,8 +14,21 @@ from pathlib import Path
 import yaml
 
 from .schemas import NAME_RE, Fact, Note, NoteType, Summary
+from .schemas.periods import month_key, period_days, period_path, periods_closed_by, week_key
 
-__all__ = ["NAME_RE", "Fact", "Note", "NoteType", "Summary", "Vault"]
+__all__ = [
+    "NAME_RE",
+    "Fact",
+    "Note",
+    "NoteType",
+    "Summary",
+    "Vault",
+    "month_key",
+    "period_days",
+    "period_path",
+    "periods_closed_by",
+    "week_key",
+]
 
 TYPES = ("self", "person", "place", "project", "thing", "routine", "module")
 FOLDER_TYPES = {

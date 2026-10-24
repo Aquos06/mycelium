@@ -5,6 +5,7 @@
     rpc.memory.recall       RecallRequest      -> RecallPack
     rpc.memory.reindex      {}                 -> IndexStats
     rpc.memory.consolidate  ConsolidateRequest -> ConsolidationReport   (default: yesterday)
+    rpc.memory.rollup       RollupRequest      -> RollupReport           (a week or month from its days)
     sys.module.deployed     -> writes modules/<name>.md from the manifest
 
 Payloads are validated with the models in schemas/rpc.py (the contract Main codes against).
@@ -37,6 +38,7 @@ from .schemas import (
     RecallRequest,
     RememberReply,
     RememberRequest,
+    RollupRequest,
 )
 from .vault import Vault
 
@@ -67,6 +69,7 @@ class MemoryService:
         await self.bus.subscribe("rpc.memory.recall", self._wrap(self.recall), queue="memory")
         await self.bus.subscribe("rpc.memory.reindex", self._wrap(self.reindex), queue="memory")
         await self.bus.subscribe("rpc.memory.consolidate", self._wrap(self.consolidate), queue="memory")
+        await self.bus.subscribe("rpc.memory.rollup", self._wrap(self.rollup), queue="memory")
         await self.bus.subscribe("sys.module.deployed", self.on_module_deployed, queue="memory")
 
     def _wrap(self, fn):
@@ -135,6 +138,14 @@ class MemoryService:
             raise ValueError("consolidation is not configured (no event source)")
         day = req.day or self.today() - timedelta(days=1)
         return await self.consolidator.run(day, cause=str(data.get("id")) if data.get("id") else None)
+
+    async def rollup(self, data: dict[str, Any]):
+        req = RollupRequest.model_validate(data)
+        if self.consolidator is None:
+            raise ValueError("consolidation is not configured (no event source)")
+        return await self.consolidator.rollup(
+            req.period, req.key, cause=str(data.get("id")) if data.get("id") else None
+        )
 
     async def on_module_deployed(self, msg: Message) -> None:
         name = str(msg.data.get("name", "")).strip().lower()
