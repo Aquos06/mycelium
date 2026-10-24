@@ -8,11 +8,17 @@ dependencies = [
   "pydantic>=2.6",
   "pydantic-settings>=2.3",
   "pyyaml>=6.0",
+  "sqlalchemy[asyncio]>=2.0",
+  "asyncpg>=0.29",
+  "alembic>=1.13",
 ]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["mycelium_sdk"]
+[tool.setuptools.packages.find]
+include = ["mycelium_sdk*"]
+
+[tool.setuptools.package-data]
+mycelium_sdk = ["db/migrations/core/alembic.ini", "db/migrations/core/script.py.mako", "db/migrations/core/versions/*.py"]
