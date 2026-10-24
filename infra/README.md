@@ -31,3 +31,18 @@ LAYA_ENDPOINT=http://192.168.0.107:8100
 ```
 
 and set `gate` / `decide` to `laya` in `services/gateway/providers.yaml`.
+
+## Status of Laya (2026-10-24, first live run)
+
+The server works: a decision with three typed questions answers in ~300 ms over the LAN, with
+per-option probabilities, routing and token usage. The **base checkpoint is not usable for our
+questions yet**: on eight obvious "which kind of memory does this need" cases it picked `none` six to
+eight times, with sharper criteria wording making it worse; only the yes/no "is this a durable fact"
+question carried signal. The model card says as much: base checkpoints are near chance until fine-tuned.
+
+Plan: the gateway's `decide` slot runs a forced tool call on the chat model as `active` and Laya as
+`shadow`; every decision and the planner's actual behaviour land in the traces, which becomes the
+labelled set to fine-tune Laya on (the card shows fine-tuning on two free T4s). Then flip `active`.
+
+Latency to check: ~300 ms matches the card's CPU numbers, not its 33 ms on a GPU. Inside the container:
+`docker compose exec laya python -c "import torch; print(torch.cuda.is_available())"`.
