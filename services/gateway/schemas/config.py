@@ -44,6 +44,7 @@ class ProviderConfig(BaseModel):
     price_out_per_m: float = Field(default=0.0, ge=0)  # USD per million output tokens
     headers: dict[str, str] = Field(default_factory=dict)  # extra HTTP headers (OpenRouter attribution, a proxy)
     dimensions: int | None = Field(default=None, ge=1)  # embed slots: the vector size the index expects
+    floor: float | None = Field(default=None, ge=0, le=1)  # decide slots: under this score the candidate is not it
     extra_body: dict[str, Any] = Field(default_factory=dict)  # vendor fields merged into every request body
 
     @model_validator(mode="before")
@@ -81,13 +82,13 @@ class ProviderConfig(BaseModel):
         return round((input_tokens * self.price_in_per_m + output_tokens * self.price_out_per_m) / 1_000_000, 6)
 
 
-SlotTask = Literal["complete", "embed"]
+SlotTask = Literal["complete", "embed", "decide"]
 
 
 class SlotConfig(BaseModel):
     """One job (planner, consolidate, embed, ...): which provider acts, which one shadows, and the choices."""
 
-    task: SlotTask = "complete"  # embed: rpc.llm.embed, through an OpenAI-shaped vendor
+    task: SlotTask = "complete"  # embed: rpc.llm.embed (OpenAI-shaped vendors); decide: rpc.llm.decide (any kind)
     active: str
     shadow: str | None = None
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)

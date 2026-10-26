@@ -148,3 +148,31 @@ async def test_embeddings_round_trip_through_pgvector(schema, tmp_path):
 
     with pytest.raises(ValueError, match="dimensions"):
         await index.set_embedding("people/mei.md", [1.0, 0.0], "bge-m3")
+
+
+async def test_catalogue_and_lookups_by_path(schema):
+    engine, name = schema
+    index = PostgresIndex(engine, schema=name)
+    await index.ensure_schema()
+    await reindex(Vault(FIXTURES / "vault"), index)
+
+    rows = await index.catalogue(since=date(2026, 10, 10))
+    assert [r.path for r in rows] == [
+        "hansen.md",
+        "modules/expenses.md",
+        "people/mei.md",
+        "places/ramen-place-xinyi.md",
+        "projects/mycelium.md",
+        "summaries/2026/10/14.md",
+        "summaries/2026/W42.md",
+    ]
+    assert [r.path for r in await index.catalogue(since=date(2026, 10, 20))] == [
+        *[r.path for r in rows[:5]],
+        "summaries/2026/W42.md",
+    ]
+    mei = await index.by_path("people/mei.md")
+    assert mei and mei.name == "mei" and mei.links == ["taipei", "ramen-place-xinyi"]
+    assert await index.by_path("nope.md") is None
+    week = await index.summary_by_path("summaries/2026/W42.md")
+    assert week and week.key == "2026-W42" and week.links == ["mei", "mycelium"]
+    assert len(await index.facts(since=date(2026, 10, 10))) == 4 and len(await index.facts(since=date(2026, 9, 1))) == 6

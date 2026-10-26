@@ -5,6 +5,7 @@ claude.py         the Anthropic SDK; the wire shape is native
 openai_compat.py  the generic /v1/chat/completions client; converts the wire shape both ways
 openai.py         OpenAI itself (max_completion_tokens)
 embeddings.py     the one embeddings provider: /v1/embeddings for TEI, vLLM, Ollama, OpenAI, ...
+decide.py         the scorers behind rpc.llm.decide: a TEI reranker, or any chat model through a forced tool
 ollama.py         Ollama next to the gateway (no key, long first-load timeout)
 vllm.py           vLLM on the GPU box (no key, tool parser flags on the server)
 
@@ -19,8 +20,9 @@ import os
 from collections.abc import Mapping
 
 from ..schemas import ProviderConfig
-from .base import EmbeddingProvider, Provider, ProviderError
+from .base import DecideProvider, EmbeddingProvider, Provider, ProviderError
 from .claude import ClaudeProvider
+from .decide import TeiRerankProvider, ToolDecideProvider
 from .embeddings import OpenAIEmbeddingsProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
@@ -31,7 +33,10 @@ __all__ = [
     "Provider",
     "ProviderError",
     "ClaudeProvider",
+    "DecideProvider",
     "EmbeddingProvider",
+    "TeiRerankProvider",
+    "ToolDecideProvider",
     "OpenAIEmbeddingsProvider",
     "OpenAICompatProvider",
     "OpenAIProvider",
@@ -51,9 +56,13 @@ PROVIDER_CLASSES: dict[str, type[OpenAICompatProvider]] = {
 
 def build_provider(
     name: str, cfg: ProviderConfig, env: Mapping[str, str] | None = None, task: str = "complete"
-) -> Provider | EmbeddingProvider:
+) -> Provider | EmbeddingProvider | DecideProvider:
     env = os.environ if env is None else env
     key = env.get(cfg.key_env) if cfg.key_env else None
+    if task == "decide":
+        if cfg.kind == "tei":
+            return TeiRerankProvider(name, cfg.model, endpoint=cfg.endpoint or "", api_key=key, headers=cfg.headers)
+        return ToolDecideProvider(name, build_provider(name, cfg, env, "complete"), cfg.model)  # type: ignore[arg-type]
     if task == "embed":
         if cfg.protocol != "openai":
             raise ValueError(f"{cfg.kind} cannot embed")

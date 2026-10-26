@@ -69,7 +69,7 @@ async def test_recall_by_date_follows_links_from_the_day_summary():
     ).model_dump()
 
     assert pack["query"] == "who did I have dinner with last Wednesday?"
-    assert pack["used"] == {"dates": ["2026-10-14"], "names": [], "periods": [], "embedding": False}
+    assert pack["used"] == {"dates": ["2026-10-14"], "names": [], "periods": [], "embedding": False, "decide": None}
     notes = [item["note"] for item in pack["items"]]
     assert notes[0] == "summaries/2026/10/14.md"
     assert set(notes[1:]) >= {"people/mei.md", "places/ramen-place-xinyi.md"}

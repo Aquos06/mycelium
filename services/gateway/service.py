@@ -2,6 +2,7 @@
 
     rpc.llm.complete   CompletionRequest -> {"ok": true, **CompletionReply}
     rpc.llm.embed      EmbedRequest      -> {"ok": true, **EmbedReply}
+    rpc.llm.decide     DecideRequest     -> {"ok": true, **DecideReply}
     rpc.llm.usage      {}                -> {"ok": true, **UsageReply}
 
 Every call publishes an LlmTrace on trace.llm (metadata and cost, never the content: Main's
@@ -31,6 +32,8 @@ from .schemas import (
     CompletionReply,
     CompletionRequest,
     CompletionResult,
+    DecideReply,
+    DecideRequest,
     EmbedReply,
     EmbedRequest,
     GatewayConfig,
@@ -47,7 +50,7 @@ from .schemas import (
 
 log = logging.getLogger("mycelium.gateway")
 
-AnyRequest = CompletionRequest | EmbedRequest
+AnyRequest = CompletionRequest | EmbedRequest | DecideRequest
 
 
 class BudgetExceeded(RuntimeError):
@@ -83,6 +86,7 @@ class GatewayService:
         await self.bus.connect()
         await self.bus.subscribe("rpc.llm.complete", self._wrap(self.complete), queue="gateway")
         await self.bus.subscribe("rpc.llm.embed", self._wrap(self.embed), queue="gateway")
+        await self.bus.subscribe("rpc.llm.decide", self._wrap(self.decide), queue="gateway")
         await self.bus.subscribe("rpc.llm.usage", self._wrap(self.usage), queue="gateway")
 
     # ---- dispatch ------------------------------------------------------------------------
@@ -152,6 +156,12 @@ class GatewayService:
         result, cost = await self._scored(req, slot, pcfg, lambda: provider.embed(req), "embed", len(req.texts), check)
         return EmbedReply(**result.model_dump(), provider=slot.active, cost_usd=cost)
 
+    async def decide(self, data: dict[str, Any]) -> DecideReply:
+        req = DecideRequest.model_validate(data)
+        slot, provider, pcfg = self._resolve(req.slot, "decide")
+        result, cost = await self._scored(req, slot, pcfg, lambda: provider.decide(req), "decide", len(req.candidates))
+        return DecideReply(**result.model_dump(), provider=slot.active, cost_usd=cost, floor=pcfg.floor)
+
     async def usage(self, _data: dict[str, Any]) -> UsageReply:
         month = self._month()
         used = await self._usage(month)
@@ -183,7 +193,7 @@ class GatewayService:
 
     async def _scored(
         self,
-        req: EmbedRequest,
+        req: EmbedRequest | DecideRequest,
         slot: SlotConfig,
         pcfg: ProviderConfig,
         call: Callable[[], Awaitable[Any]],
@@ -191,7 +201,7 @@ class GatewayService:
         items: int,
         check: Callable[[Any], str | None] | None = None,
     ) -> tuple[Any, float]:
-        """The embed path: budget, the caller's timeout, a result check, billing, one trace."""
+        """The embed and decide path: budget, the caller's timeout, a result check, billing, one trace."""
         month = self._month()
         used = await self._usage(month)
         budget = self.config.budget_usd_month

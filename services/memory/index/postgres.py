@@ -170,7 +170,9 @@ class PostgresIndex:
         ).order_by(n.c.name)
         return await self._notes(stmt)
 
-    async def facts(self, name: str | None = None, day: date | None = None) -> list[FactRecord]:
+    async def facts(
+        self, name: str | None = None, day: date | None = None, since: date | None = None
+    ) -> list[FactRecord]:
         n, f = self.t.notes, self.t.facts
         stmt = select(n.c.name.label("note"), f.c.day, f.c.text, f.c.source).select_from(
             f.join(n, n.c.id == f.c.note_id)
@@ -179,6 +181,8 @@ class PostgresIndex:
             stmt = stmt.where(n.c.name == name.lower())
         if day is not None:
             stmt = stmt.where(f.c.day == day)
+        if since is not None:
+            stmt = stmt.where(f.c.day >= since)
         stmt = stmt.order_by(f.c.day.desc(), f.c.id)
         async with self.engine.connect() as conn:
             rows = (await conn.execute(stmt)).mappings().all()
@@ -255,6 +259,29 @@ class PostgresIndex:
                 out.append(Neighbour(record=_summary(r), score=round(float(r["score"]), 4)))
         out.sort(key=lambda x: (-x.score, x.record.path))
         return out[:limit]
+
+    # ---- the decide step ------------------------------------------------------------------------
+
+    async def by_path(self, path: str) -> NoteRecord | None:
+        n = self.t.notes
+        rows = await self._notes(select(n).where(n.c.path == path))
+        return rows[0] if rows else None
+
+    async def summary_by_path(self, path: str) -> SummaryRecord | None:
+        s = self.t.summaries
+        async with self.engine.connect() as conn:
+            row = (await conn.execute(select(s).where(s.c.path == path))).mappings().first()
+        return _summary(row) if row is not None else None
+
+    async def catalogue(self, since: date | None = None) -> list[NoteRecord | SummaryRecord]:
+        n, s = self.t.notes, self.t.summaries
+        notes = await self._notes(select(n).order_by(n.c.path))
+        cond = s.c.period != "day"
+        if since is not None:
+            cond = or_(cond, s.c.key >= since.isoformat())
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(select(s).where(cond).order_by(s.c.path))).mappings().all()
+        return [*notes, *(_summary(r) for r in rows)]
 
 
 def _summary(row: Any) -> SummaryRecord:

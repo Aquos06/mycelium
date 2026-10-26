@@ -26,6 +26,7 @@ from pydantic import BaseModel, ValidationError
 from mycelium_sdk import Bus, Message, validation_message
 
 from .consolidate import Consolidator
+from .decide import Decider
 from .embedder import Embedder
 from .index import Index
 from .indexer import index_file, reindex
@@ -56,6 +57,7 @@ class MemoryService:
         index: Index,
         consolidator: Consolidator | None = None,
         embedder: Embedder | None = None,
+        decider: Decider | None = None,
         today: Callable[[], date] = date.today,
     ) -> None:
         self.bus = bus
@@ -63,6 +65,7 @@ class MemoryService:
         self.index = index
         self.consolidator = consolidator
         self.embedder = embedder
+        self.decider = decider
         self.today = today
         self._sweep: asyncio.Task | None = None  # at most one background sweep queued behind a write
 
@@ -142,6 +145,7 @@ class MemoryService:
             today=req.today or self.today(),
             budget=req.budget,
             embedder=self.embedder,
+            decider=self.decider,
             cause=str(data.get("id")) if data.get("id") else None,
         )
 

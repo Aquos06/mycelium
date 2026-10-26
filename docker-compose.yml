@@ -92,6 +92,10 @@ services:
       MEMORY_CONSOLIDATE_AT: ${MEMORY_CONSOLIDATE_AT-03:30}    # nightly consolidation, local time; set empty to disable (`-`, not `:-`)
       MEMORY_EMBED: ${MEMORY_EMBED:-true}                       # vectors through the gateway's embed slot (EMBED_PROVIDER)
       MEMORY_EMBED_EVERY: ${MEMORY_EMBED_EVERY:-10}             # minutes between sweeps for rows without a vector
+      MEMORY_DECIDE: ${MEMORY_DECIDE:-true}                     # the decide step for vague questions (DECIDE_PROVIDER)
+      MEMORY_DECIDE_FLOOR: ${MEMORY_DECIDE_FLOOR:-}                # empty: the scorer's own floor from providers.yaml
+      MEMORY_DECIDE_TIMEOUT: ${MEMORY_DECIDE_TIMEOUT:-30}         # seconds per scoring call; a reasoning model needs 60+
+      MEMORY_DECIDE_ROUNDS: ${MEMORY_DECIDE_ROUNDS:-2}
     volumes:
       - vault:/vault       # the markdown vault: the curated memory, human-editable (docs/MEMORY.md)
     networks: [mesh]
@@ -115,6 +119,8 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-}
       TEI_ENDPOINT: ${TEI_ENDPOINT:-}
       VLLM_EMBED_ENDPOINT: ${VLLM_EMBED_ENDPOINT:-}
+      DECIDE_PROVIDER: ${DECIDE_PROVIDER:-}
+      TEI_RERANK_ENDPOINT: ${TEI_RERANK_ENDPOINT:-}
       # model keys live here and in the builder, nowhere else: one env var per kind (schemas/kinds.py)
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
