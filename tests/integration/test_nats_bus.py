@@ -48,7 +48,10 @@ async def test_request_reply(bus):
 
 
 async def test_request_without_responder_times_out(bus):
-    with pytest.raises(Exception):  # noqa: B017 - nats raises NoRespondersError or TimeoutError
+    # Two ways nobody answers, one exception: NATS says "no responders" at once on a bare server, and the SDK
+    # maps it to TimeoutError; on a running stack the tracer subscribes to `>`, so the request simply times out.
+    # A caller (the web gateway's 504) needs to know one exception, not nats's.
+    with pytest.raises(TimeoutError):
         await bus.request(f"rpc.nobody.{uuid.uuid4().hex[:8]}", {}, timeout=0.5)
 
 

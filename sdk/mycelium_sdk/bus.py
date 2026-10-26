@@ -8,6 +8,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
+from nats.errors import NoRespondersError  # the one nats type a caller would otherwise have to know
 from pydantic import BaseModel, ConfigDict, Field
 
 from .subjects import subject_matches
@@ -106,7 +107,12 @@ class NatsBus:
         await self.nc.subscribe(subject, queue=queue or "", cb=_cb)
 
     async def request(self, subject: str, data: Payload, timeout: float = 2.0) -> dict[str, Any]:
-        msg = await self.nc.request(subject, _encode(data), timeout=timeout)
+        try:
+            msg = await self.nc.request(subject, _encode(data), timeout=timeout)
+        except NoRespondersError:
+            # NATS says so at once when nobody serves the subject; a caller sees the same TimeoutError a silent
+            # responder gives (and InMemoryBus raises), so "nobody answered" is one exception, not two
+            raise TimeoutError(f"no responders for {subject}") from None
         return _decode(msg.data)
 
     async def flush(self) -> None:

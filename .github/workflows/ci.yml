@@ -1,6 +1,7 @@
 # CI: runs on every pull request, whatever its base (a PR stacked on another feature branch is checked
 # too), and is reused by cd.yml on every push to dev / stage / main.
-# lint -> unit (+ every module's own tests) -> integration (real NATS + Postgres) -> e2e (full compose stack)
+# lint -> unit (+ every module's own tests) -> integration (real NATS + Postgres) -> e2e (full compose stack);
+# frontend (typecheck, lint, vitest, build) runs alongside; frontend-e2e (Playwright) only on a PR into main
 name: ci
 
 on:
@@ -34,6 +35,61 @@ jobs:
       - run: ruff format --check .
       - name: compose file is valid
         run: cp .env.example .env && docker compose config -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4   # the version is frontend/package.json's packageManager; naming one here too is an error
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: typecheck
+        run: pnpm typecheck
+      - name: lint
+        run: pnpm lint
+      - name: unit and integration tests (vitest)
+        run: pnpm test
+      - name: build (mock mode, no gateway)
+        run: NEXT_PUBLIC_MOCK=1 pnpm build
+
+  # Playwright is the release gate: only on a pull request into main (day-to-day PRs go into dev).
+  frontend-e2e:
+    if: github.base_ref == 'main'
+    needs: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4   # the version is frontend/package.json's packageManager; naming one here too is an error
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: e2e (mock mode, two viewports)
+        run: pnpm test:e2e
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          retention-days: 7
 
   unit:
     needs: lint

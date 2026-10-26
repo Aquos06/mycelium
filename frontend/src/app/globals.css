@@ -1,0 +1,178 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   MYCELIUM TOKENS — the design system (Mycelium Design System.dc.html) as Tailwind's theme.
+   Paper, not chrome. Colour means a place on the bus: the six domain hues map one-to-one to
+   subject prefixes (lib/domains.ts) and are the only accents besides moss, the system's own.
+   Every colour a component uses comes from here; a hex literal in a component is a design-law
+   violation (lib/__tests__/designlaws.unit.test.ts).
+   ───────────────────────────────────────────────────────────────────────────── */
+@theme {
+  --color-*: initial;
+  --color-white: #ffffff;
+  --color-transparent: transparent;
+
+  /* surfaces */
+  --color-paper: #fbfaf7;
+  --color-surface: #ffffff;
+  --color-sidebar: #f6f5f1;
+  --color-sunken: #f4f3ef;
+  --color-hover: #eeede8;
+  --color-active: #eae8e3;
+  --color-night: #0f0f0e;
+  --color-night-raised: #1e1e1c;
+
+  /* hairlines */
+  --color-line: #eae8e3;
+  --color-line-strong: #dedbd3;
+
+  /* ink, strongest → faintest */
+  --color-ink: #1a1a18;
+  --color-ink1: #3a3936;
+  --color-ink2: #5c5b56;
+  --color-ink3: #9a988f;
+  --color-ink4: #c2c0b8;
+  --color-on-night: #f2f1ec;
+  --color-on-night-soft: #a8a69e;
+  --color-on-night-faint: #8a8880;
+
+  /* moss: the system itself — running, live, the one action */
+  --color-moss: #2e7d4f;
+  --color-moss-deep: #1f5c39;
+  --color-moss-soft: #e8f2eb;
+  --color-moss-hover: #dcebe1;
+  --color-moss-glow: #6ec891;
+  --color-moss-spark: #dce7df;
+
+  /* states */
+  --color-amber: #c2831c;
+  --color-amber-text: #a66e12;
+  --color-amber-soft: #faf1e1;
+  --color-amber-line: #f1e3c4;
+  --color-red: #d14343;
+  --color-red-text: #b83737;
+  --color-red-soft: #fbe9e9;
+
+  /* domains (lib/domains.ts reads the same values) */
+  --color-sense: #3e63dd;
+  --color-sense-soft: #ebeffc;
+  --color-brain: #7b5cd6;
+  --color-brain-soft: #f1edfb;
+  --color-build: #c2831c;
+  --color-build-soft: #faf1e1;
+  --color-sys: #6b6f76;
+  --color-sys-soft: #eff0f1;
+  --color-out: #d9573b;
+  --color-out-soft: #fbebe6;
+  --color-rpc: #5c5b56;
+  --color-rpc-soft: #f4f3ef;
+  --color-voice-chip: #1c2340;
+  --color-voice-chip-text: #8fa6f0;
+
+  /* radius ladder: row · button · card · composer */
+  --radius-row: 6px;
+  --radius-btn: 8px;
+  --radius-card: 12px;
+  --radius-composer: 18px;
+
+  --shadow-raised: 0 1px 2px rgba(26, 26, 24, 0.04), 0 8px 24px rgba(26, 26, 24, 0.05);
+  --shadow-card: 0 1px 2px rgba(26, 26, 24, 0.04), 0 6px 20px rgba(26, 26, 24, 0.04);
+  --shadow-lift: 0 2px 10px rgba(26, 26, 24, 0.05);
+  --shadow-seg: 0 1px 2px rgba(26, 26, 24, 0.08);
+  --shadow-node: 0 1px 2px rgba(26, 26, 24, 0.05);
+
+  --animate-pulse-soft: pulse-soft 2s ease-in-out infinite;
+  --animate-spin-fast: spin 0.8s linear infinite;
+  --animate-breathe: breathe 4s ease-in-out infinite;
+  --animate-row-in: row-in 1.6s ease-out both;
+
+  @keyframes pulse-soft {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+  @keyframes breathe {
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.06);
+    }
+  }
+  @keyframes row-in {
+    from {
+      background: #eef5f0;
+    }
+    to {
+      background: transparent;
+    }
+  }
+}
+
+/* The fonts come from next/font (app/layout.tsx) as CSS variables on <html>. */
+@theme inline {
+  --font-sans: var(--font-geist), system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* The mark draws itself once (components/ui/Logo.tsx). Plain keyframes: an inline style names them. */
+@keyframes mz-draw {
+  from {
+    stroke-dashoffset: 100;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes mz-pop {
+  0% {
+    transform: scale(0);
+  }
+  60% {
+    transform: scale(1.35);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    @apply bg-surface text-ink font-sans text-[14px] leading-normal antialiased;
+    overscroll-behavior: none;
+  }
+  a {
+    @apply text-moss;
+  }
+  button {
+    cursor: pointer;
+  }
+  textarea,
+  input,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001s !important;
+      animation-iteration-count: 1 !important;
+    }
+  }
+}
+
+@utility text-pretty {
+  text-wrap: pretty;
+}

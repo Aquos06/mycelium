@@ -1,0 +1,13 @@
+# frontend (Next.js, pnpm). The lockfile is committed; everything pnpm or next generates is not.
+
+node_modules/
+.pnpm-store/
+.pnpm/
+.pnpm-debug.log*
+.next/
+out/
+test-results/
+playwright-report/
+*.tsbuildinfo
+next-env.d.ts
+.env*.local

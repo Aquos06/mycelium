@@ -36,6 +36,8 @@ jobs:
           - { image: supervisor, context: ., dockerfile: services/supervisor/Dockerfile }
           - { image: tracer, context: ., dockerfile: services/tracer/Dockerfile }
           - { image: telegram, context: ., dockerfile: services/telegram/Dockerfile }
+          - { image: web, context: ., dockerfile: services/web/Dockerfile }
+          - { image: frontend, context: frontend, dockerfile: frontend/Dockerfile }   # no NEXT_PUBLIC_API_BASE: same origin, Caddy in front
           - { image: builder, context: ., dockerfile: builder/Dockerfile }
           - { image: module-base, context: sdk, dockerfile: sdk/Dockerfile }
     steps:
@@ -124,7 +126,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: pull images
         working-directory: ${{ steps.dir.outputs.path }}
-        run: docker compose pull tracer supervisor
+        run: docker compose pull tracer supervisor web frontend
       - name: roll out
         working-directory: ${{ steps.dir.outputs.path }}
         # supervisor restarts with RECONCILE_ON_START=true and rebuilds every running module from this commit
