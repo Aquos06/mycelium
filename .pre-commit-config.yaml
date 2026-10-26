@@ -1,0 +1,29 @@
+# Pre-commit hooks: the FAST checks, on every commit. Install once:
+#   uv tool install pre-commit && pre-commit install
+# Run by hand: pre-commit run --all-files
+#
+# Only what takes seconds lives here: ruff, the Python unit tests (no NATS, no Postgres), the frontend's
+# typecheck and vitest. The wired suites (integration, the compose e2e, Playwright) run in CI (ci.yml).
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: python-unit-tests
+        name: python unit tests (pytest tests/unit)
+        entry: .venv/bin/python -m pytest tests/unit -q -x
+        language: system
+        files: ^(sdk/|services/|scripts/|tests/unit/|tests/conftest\.py).*\.py$
+        pass_filenames: false
+
+      - id: frontend-checks
+        name: frontend typecheck + vitest
+        entry: sh -c 'cd frontend && pnpm typecheck && pnpm test'
+        language: system
+        files: ^frontend/.*\.(ts|tsx|css|json)$
+        pass_filenames: false

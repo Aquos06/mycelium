@@ -6,12 +6,14 @@ embedding.py    rpc.llm.embed: EmbedRequest in, EmbedResult from a provider, Emb
 decide.py       rpc.llm.decide: a question and candidates in, a score per candidate out
 completion.py   rpc.llm.complete: CompletionRequest in, CompletionResult from a provider, CompletionReply out
 usage.py        the monthly spend counter in KV and the rpc.llm.usage reply
+describe.py     rpc.llm.config: the loaded slots and providers with key states, for the settings page
 trace.py        what goes on trace.llm and trace.llm.shadow
 """
 
 from .completion import ROLES, CompletionReply, CompletionRequest, CompletionResult, ToolCall, Usage
 from .config import GatewayConfig, KeyState, ProviderConfig, SlotConfig, SlotTask
 from .decide import Candidate, DecideReply, DecideRequest, DecideResult, Score, ScoreSheet
+from .describe import ConfigReply, ProviderInfo, SlotInfo
 from .embedding import EmbedReply, EmbedRequest, EmbedResult
 from .kinds import KINDS, KindInfo, Protocol, ProviderKind
 from .trace import LlmTrace, ShadowResult, ShadowSide, ShadowTrace
@@ -38,6 +40,9 @@ __all__ = [
     "EmbedReply",
     "EmbedRequest",
     "EmbedResult",
+    "ConfigReply",
+    "ProviderInfo",
+    "SlotInfo",
     "KINDS",
     "KindInfo",
     "Protocol",

@@ -818,3 +818,27 @@ async def test_rpc_llm_decide_bills_tokens_and_traces_items():
     assert not bad["ok"] and "unique" in bad["error"]
     bad = await bus.request("rpc.llm.decide", {"slot": "planner", "query": "q", "candidates": CANDIDATES})
     assert not bad["ok"] and "unknown slot" in bad["error"]
+
+
+async def test_rpc_llm_config_describes_slots_with_key_states_and_never_a_key():
+    bus = InMemoryBus()
+    cfg = _config(shadow="local")
+    providers = {
+        ("planner", "claude"): ScriptedProvider("claude", "claude-sonnet-5-5", []),
+        ("planner", "local"): ScriptedProvider("local", "qwen", []),
+    }
+    svc = GatewayService(bus, cfg, InMemoryKV(), providers=providers, env={"ANTHROPIC_API_KEY": "sk-ant-secret"})
+    await svc.start()
+    reply = await bus.request("rpc.llm.config", {})
+    assert reply["ok"] and reply["budget_usd_month"] == 10.0 and list(reply["slots"]) == ["planner"]
+    slot = reply["slots"]["planner"]
+    assert slot["task"] == "complete" and slot["active"] == "claude" and slot["shadow"] == "local"
+    claude, local = slot["providers"]["claude"], slot["providers"]["local"]
+    assert claude["kind"] == "claude" and claude["key_env"] == "ANTHROPIC_API_KEY" and claude["key_state"] == "ok"
+    assert claude["price_in_per_m"] == 3.0 and claude["max_tokens"] == 1024
+    assert local["kind"] == "openai_compat" and local["endpoint"] == "http://ollama:11434/v1"
+    assert local["key_state"] == "not-needed"
+    assert "secret" not in str(reply)
+
+    bare = GatewayService(bus, cfg, InMemoryKV(), providers=providers, env={})
+    assert (await bare.describe({})).slots["planner"].providers["claude"].key_state == "missing"

@@ -15,7 +15,7 @@ data and event hooks — and plugs it into the same bus as everything else.
 ## How it fits together
 
 ```
- inputs (chat, voice, screen, cam, IoT)            channels: telegram, cli (web app later)
+ inputs (chat, voice, screen, cam, IoT)            channels: telegram, web, cli
             │ sense.*                                   ▲ out.say / out.ask / out.notify
             ▼                                           │
  ┌────────────────────── NATS + JetStream ────────────────────────────┐
@@ -38,6 +38,7 @@ data and event hooks — and plugs it into the same bus as everything else.
 | Gateway | `services/gateway/` | `rpc.llm.complete`, `rpc.llm.embed` and `rpc.llm.decide` behind slots and providers (`providers.yaml`): Claude, OpenAI, Ollama, vLLM, TEI, OpenRouter, Groq, DeepSeek, Mistral, Gemini, xAI or any OpenAI-compatible endpoint; shadow mode, monthly budget, `trace.llm` |
 | Main | `services/main/` | on `sense.chat`: recall pack + thread → planner with tools (`remember`, `recall`, `ask_module`, `ask`) → `out.say` / `out.ask` + `trace.plan` |
 | Telegram | `services/telegram/` | your phone ↔ `sense.chat` / `out.say`; `out.ask` as buttons, taps back as `sense.feedback` (optional profile) |
+| Web | `services/web/` + `frontend/` | the web gateway (FastAPI, `/api/v1`, the bus over one websocket, chat on channel `web`) on `:8080`, and the app (Next.js, ARCHITECTURE §10: home, chat, modules, settings) on `http://localhost:3000` |
 | Template | `template/` | what every new module starts from, incl. **`CONTRACT.md`** (the builder's rulebook) |
 | Example | `modules/hello/` | reference module: counts chat messages, answers `stats` |
 | Builder | `builder/` | spec → module via Claude Agent SDK, then independent test verification |
@@ -55,7 +56,10 @@ data and event hooks — and plugs it into the same bus as everything else.
 ```bash
 cp .env.example .env            # set POSTGRES_PASSWORD; ANTHROPIC_API_KEY for the planner and builder
 make venv                       # local tools: sdk, pytest, ruff
-make up                         # nats, postgres, tracer, supervisor, memory, gateway, main
+make up                         # nats, postgres, tracer, supervisor, memory, gateway, main, web gateway, frontend
+open http://localhost:3000      # the app: chat, the live bus, modules, settings (WEB_TOKEN in .env locks it)
+make backend-dev                # the backend alone, waits until it answers (services/Makefile: dev, down, logs, restart, dev-web for a hot gateway loop)
+make frontend-dev               # the app with hot reload on :3000
 make deploy-hello               # supervisor builds + starts modules/hello
 .venv/bin/python scripts/mctl.py chat "remember that 小美 is moving to Tainan in December"
 .venv/bin/python scripts/mctl.py chat "what did 小美 tell me?"

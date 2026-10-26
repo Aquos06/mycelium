@@ -1,4 +1,4 @@
-.PHONY: help venv up local down logs ps deploy-hello migrate migration test test-unit test-modules test-integration test-e2e lint fmt build-module
+.PHONY: help venv up local down logs ps deploy-hello migrate migration test test-unit test-modules test-integration test-e2e lint fmt build-module backend-dev backend-run frontend-dev frontend-test frontend-e2e
 
 PY ?= python3
 VENV ?= .venv
@@ -6,13 +6,13 @@ BIN = $(VENV)/bin
 MODEL ?= qwen2.5:14b
 
 help:
-	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-18s %s\n", $$1, $$2}'
+	@grep -E '^[a-z0-9-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-18s %s\n", $$1, $$2}'
 
 venv: ## create .venv with sdk + dev deps
 	$(PY) -m venv $(VENV)
 	$(BIN)/pip install -q -e sdk -r requirements-dev.txt
 
-up: ## start core stack (nats, postgres, tracer, supervisor, memory, gateway, main)
+up: ## start core stack (nats, postgres, tracer, supervisor, memory, gateway, main, web gateway on :8080, the app on :3000)
 	docker compose up -d --build
 
 local: ## start Ollama next to the stack and pull MODEL (default qwen2.5:14b) plus bge-m3 for embeddings; then set PLANNER_PROVIDER / EMBED_PROVIDER=ollama
@@ -43,6 +43,21 @@ deploy-hello: ## deploy the example module
 
 build-module: ## NAME=expenses SPEC=specs/expenses.md -> run the builder
 	docker compose run --rm builder --name $(NAME) --spec $(SPEC) --publish
+
+backend-dev: ## up the backend only (no frontend) and wait until it answers; services/Makefile has down, logs, restart, dev-web, run
+	$(MAKE) -C services dev
+
+backend-run: ## SERVICE=main|memory|gateway|web|supervisor -> one service natively against the compose bus
+	$(MAKE) -C services run SERVICE=$(SERVICE)
+
+frontend-dev: ## the app with hot reload on :3000 against the web gateway on :8080 (make up); NEXT_PUBLIC_MOCK=1 for no gateway at all
+	cd frontend && pnpm install && pnpm dev
+
+frontend-test: ## typecheck, lint, unit + integration (vitest)
+	cd frontend && pnpm install && pnpm typecheck && pnpm lint && pnpm test
+
+frontend-e2e: ## Playwright against a mock-mode production build on :3131 (needs: pnpm exec playwright install chromium)
+	cd frontend && pnpm install && pnpm test:e2e
 
 lint: ## ruff
 	$(BIN)/ruff check .

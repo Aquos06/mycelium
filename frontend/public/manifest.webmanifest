@@ -1,0 +1,11 @@
+{
+  "name": "mycelium",
+  "short_name": "mycelium",
+  "description": "Your assistant, its memory and the modules it grew.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FBFAF7",
+  "theme_color": "#2E7D4F",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

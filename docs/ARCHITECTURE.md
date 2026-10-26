@@ -502,7 +502,7 @@ Raw pixels and audio never leave the box; only text crosses the bus.
 
 ---
 
-## 10. Web app — new
+## 10. Web app — v0 built
 
 Hansen's own front end: the full app, not a dashboard. Chat is one tab. Installable on the phone as
 a PWA, so there is one codebase for desktop and mobile.
@@ -522,12 +522,30 @@ only writes JSON that a schema validates, no frontend toolchain lives in a modul
 panel cannot run code on the LAN. Escape hatch, later and approved like actuation: an iframe for a
 module that truly needs custom UI.
 
-**Stack.** Next.js as a mostly static SPA (its server features add little here), served by Caddy on
-the LAN, reached from outside through Tailscale. All logic stays in Python: the app talks only to a
-small **web gateway** service that bridges the bus to the browser over websockets and holds the one
-login. It never touches Postgres or NATS directly, and Next API routes hold no business logic, or
-there would be a second backend. The chat tab uses a chat component library rather than hand-written
-bubbles and streaming: wrap at the component level.
+**Stack.** Next.js 16 (React, TypeScript, Tailwind, shadcn-style primitives on Base UI, TanStack Query,
+zod) in `frontend/`, the same shape as the other apps in this family, served by its own container on
+the LAN behind Caddy and reached from outside through Tailscale. All logic stays in Python: the app
+talks only to a small **web gateway** service (`services/web/`, FastAPI) that bridges the bus to the
+browser over one websocket and holds the one login. It never touches Postgres or NATS directly, and
+Next holds no business logic and no API routes, or there would be a second backend. The layout is the
+house one: `lib/api` is the only place that touches the network, split by the gateway's domains;
+`lib/queries` are the TanStack hooks components call; `lib/schemas` parses what the gateway sends with
+zod, mirroring its pydantic models; `components/screens` is one folder per screen; a mock mode runs the
+whole app from fixtures and is what Playwright drives.
+
+*Built (v0): the gateway is one package per domain with a router that only routes, under `/api/v1`:
+`chat` (say something, answer an `out.ask`, vote) publishes on channel `web`; `events` is the recent
+buffer over REST and every new bus event over `/api/v1/events/ws`; `rpc/<subject>` forwards any `rpc.*`
+request and returns the responder's own reply; `system/health` is the state and the login check. One
+bearer token (`WEB_TOKEN`) is a default-deny gate on the whole surface, CORS admits the app's origin,
+every refusal is `{ok: false, error}`. The app has Home (the live bus, what needs you, what is alive),
+Chat (a thread with Main, its plan under each reply, `out.ask` as a card), Modules and a module page
+(manifest wiring, ask it directly, logs, pause and rebuild), Settings (slots and providers from
+`rpc.llm.config`, key states, the environment, read-only), the Voice screen as a placeholder until a
+`sense.voice` bridge exists, and Login. Tests: a unit test per helper and per gateway function, an
+integration test per endpoint and per screen, Playwright e2e at two viewports in mock mode, and a
+design-laws test that enforces the layout. Open: inbox of past asks, module panels from the manifest,
+builds, the trace viewer, settings that write back.*
 
 ---
 
@@ -712,7 +730,7 @@ and coding agents write Python more reliably than anything else.
 | Host services | Python 3.12, asyncio, pydantic v2, SQLAlchemy 2 (async, Core only) + Alembic | one language for one person; nothing here is CPU-bound |
 | Generated modules | **Python only** | one SDK, one contract, one test runner; stdlib `sqlite3` means zero dependencies by default |
 | Wrapped open software | anything | it is a container; this is how other languages get in |
-| Web app | TypeScript, Next.js | the one place Python is wrong (§10) |
+| Web app | TypeScript, Next.js + React | the one place Python is wrong (§10) |
 | Module panels | declarative JSON | validated by a schema, rendered by the app, cannot run code |
 | Specs, manifests, config | Markdown, YAML | already so |
 

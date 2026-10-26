@@ -1,9 +1,13 @@
+# python
 .venv/
 .deploy-venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+*.egg-info/
+
+# the stack
 reports/
 builds/
 .env
@@ -11,4 +15,11 @@ builds/
 !.env.example
 *.sqlite3
 .DS_Store
-*.egg-info/
+
+# node / pnpm, anywhere in the tree (frontend/.gitignore covers the Next.js build output itself)
+node_modules/
+.pnpm-store/
+.pnpm/
+.pnpm-debug.log*
+.npm/
+# pnpm-lock.yaml is committed on purpose: CI and the image install with --frozen-lockfile

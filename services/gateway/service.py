@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from datetime import UTC, datetime
@@ -32,6 +33,7 @@ from .schemas import (
     CompletionReply,
     CompletionRequest,
     CompletionResult,
+    ConfigReply,
     DecideReply,
     DecideRequest,
     EmbedReply,
@@ -39,10 +41,12 @@ from .schemas import (
     GatewayConfig,
     LlmTrace,
     ProviderConfig,
+    ProviderInfo,
     ShadowResult,
     ShadowSide,
     ShadowTrace,
     SlotConfig,
+    SlotInfo,
     Usage,
     UsageRecord,
     UsageReply,
@@ -75,6 +79,7 @@ class GatewayService:
         self.config = config
         self.kv = kv
         self.now = now
+        self.env = os.environ if env is None else env  # for key states, never read for the keys themselves
         self.providers: dict[tuple[str, str], Any] = dict(providers or {})
         for slot_name, slot in config.slots.items():
             for pname, pcfg in slot.providers.items():
@@ -88,6 +93,7 @@ class GatewayService:
         await self.bus.subscribe("rpc.llm.embed", self._wrap(self.embed), queue="gateway")
         await self.bus.subscribe("rpc.llm.decide", self._wrap(self.decide), queue="gateway")
         await self.bus.subscribe("rpc.llm.usage", self._wrap(self.usage), queue="gateway")
+        await self.bus.subscribe("rpc.llm.config", self._wrap(self.describe), queue="gateway")
 
     # ---- dispatch ------------------------------------------------------------------------
 
@@ -166,6 +172,33 @@ class GatewayService:
         month = self._month()
         used = await self._usage(month)
         return UsageReply(**used.model_dump(), month=month, budget_usd_month=self.config.budget_usd_month)
+
+    async def describe(self, _data: dict[str, Any]) -> ConfigReply:
+        """The loaded providers.yaml for the settings page: which provider serves each slot, whether its key is set."""
+        return ConfigReply(
+            budget_usd_month=self.config.budget_usd_month,
+            slots={
+                name: SlotInfo(
+                    task=slot.task,
+                    active=slot.active,
+                    shadow=slot.shadow,
+                    providers={
+                        pname: ProviderInfo(
+                            kind=p.kind,
+                            model=p.model,
+                            endpoint=p.endpoint,
+                            key_env=p.key_env,
+                            key_state=p.key_state(self.env),
+                            max_tokens=p.max_tokens,
+                            price_in_per_m=p.price_in_per_m,
+                            price_out_per_m=p.price_out_per_m,
+                        )
+                        for pname, p in slot.providers.items()
+                    },
+                )
+                for name, slot in self.config.slots.items()
+            },
+        )
 
     # ---- internals -----------------------------------------------------------------------
 

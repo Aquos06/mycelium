@@ -150,6 +150,48 @@ services:
       nats: { condition: service_healthy }
     restart: unless-stopped
 
+  web:
+    build: { context: ., dockerfile: services/web/Dockerfile }
+    image: ${REGISTRY:-mycelium}/web:${IMAGE_TAG:-dev}
+    environment:
+      NATS_URL: nats://nats:4222
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WEB_TOKEN: ${WEB_TOKEN:-}                        # the one login; empty leaves it open, so only on a trusted LAN
+      WEB_USER_NAME: ${WEB_USER_NAME:-Hansen}
+      WEB_CORS_ORIGINS: ${WEB_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}   # where the frontend is served from
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"             # Caddy / Tailscale in front of it for anything beyond this machine
+    networks: [mesh]
+    depends_on:
+      nats: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: frontend
+      args:
+        # baked in: where the BROWSER reaches the web gateway. `-` not `:-`, so an EMPTY value stays empty (= same origin, Caddy)
+        NEXT_PUBLIC_API_BASE: ${PUBLIC_API_BASE-http://localhost:8080}
+    image: ${REGISTRY:-mycelium}/frontend:${IMAGE_TAG:-dev}
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    networks: [mesh]
+    depends_on:
+      web: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/login').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
   ollama:
     profiles: [local]        # local planner / shadow (providers.yaml kind: ollama). `make local` pulls the model.
     image: ${OLLAMA_IMAGE:-ollama/ollama:latest}   # pin via OLLAMA_IMAGE in .env once chosen

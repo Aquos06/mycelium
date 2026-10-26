@@ -10,3 +10,4 @@ builds
 .env.*
 modules
 tests
+frontend
