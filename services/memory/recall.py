@@ -1,7 +1,8 @@
 """Recall: which notes should the planner get to read for this question?
 
-Dates, then names, then one hop of links, then (later) embeddings. Ordinary code: the same question
-opens the same notes, and the pack says why each one was opened.
+Dates and periods, then names, then one hop of links, and when none of those found anything, the notes and
+summaries whose vectors are near the question's. Ordinary code: the same question opens the same notes, and
+the pack says why each one was opened.
 """
 
 from __future__ import annotations
@@ -9,8 +10,10 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
+from .decide import Decider
+from .embedder import Embedder
 from .index import FUZZY_THRESHOLD, Index
-from .schemas import Match, NoteRecord, RecallBudget, RecallItem, RecallPack, RecallUsed
+from .schemas import DecideUsed, Match, NoteRecord, RecallBudget, RecallItem, RecallPack, RecallUsed
 from .vault import Vault, month_key, period_days, week_key
 
 WEEKDAYS = {
@@ -70,6 +73,7 @@ FUZZY_STOPWORDS = (
 CJK_RE = re.compile(r"[぀-ヿ一-鿿]")
 EXCERPT_CHARS = 240
 AMBIGUOUS_MONTHS = {"may", "march"}  # also ordinary words: only with a preposition or capitalised
+LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]+)?\]\]")  # [[slug]], [[slug|label]] -> slug
 PERIOD_RE = re.compile(
     r"\b(?P<this_week>this week)\b|\b(?P<last_week>last week)\b|\b(?P<this_month>this month)\b"
     r"|\b(?P<last_month>last month)\b|\b(?:in |during )?(?P<month>" + "|".join(MONTHS) + r")\b(?: (?P<year>\d{4}))?",
@@ -194,7 +198,16 @@ async def _excerpt(index: Index, record: NoteRecord, days: list[date], words: se
     return _clip(record.summary)
 
 
-async def recall(vault: Vault, index: Index, query: str, today: date, budget: int = 8) -> RecallPack:
+async def recall(
+    vault: Vault,
+    index: Index,
+    query: str,
+    today: date,
+    budget: int = 8,
+    embedder: Embedder | None = None,
+    decider: Decider | None = None,
+    cause: str | None = None,
+) -> RecallPack:
     items: list[RecallItem] = []
     opened: set[str] = set()
     used = RecallUsed()
@@ -212,6 +225,8 @@ async def recall(vault: Vault, index: Index, query: str, today: date, budget: in
         return add(record.path, why, await _excerpt(index, record, days, words))
 
     async def hop(from_path: str, links: list[str]) -> None:
+        if decider is not None:
+            return  # the scorer picks the hops (seeded decide below) instead of every link in file order
         for link in links:
             if target := await index.get(link):
                 await add_note(target, f"linked from {from_path}")
@@ -255,10 +270,66 @@ async def recall(vault: Vault, index: Index, query: str, today: date, budget: in
         await add_note(record, why)
         await hop(record.path, record.links)
 
+    exact = [i.note for i in items]  # what the dates, periods and names rungs opened: the seeds of the decide step
+
     # 3. the recent past is always context
     for why, d in (("today", today), ("yesterday", today - timedelta(days=1))):
         if s := await index.summary("day", d.isoformat()):
             add(s.path, why, _clip(s.text))
 
-    # 4. embeddings: not wired yet (M4); the pack says so
+    # 4. the decide step. A vague question ("that place with the good shoyu"): the scorer reads the catalogue and
+    #    recall hops from what it picks. A named or dated question: the notes just opened seed the loop, and the
+    #    scorer picks which of their links, backlinks and facts matter for this question ("where did I eat with
+    #    Mei"). With no decider, or when it fails on a vague question, the notes and summaries whose vectors are
+    #    near the question's. Nothing when neither slot is available.
+    vague = not (used.dates or used.periods or used.names)
+    if decider is not None and len(items) < budget:
+        report = await decider.decide(
+            query, today, exclude=set(opened), seeds=exact or None, budget=budget - len(items), cause=cause
+        )
+        used.decide = DecideUsed(
+            floor=report.floor,
+            seeds=report.seeds,
+            rounds=report.rounds,
+            calls=report.calls,
+            scored=report.scored,
+            picked=len(report.picked),
+            model=report.model,
+            latency_ms=report.latency_ms,
+            error=report.error,
+        )
+        for pick in report.picked:
+            how = f"scored {pick.score:.2f} for the question"
+            why = how if pick.via == "catalogue" else f"{pick.via}, {how}"
+            if pick.excerpt is not None:  # a fact: show that line on its note, open the note if it is not yet
+                if item := next((i for i in items if i.note == pick.path), None):
+                    if pick.excerpt not in item.excerpt:
+                        item.excerpt = _clip(f"{item.excerpt} · {pick.excerpt}" if item.excerpt else pick.excerpt)
+                else:
+                    add(pick.path, why, _clip(pick.excerpt))
+                # the notes a picked fact names are the answer's own pointers ("dinner at [[ramen-place-xinyi]]")
+                if owner := await index.by_path(pick.path):
+                    for link in LINK_RE.findall(pick.excerpt):
+                        if target := await index.get(link):
+                            await add_note(target, f"named in {owner.name}'s fact of {pick.excerpt[:10]}")
+            elif pick.path.startswith("summaries/"):
+                if s := await index.summary_by_path(pick.path):
+                    add(s.path, why, _clip(s.text))
+            elif record := await index.by_path(pick.path):
+                await add_note(record, why)
+        if report.picked or report.error is None or not vague:
+            embedder = None  # the decide step answered (even with nothing): no second opinion from the vectors
+    if embedder is not None and vague and len(items) < budget:
+        vector = await embedder.embed_query(query, cause)
+        if vector is not None:
+            used.embedding = True
+            for nb in await index.nearest(vector, limit=budget):
+                if nb.score < embedder.min_score:
+                    break
+                why = f"similar to the question ({nb.score:.2f})"
+                if isinstance(nb.record, NoteRecord):
+                    await add_note(nb.record, why)
+                else:
+                    add(nb.record.path, why, _clip(nb.record.text))
+
     return RecallPack(query=query, items=items, used=used, budget=RecallBudget(notes_opened=len(items), max=budget))

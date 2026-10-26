@@ -5,6 +5,7 @@
     openai         openai     https://api.openai.com/v1                                 OPENAI_API_KEY
     ollama         openai     http://ollama:11434/v1                                    none, local
     vllm           openai     http://vllm:8000/v1                                       none, local
+    tei            openai     http://tei:80/v1   (embeddings; /rerank for decide)       none, local
     openrouter     openai     https://openrouter.ai/api/v1                              OPENROUTER_API_KEY
     groq           openai     https://api.groq.com/openai/v1                            GROQ_API_KEY
     deepseek       openai     https://api.deepseek.com/v1                               DEEPSEEK_API_KEY
@@ -29,6 +30,7 @@ ProviderKind = Literal[
     "openai",
     "ollama",
     "vllm",
+    "tei",
     "openrouter",
     "groq",
     "deepseek",
@@ -58,6 +60,7 @@ KINDS: dict[ProviderKind, KindInfo] = {
         KindInfo(kind="openai", protocol="openai", endpoint="https://api.openai.com/v1", key_env="OPENAI_API_KEY"),
         KindInfo(kind="ollama", protocol="openai", endpoint="http://ollama:11434/v1", needs_key=False, local=True),
         KindInfo(kind="vllm", protocol="openai", endpoint="http://vllm:8000/v1", needs_key=False, local=True),
+        KindInfo(kind="tei", protocol="openai", endpoint="http://tei:80/v1", needs_key=False, local=True),
         KindInfo(
             kind="openrouter", protocol="openai", endpoint="https://openrouter.ai/api/v1", key_env="OPENROUTER_API_KEY"
         ),

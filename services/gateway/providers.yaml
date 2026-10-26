@@ -7,7 +7,8 @@
 #
 # ${VAR:-default} is filled from the gateway's environment (.env via compose), so this file stays the same
 # on every box: PLANNER_PROVIDER / CONSOLIDATE_PROVIDER pick the active provider, VLLM_ENDPOINT / VLLM_MODEL
-# point at a vLLM that is not the compose one.
+# point at a vLLM that is not the compose one; EMBED_PROVIDER / TEI_ENDPOINT do the same for embeddings and
+# DECIDE_PROVIDER / TEI_RERANK_ENDPOINT for the decide step.
 
 budget_usd_month: 30
 
@@ -50,3 +51,47 @@ consolidate:                # memory's nightly job: one structured call per day,
     endpoint: ${VLLM_ENDPOINT:-http://vllm:8000/v1}
     model: ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}
     max_tokens: 8192
+
+embed:                      # memory's vectors (rpc.llm.embed): one size for the whole index, 1024
+  task: embed
+  active: ${EMBED_PROVIDER:-tei}
+  tei:
+    kind: tei               # infra/embed/ on the GPU box, no key
+    endpoint: ${TEI_ENDPOINT:-http://tei:80/v1}
+    model: BAAI/bge-m3
+    dimensions: 1024
+  vllm:
+    kind: vllm              # a second vLLM with --task embed
+    endpoint: ${VLLM_EMBED_ENDPOINT:-http://vllm-embed:8001/v1}
+    model: BAAI/bge-m3
+    dimensions: 1024
+  ollama:
+    kind: ollama
+    model: bge-m3
+    dimensions: 1024
+  openai:
+    kind: openai            # OPENAI_API_KEY; asked for 1024 dimensions, which text-embedding-3 honours
+    model: text-embedding-3-small
+    dimensions: 1024
+    price_in_per_m: 0.02
+
+decide:                     # memory's decide step (rpc.llm.decide): which candidate notes is a question about.
+  task: decide              # `floor` is each scorer's own calibration: under it a candidate is not about the question
+  active: ${DECIDE_PROVIDER:-tei}
+  tei:
+    kind: tei               # a cross-encoder reranker, TEI serving bge-reranker-v2-m3 (POST /rerank), no key.
+    endpoint: ${TEI_RERANK_ENDPOINT:-http://tei-rerank:80}
+    model: BAAI/bge-reranker-v2-m3
+    floor: 0.05             # sigmoid of the logit. Live, right notes and facts scored 0.09 to 0.99, wrong ones under 0.02
+  vllm:
+    kind: vllm              # the chat model, through the forced tool score_candidates; a reasoning model takes 30 s
+    endpoint: ${VLLM_ENDPOINT:-http://vllm:8000/v1}
+    model: ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}
+    max_tokens: 4096
+    floor: 0.5              # the prompt defines 0.5 as "related"
+  claude:
+    kind: claude
+    model: claude-haiku-5-5
+    price_in_per_m: 1.0
+    price_out_per_m: 5.0
+    floor: 0.5

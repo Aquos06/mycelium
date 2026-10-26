@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .decide import DecideUsed
 from .index import NoteRecord
 
 
@@ -25,7 +26,8 @@ class RecallUsed(BaseModel):
     dates: list[str] = Field(default_factory=list)
     names: list[str] = Field(default_factory=list)
     periods: list[str] = Field(default_factory=list)  # "week:2026-W42", "month:2026-10"
-    embedding: bool = False  # M4
+    embedding: bool = False  # the embedding rung ran
+    decide: DecideUsed | None = None  # the decide step ran
 
 
 class RecallBudget(BaseModel):

@@ -28,6 +28,9 @@ from gateway.schemas import (
     KINDS,
     CompletionRequest,
     CompletionResult,
+    DecideRequest,
+    EmbedRequest,
+    EmbedResult,
     GatewayConfig,
     LlmTrace,
     ProviderConfig,
@@ -559,3 +562,259 @@ async def test_a_model_that_rejects_a_forced_tool_is_asked_once_more_without_for
     requests = svc.providers[("planner", "claude")].requests
     assert requests[0].tool_choice == "remember" and requests[1].tool_choice is None
     assert len(svc.bus.events("trace.llm")) == 1  # the retry is the call that counts
+
+
+# ---- embeddings ------------------------------------------------------------------------------------
+
+
+EMBED_YAML = {
+    "budget_usd_month": 10.0,
+    "planner": {"active": "claude", "claude": {"model": "m"}},
+    "embed": {
+        "task": "embed",
+        "active": "tei",
+        "tei": {"kind": "tei", "model": "BAAI/bge-m3", "dimensions": 4},
+        "openai": {"kind": "openai", "model": "text-embedding-3-small", "dimensions": 4, "price_in_per_m": 0.02},
+    },
+}
+
+
+def test_embed_slots_need_an_openai_shaped_vendor_and_know_their_dimensions():
+    cfg = GatewayConfig.model_validate(EMBED_YAML)
+    embed = cfg.slots["embed"]
+    assert embed.task == "embed" and embed.providers["tei"].endpoint == "http://tei:80/v1"
+    assert embed.providers["tei"].dimensions == 4 and cfg.slots["planner"].task == "complete"
+    with pytest.raises(ValidationError, match="cannot embed"):
+        GatewayConfig.model_validate({"embed": {"task": "embed", "active": "c", "c": {"kind": "claude", "model": "m"}}})
+    from gateway.providers import OpenAIEmbeddingsProvider
+
+    p = build_provider("tei", embed.providers["tei"], {}, task="embed")
+    assert isinstance(p, OpenAIEmbeddingsProvider) and p.request_dimensions is None  # TEI returns its native size
+    o = build_provider("openai", embed.providers["openai"], {"OPENAI_API_KEY": "k"}, task="embed")
+    assert isinstance(o, OpenAIEmbeddingsProvider) and o.request_dimensions == 4  # OpenAI is asked for the slot's size
+
+
+async def test_embeddings_provider_posts_to_v1_embeddings_and_keeps_the_order():
+    from gateway.providers import OpenAIEmbeddingsProvider
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"], seen["body"] = str(request.url), json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "model": "bge-m3",
+                "data": [
+                    {"index": 1, "embedding": [0.0, 1.0, 0.0, 0.0]},
+                    {"index": 0, "embedding": [1.0, 0.0, 0.0, 0.0]},
+                ],
+                "usage": {"prompt_tokens": 9, "total_tokens": 9},
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    p = OpenAIEmbeddingsProvider("tei", "BAAI/bge-m3", "http://tei:80/v1/", http=http)
+    r = await p.embed(EmbedRequest(texts=["first", "second"]))
+    assert seen["url"] == "http://tei/v1/embeddings" and seen["body"] == {  # httpx drops the default port
+        "model": "BAAI/bge-m3",
+        "input": ["first", "second"],
+    }
+    assert r.vectors == [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]] and r.dimensions == 4  # back in input order
+    assert r.model == "bge-m3" and r.usage.input_tokens == 9
+
+
+class ScriptedEmbedder:
+    def __init__(self, name, model, dims):
+        self.name, self.model, self.dims = name, model, dims
+        self.requests = []
+
+    async def embed(self, req):
+        self.requests.append(req)
+        return EmbedResult(
+            vectors=[[float(i)] * self.dims for i, _ in enumerate(req.texts)],
+            model=self.model,
+            dimensions=self.dims,
+            usage=Usage(input_tokens=5 * len(req.texts)),
+        )
+
+
+async def test_rpc_llm_embed_bills_input_tokens_traces_and_checks_dimensions():
+    bus, kv = InMemoryBus(), InMemoryKV()
+    cfg = GatewayConfig.model_validate(EMBED_YAML)
+    providers = {
+        ("embed", "tei"): ScriptedEmbedder("tei", "bge-m3", 4),
+        ("embed", "openai"): ScriptedEmbedder("openai", "te3", 4),
+    }
+    svc = GatewayService(bus, cfg, kv, providers=providers, now=lambda: datetime(2026, 10, 24, tzinfo=UTC))
+    await svc.start()
+    reply = await bus.request("rpc.llm.embed", {"slot": "embed", "texts": ["mei", "ramen"], "cause": "r1", "hops": 1})
+    assert reply["ok"] and reply["provider"] == "tei" and reply["dimensions"] == 4 and len(reply["vectors"]) == 2
+    assert reply["cost_usd"] == 0.0  # local
+    t = bus.events("trace.llm")[0][1]
+    assert t["op"] == "embed" and t["items"] == 2 and t["hops"] == 2 and t["usage"]["input_tokens"] == 10
+    usage = await bus.request("rpc.llm.usage", {})
+    assert usage["calls"] == 1 and usage["input_tokens"] == 10 and usage["output_tokens"] == 0
+
+    bad = await bus.request("rpc.llm.embed", {"slot": "planner", "texts": ["x"]})
+    assert not bad["ok"] and "is a complete slot" in bad["error"]
+    bad = await bus.request("rpc.llm.complete", {"slot": "embed", "messages": [{"role": "user", "content": "x"}]})
+    assert not bad["ok"] and "is a embed slot" in bad["error"]
+    bad = await bus.request("rpc.llm.embed", {"texts": ["", "x"]})
+    assert not bad["ok"] and "non-empty" in bad["error"]
+
+    svc.providers[("embed", "tei")] = ScriptedEmbedder("tei", "other", 8)  # a provider with the wrong size
+    bad = await bus.request("rpc.llm.embed", {"texts": ["x"]})
+    assert not bad["ok"] and "8 dimensions, the slot expects 4" in bad["error"]
+
+
+# ---- decide -----------------------------------------------------------------------------------------
+
+
+DECIDE_YAML = {
+    "budget_usd_month": 10.0,
+    "decide": {
+        "task": "decide",
+        "active": "tei",
+        "tei": {"kind": "tei", "model": "BAAI/bge-reranker-v2-m3", "endpoint": "http://tei-rerank:80", "floor": 0.1},
+        "vllm": {"kind": "vllm", "model": "/model", "price_in_per_m": 1.0, "price_out_per_m": 2.0},
+    },
+}
+CANDIDATES = [
+    {"id": "places/ramen-place-xinyi.md", "text": "ramen-place-xinyi, place. Ramen shop; usual order is the shoyu."},
+    {"id": "people/mei.md", "text": "mei (小美), person. 朋友，預計12月搬到台南。"},
+    {"id": "routines/dentist-appointment.md", "text": "dentist-appointment, routine"},
+]
+
+
+def test_decide_slots_take_a_reranker_or_any_chat_model():
+    from gateway.providers import TeiRerankProvider, ToolDecideProvider
+
+    cfg = GatewayConfig.model_validate(DECIDE_YAML)
+    slot = cfg.slots["decide"]
+    assert slot.task == "decide" and slot.providers["tei"].floor == 0.1 and slot.providers["vllm"].floor is None
+    assert isinstance(build_provider("tei", slot.providers["tei"], {}, task="decide"), TeiRerankProvider)
+    tool = build_provider("vllm", slot.providers["vllm"], {}, task="decide")
+    assert isinstance(tool, ToolDecideProvider) and tool.inner.name == "vllm"
+
+
+async def test_tei_reranker_posts_to_rerank_at_the_root_and_maps_indexes_back():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"], seen["body"] = str(request.url), json.loads(request.content)
+        return httpx.Response(200, json=[{"index": 1, "score": 0.91}, {"index": 0, "score": 0.12}])  # index 2 missing
+
+    from gateway.providers import TeiRerankProvider
+
+    p = TeiRerankProvider(
+        "tei",
+        "bge-reranker-v2-m3",
+        "http://tei-rerank:80/v1",
+        http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    r = await p.decide(DecideRequest(query="who is moving", candidates=CANDIDATES))
+    assert seen["url"] == "http://tei-rerank/rerank" and seen["body"]["query"] == "who is moving"
+    assert seen["body"]["texts"] == [c["text"] for c in CANDIDATES] and seen["body"]["raw_scores"] is False
+    assert [(s.id, s.score) for s in r.ranked()] == [
+        ("people/mei.md", 0.91),
+        ("places/ramen-place-xinyi.md", 0.12),
+        ("routines/dentist-appointment.md", 0.0),
+    ]
+    assert r.usage.input_tokens == 0  # nothing to bill
+
+
+async def test_tool_decide_provider_scores_through_the_forced_tool_and_retries_unforced():
+    from gateway.providers import ToolDecideProvider
+
+    sheet = {
+        "scores": [
+            {"id": "people/mei.md", "score": 0.95},
+            {"id": "places/ramen-place-xinyi.md", "score": 0.1},
+            {"id": "ghost.md", "score": 1},
+        ]
+    }
+    inner = ScriptedProvider(
+        "vllm",
+        "/model",
+        [
+            CompletionResult(
+                model="/model",
+                tool_calls=[ToolCall(id="t1", name="score_candidates", input=sheet)],
+                stop_reason="tool_use",
+                usage=Usage(input_tokens=400, output_tokens=60),
+            )
+        ],
+    )
+    p = ToolDecideProvider("vllm", inner, "/model")
+    r = await p.decide(DecideRequest(query="the friend who is moving south", candidates=CANDIDATES, cause="m1", hops=1))
+    req = inner.requests[0]
+    assert (
+        req.tool_choice == "score_candidates" and req.tools[0]["name"] == "score_candidates" and req.temperature == 0.0
+    )
+    assert "- id: people/mei.md\n  mei (小美)" in req.messages[0]["content"] and req.cause == "m1" and req.hops == 1
+    assert [(s.id, s.score) for s in r.ranked()] == [
+        ("people/mei.md", 0.95),
+        ("places/ramen-place-xinyi.md", 0.1),
+        ("routines/dentist-appointment.md", 0.0),
+    ]
+    assert r.usage.input_tokens == 400 and r.model == "/model"
+
+    inner = ScriptedProvider(
+        "vllm",
+        "/model",
+        [
+            ProviderError("vllm: tool_choice is not supported"),
+            CompletionResult(
+                model="/model",
+                tool_calls=[ToolCall(id="t2", name="score_candidates", input={"scores": []})],
+                stop_reason="tool_use",
+            ),
+        ],
+    )
+    r = await ToolDecideProvider("vllm", inner, "/model").decide(DecideRequest(query="q", candidates=CANDIDATES))
+    assert inner.requests[1].tool_choice is None and all(s.score == 0.0 for s in r.scores)
+
+    inner = ScriptedProvider("vllm", "/model", [CompletionResult(model="/model", text="I think mei.")])
+    with pytest.raises(ProviderError, match="did not call score_candidates"):
+        await ToolDecideProvider("vllm", inner, "/model").decide(DecideRequest(query="q", candidates=CANDIDATES))
+
+
+async def test_rpc_llm_decide_bills_tokens_and_traces_items():
+    bus, kv = InMemoryBus(), InMemoryKV()
+    cfg = GatewayConfig.model_validate({**DECIDE_YAML, "decide": {**DECIDE_YAML["decide"], "active": "vllm"}})
+    sheet = {"scores": [{"id": "people/mei.md", "score": 0.9}]}
+    inner = ScriptedProvider(
+        "vllm",
+        "/model",
+        [
+            CompletionResult(
+                model="/model",
+                tool_calls=[ToolCall(id="t1", name="score_candidates", input=sheet)],
+                stop_reason="tool_use",
+                usage=Usage(input_tokens=1000, output_tokens=500),
+            )
+        ],
+    )
+    from gateway.providers import ToolDecideProvider
+
+    svc = GatewayService(
+        bus,
+        cfg,
+        kv,
+        providers={("decide", "vllm"): ToolDecideProvider("vllm", inner, "/model")},
+        now=lambda: datetime(2026, 10, 25, tzinfo=UTC),
+    )
+    await svc.start()
+    reply = await bus.request("rpc.llm.decide", {"query": "who is moving", "candidates": CANDIDATES, "cause": "m2"})
+    assert reply["ok"] and reply["provider"] == "vllm" and reply["floor"] is None  # vllm names no floor here
+    assert reply["cost_usd"] == pytest.approx(0.002)  # 1000*1 + 500*2 per M
+    assert {s["id"]: s["score"] for s in reply["scores"]}["people/mei.md"] == 0.9
+    t = bus.events("trace.llm")[0][1]
+    assert t["op"] == "decide" and t["items"] == 3 and t["cause"] == "m2" and t["usage"]["output_tokens"] == 500
+    bad = await bus.request(
+        "rpc.llm.decide", {"query": "q", "candidates": [{"id": "a", "text": "x"}, {"id": "a", "text": "y"}]}
+    )
+    assert not bad["ok"] and "unique" in bad["error"]
+    bad = await bus.request("rpc.llm.decide", {"slot": "planner", "query": "q", "candidates": CANDIDATES})
+    assert not bad["ok"] and "unknown slot" in bad["error"]

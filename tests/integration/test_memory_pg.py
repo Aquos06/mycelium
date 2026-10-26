@@ -1,6 +1,7 @@
 """Real Postgres: the memory index with pg_trgm and the events reader, against the same fixtures the unit tests use."""
 
 import json
+import shutil
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -10,8 +11,9 @@ from sqlalchemy import insert, text
 
 from memory.events import PostgresEvents
 from memory.index import MIGRATIONS, PostgresIndex
-from memory.indexer import reindex
+from memory.indexer import index_file, reindex
 from memory.recall import recall
+from memory.schemas import SummaryRecord
 from memory.vault import Vault
 from mycelium_sdk.db import CORE_MIGRATIONS, head, make_engine, migrate
 from mycelium_sdk.db.core import events
@@ -106,3 +108,71 @@ async def test_postgres_events_for_day(schema):
     finally:
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM events WHERE source LIKE :p"), {"p": f"{marker}:%"})
+
+
+def _unit(i: int, dims: int = 1024) -> list[float]:
+    v = [0.0] * dims
+    v[i] = 1.0
+    return v
+
+
+async def test_embeddings_round_trip_through_pgvector(schema, tmp_path):
+    engine, name = schema
+    index = PostgresIndex(engine, schema=name)
+    await index.ensure_schema()
+    shutil.copytree(FIXTURES / "vault", tmp_path / "vault")
+    vault = Vault(tmp_path / "vault")
+    await reindex(vault, index)
+
+    stale = await index.stale_embeddings("bge-m3")
+    assert len(stale) == 7 and {t.path for t in stale} >= {"people/mei.md", "summaries/2026/W42.md"}
+    assert any(t.text.startswith("ramen-place-xinyi (menya xinyi, 那家拉麵), place. Ramen shop") for t in stale)
+
+    await index.set_embedding("places/ramen-place-xinyi.md", _unit(0), "bge-m3")
+    await index.set_embedding("people/mei.md", _unit(1), "bge-m3")
+    await index.set_embedding("summaries/2026/W42.md", [0.6, 0.8] + [0.0] * 1022, "bge-m3")
+    assert len(await index.stale_embeddings("bge-m3")) == 4
+    assert len(await index.stale_embeddings("another-model")) == 7  # every vector is from the wrong model
+
+    near = await index.nearest(_unit(0), limit=3)  # cosine through pgvector's <=>, the HNSW index's operator
+    assert [n.record.path for n in near] == ["places/ramen-place-xinyi.md", "summaries/2026/W42.md", "people/mei.md"]
+    assert [n.score for n in near] == [1.0, 0.6, 0.0]
+    assert near[0].record.links == ["mei"] and isinstance(near[1].record, SummaryRecord)
+
+    note = vault.read("people/mei.md")
+    note.summary = "Friend from Tainan; moved to Taipei."
+    vault.write(note)
+    await index_file(vault, index, note.path)  # a changed file drops its vector
+    assert "people/mei.md" in {t.path for t in await index.stale_embeddings("bge-m3")}
+    assert [n.record.path for n in await index.nearest(_unit(1), limit=1)] == ["summaries/2026/W42.md"]
+
+    with pytest.raises(ValueError, match="dimensions"):
+        await index.set_embedding("people/mei.md", [1.0, 0.0], "bge-m3")
+
+
+async def test_catalogue_and_lookups_by_path(schema):
+    engine, name = schema
+    index = PostgresIndex(engine, schema=name)
+    await index.ensure_schema()
+    await reindex(Vault(FIXTURES / "vault"), index)
+
+    rows = await index.catalogue(since=date(2026, 10, 10))
+    assert [r.path for r in rows] == [
+        "hansen.md",
+        "modules/expenses.md",
+        "people/mei.md",
+        "places/ramen-place-xinyi.md",
+        "projects/mycelium.md",
+        "summaries/2026/10/14.md",
+        "summaries/2026/W42.md",
+    ]
+    assert [r.path for r in await index.catalogue(since=date(2026, 10, 20))] == [
+        *[r.path for r in rows[:5]],
+        "summaries/2026/W42.md",
+    ]
+    mei = await index.by_path("people/mei.md")
+    assert mei and mei.name == "mei" and mei.links == ["taipei", "ramen-place-xinyi"]
+    assert await index.by_path("nope.md") is None
+    week = await index.summary_by_path("summaries/2026/W42.md")
+    assert week and week.key == "2026-W42" and week.links == ["mei", "mycelium"]
+    assert len(await index.facts(since=date(2026, 10, 10))) == 4 and len(await index.facts(since=date(2026, 9, 1))) == 6

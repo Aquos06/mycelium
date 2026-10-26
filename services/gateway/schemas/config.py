@@ -43,6 +43,8 @@ class ProviderConfig(BaseModel):
     price_in_per_m: float = Field(default=0.0, ge=0)  # USD per million input tokens
     price_out_per_m: float = Field(default=0.0, ge=0)  # USD per million output tokens
     headers: dict[str, str] = Field(default_factory=dict)  # extra HTTP headers (OpenRouter attribution, a proxy)
+    dimensions: int | None = Field(default=None, ge=1)  # embed slots: the vector size the index expects
+    floor: float | None = Field(default=None, ge=0, le=1)  # decide slots: under this score the candidate is not it
     extra_body: dict[str, Any] = Field(default_factory=dict)  # vendor fields merged into every request body
 
     @model_validator(mode="before")
@@ -80,9 +82,13 @@ class ProviderConfig(BaseModel):
         return round((input_tokens * self.price_in_per_m + output_tokens * self.price_out_per_m) / 1_000_000, 6)
 
 
-class SlotConfig(BaseModel):
-    """One job (planner, rerank, embed, ...): which provider acts, which one shadows, and the choices."""
+SlotTask = Literal["complete", "embed", "decide"]
 
+
+class SlotConfig(BaseModel):
+    """One job (planner, consolidate, embed, ...): which provider acts, which one shadows, and the choices."""
+
+    task: SlotTask = "complete"  # embed: rpc.llm.embed (OpenAI-shaped vendors); decide: rpc.llm.decide (any kind)
     active: str
     shadow: str | None = None
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
@@ -94,9 +100,11 @@ class SlotConfig(BaseModel):
         if not isinstance(data, dict):
             return data
         out: dict[str, Any] = {"active": data.get("active"), "shadow": data.get("shadow")}
+        if "task" in data:
+            out["task"] = data["task"]
         providers = dict(data.get("providers") or {})
         for k, v in data.items():
-            if k not in ("active", "shadow", "providers"):
+            if k not in ("active", "shadow", "providers", "task"):
                 providers[k] = v
         out["providers"] = providers
         return out
@@ -109,6 +117,12 @@ class SlotConfig(BaseModel):
             raise ValueError(f"shadow provider {self.shadow!r} is not defined")
         if self.shadow == self.active:
             raise ValueError("shadow must differ from active")
+        if self.task == "embed":
+            for name, p in self.providers.items():
+                if p.protocol != "openai":
+                    raise ValueError(
+                        f"provider {name!r} ({p.kind}) cannot embed; embed slots need an OpenAI-shaped vendor"
+                    )
         return self
 
 

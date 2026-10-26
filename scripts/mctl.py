@@ -13,6 +13,7 @@
     python scripts/mctl.py recall "who did I have dinner with last Wednesday?"
     python scripts/mctl.py consolidate 2026-10-14                 # (re)run the nightly consolidation for a day
     python scripts/mctl.py rollup 2026-W42                        # (re)write a week or month summary from its days
+    python scripts/mctl.py embed                                  # embed notes and summaries that have no vector yet
     python scripts/mctl.py chat "what did 小美 recommend?"        # talk to Main from the terminal
     python scripts/mctl.py answer <ref> "9pm"                     # answer an out.ask shown by chat
     python scripts/mctl.py usage                                  # gateway spend this month
@@ -99,6 +100,8 @@ async def run(args) -> int:
             reply = await bus.request(
                 "rpc.memory.rollup", {"period": period, "key": key}, timeout=max(args.timeout, 400.0)
             )
+        elif args.cmd == "embed":
+            reply = await bus.request("rpc.memory.embed", {}, timeout=max(args.timeout, 400.0))
         elif args.cmd == "chat":
             return await converse(bus, "sense.chat", {"text": args.text}, args.thread, args.timeout)
         elif args.cmd == "answer":
@@ -156,6 +159,7 @@ def main() -> int:
     co.add_argument("day", nargs="?", help="YYYY-MM-DD")
     ro = sub.add_parser("rollup", help="write a week (2026-W43) or month (2026-10) summary from its day summaries")
     ro.add_argument("key")
+    sub.add_parser("embed", help="give every note and summary without a vector one (rpc.memory.embed)")
     ch = sub.add_parser("chat", help="send one message to Main on the cli channel and print the reply")
     ch.add_argument("text")
     ch.add_argument("--thread", default="default", help="conversation thread (history is kept per thread)")

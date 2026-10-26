@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import date
 
-from ..schemas import Fact, FactRecord, NoteRecord, SummaryRecord
+from ..schemas import EmbedTarget, Fact, FactRecord, Neighbour, NoteRecord, SummaryRecord, embedding_text
 from .base import FUZZY_THRESHOLD
 
 
@@ -32,6 +33,7 @@ class InMemoryIndex:
         self._facts: dict[str, list[FactRecord]] = {}
         self.summaries: dict[tuple[str, str], SummaryRecord] = {}
         self._hashes: dict[str, str] = {}
+        self._vectors: dict[str, tuple[list[float], str]] = {}  # path -> (vector, model)
 
     async def body_hash(self, path: str) -> str | None:
         return self._hashes.get(path)
@@ -40,6 +42,10 @@ class InMemoryIndex:
         for existing in list(self.notes.values()):
             if existing.path == record.path and existing.name != record.name:
                 await self.delete_note(existing.path)
+        if (
+            prev := next((r for r in self.notes.values() if r.path == record.path), None)
+        ) and prev.body_hash != record.body_hash:
+            self._vectors.pop(record.path, None)
         self.notes[record.name] = record
         self._facts[record.name] = [
             FactRecord(note=record.name, day=f.day, text=f.text, source=f.source) for f in facts
@@ -54,6 +60,8 @@ class InMemoryIndex:
         self._hashes.pop(path, None)
 
     async def upsert_summary(self, record: SummaryRecord) -> None:
+        if (prev := self.summaries.get((record.period, record.key))) and prev.body_hash != record.body_hash:
+            self._vectors.pop(record.path, None)
         self.summaries[(record.period, record.key)] = record
         self._hashes[record.path] = record.body_hash
 
@@ -77,12 +85,14 @@ class InMemoryIndex:
         n = name.lower()
         return [r for r in self.notes.values() if n in r.links]
 
-    async def facts(self, name: str | None = None, day: date | None = None) -> list[FactRecord]:
+    async def facts(
+        self, name: str | None = None, day: date | None = None, since: date | None = None
+    ) -> list[FactRecord]:
         rows: list[FactRecord] = []
         for n, fs in self._facts.items():
             if name is not None and n != name.lower():
                 continue
-            rows.extend(f for f in fs if day is None or f.day == day)
+            rows.extend(f for f in fs if (day is None or f.day == day) and (since is None or f.day >= since))
         rows.sort(key=lambda f: f.day, reverse=True)
         return rows
 
@@ -99,3 +109,52 @@ class InMemoryIndex:
             out.append((r.name, r.name))
             out.extend((a, r.name) for a in r.aliases if a != r.name)
         return out
+
+    # ---- embeddings ---------------------------------------------------------------------------
+
+    def _rows(self) -> list[NoteRecord | SummaryRecord]:
+        return [*self.notes.values(), *self.summaries.values()]
+
+    async def stale_embeddings(self, model: str, limit: int = 200) -> list[EmbedTarget]:
+        out: list[EmbedTarget] = []
+        for r in self._rows():
+            have = self._vectors.get(r.path)
+            if have is None or have[1] != model:
+                out.append(EmbedTarget(path=r.path, text=embedding_text(r)))
+            if len(out) >= limit:
+                break
+        return out
+
+    async def set_embedding(self, path: str, vector: list[float], model: str) -> None:
+        self._vectors[path] = (list(vector), model)
+
+    async def nearest(self, vector: list[float], limit: int = 8) -> list[Neighbour]:
+        by_path = {r.path: r for r in self._rows()}
+        scored = []
+        for path, (v, _model) in self._vectors.items():
+            if path in by_path:
+                scored.append(Neighbour(record=by_path[path], score=round(_cosine(vector, v), 4)))
+        scored.sort(key=lambda n: (-n.score, n.record.path))
+        return scored[:limit]
+
+    # ---- the decide step ------------------------------------------------------------------------
+
+    async def by_path(self, path: str) -> NoteRecord | None:
+        return next((r for r in self.notes.values() if r.path == path), None)
+
+    async def summary_by_path(self, path: str) -> SummaryRecord | None:
+        return next((s for s in self.summaries.values() if s.path == path), None)
+
+    async def catalogue(self, since: date | None = None) -> list[NoteRecord | SummaryRecord]:
+        notes = sorted(self.notes.values(), key=lambda r: r.path)
+        sums = sorted(
+            (s for s in self.summaries.values() if s.period != "day" or since is None or s.key >= since.isoformat()),
+            key=lambda s: s.path,
+        )
+        return [*notes, *sums]
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    na, nb = math.sqrt(sum(x * x for x in a)), math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0

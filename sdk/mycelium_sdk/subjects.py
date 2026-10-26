@@ -7,7 +7,7 @@ Events (fire-and-forget, recorded in the JetStream EVENTS stream):
     sys.<event>                 supervisor events, e.g. sys.module.deployed
     build.<event>               builder events, e.g. build.done
     out.<kind>                  outputs: out.say (reply on a thread), out.notify, out.ask (choices), out.ha
-    trace.<kind>                decision traces: trace.plan, trace.llm, trace.feedback
+    trace.<kind>                decision traces: trace.plan, trace.llm, trace.consolidate, trace.rollup, trace.embed, trace.decide, trace.feedback
 
 Requests (request/reply, NOT stored in the stream so JetStream never answers them):
     rpc.sys.<action>            supervisor: deploy, stop, logs, list, health
