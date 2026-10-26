@@ -5,7 +5,7 @@
     openai         openai     https://api.openai.com/v1                                 OPENAI_API_KEY
     ollama         openai     http://ollama:11434/v1                                    none, local
     vllm           openai     http://vllm:8000/v1                                       none, local
-    tei            openai     http://tei:80/v1   (embeddings)                           none, local
+    tei            openai     http://tei:80/v1   (embeddings; /rerank for decide)       none, local
     openrouter     openai     https://openrouter.ai/api/v1                              OPENROUTER_API_KEY
     groq           openai     https://api.groq.com/openai/v1                            GROQ_API_KEY
     deepseek       openai     https://api.deepseek.com/v1                               DEEPSEEK_API_KEY

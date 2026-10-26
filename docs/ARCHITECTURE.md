@@ -583,8 +583,9 @@ as compose profiles (`local`, `gpu`) next to the gateway.
 The gateway (`services/gateway/`) answers `rpc.llm.complete` (Anthropic message shape, tools
 included; converted for OpenAI-compatible endpoints), `rpc.llm.embed` (texts in, one vector per text
 out, through a slot with `task: embed`: TEI, vLLM, Ollama or a cloud model, all over the OpenAI
-embeddings shape; the slot's `dimensions` pins the size memory's index is built for) and
-`rpc.llm.usage`. Every call publishes
+embeddings shape; the slot's `dimensions` pins the size memory's index is built for), `rpc.llm.decide`
+(a question and candidates in, a score per candidate out, through a slot with `task: decide`: a TEI
+reranker or any chat model through a forced tool) and `rpc.llm.usage`. Every call publishes
 `trace.llm` with provider, tokens, cost and latency, never the content. The monthly budget is a
 counter in NATS KV; once spent, calls fail fast and Main goes log-only. The builder's `coder` slot
 stays outside this file (see below).

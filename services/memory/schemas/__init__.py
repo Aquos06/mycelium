@@ -4,6 +4,7 @@ vault.py        the files: Note, Fact, Summary, NoteType, NAME_RE
 index.py        the searchable copy: NoteRecord, FactRecord, SummaryRecord, IndexStats
 events.py       the raw log: Event
 embed.py        embeddings: EmbedTarget, Neighbour, EmbedCall, EmbedSweepReport, EmbedTrace
+decide.py       the decide step: DecideCandidate, DecideCall, Pick, DecideReport, DecideUsed, DecideTrace
 periods.py      week and month keys, paths and days
 rpc.py          rpc.memory.* requests and replies: RememberRequest, LookupRequest, RecallRequest, ConsolidateRequest, ...
 recall.py       the lookup ladder's Match and the RecallPack the planner reads
@@ -21,6 +22,7 @@ from .consolidate import (
     RollupTrace,
     StateUpdate,
 )
+from .decide import DecideCall, DecideCandidate, DecideReport, DecideTrace, DecideUsed, Pick
 from .embed import EmbedCall, EmbedSweepReport, EmbedTarget, EmbedTrace, Neighbour, embedding_text
 from .events import Event
 from .index import FactRecord, IndexStats, NoteRecord, SummaryRecord
@@ -57,6 +59,12 @@ __all__ = [
     "periods_closed_by",
     "week_key",
     "Event",
+    "DecideCall",
+    "DecideCandidate",
+    "DecideReport",
+    "DecideTrace",
+    "DecideUsed",
+    "Pick",
     "EmbedCall",
     "EmbedSweepReport",
     "EmbedTarget",

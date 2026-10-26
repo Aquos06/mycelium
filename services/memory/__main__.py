@@ -10,6 +10,7 @@ from mycelium_sdk import NatsBus
 from mycelium_sdk.db import make_engine
 
 from .consolidate import ConsolidationError, Consolidator
+from .decide import Decider
 from .embedder import Embedder
 from .events import PostgresEvents
 from .index import PostgresIndex
@@ -39,7 +40,23 @@ async def main() -> None:
         if s.embed
         else None
     )
-    service = MemoryService(bus, vault, index, consolidator=consolidator, embedder=embedder, today=s.today)
+    decider = (
+        Decider(
+            bus,
+            index,
+            floor=s.decide_floor,
+            rounds=s.decide_rounds,
+            timeout=s.decide_timeout,
+            max_candidates=s.decide_candidates,
+            recent_days=s.decide_days,
+            embedder=embedder,
+        )
+        if s.decide
+        else None
+    )
+    service = MemoryService(
+        bus, vault, index, consolidator=consolidator, embedder=embedder, decider=decider, today=s.today
+    )
     await service.start()
 
     stop = asyncio.Event()
@@ -64,12 +81,15 @@ async def main() -> None:
     schedule = asyncio.create_task(scheduled()) if s.consolidate_at else None
     sweeps = asyncio.create_task(every(embedder.sweep, s.embed_every, stop)) if embedder else None
     log.info(
-        "memory ready: vault=%s schema=%s tz=%s consolidate_at=%s embed=%s",
+        "memory ready: vault=%s schema=%s tz=%s consolidate_at=%s embed=%s decide=%s",
         s.vault_dir,
         s.schema_name,
         s.tz,
         s.consolidate_at or "off",
         f"every {s.embed_every} min" if embedder and s.embed_every else ("on" if embedder else "off"),
+        f"floor {s.decide_floor if s.decide_floor is not None else 'the scorer'}, {s.decide_rounds} rounds"
+        if decider
+        else "off",
     )
 
     loop = asyncio.get_running_loop()

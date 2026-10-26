@@ -303,10 +303,13 @@ Most lookups stop at step 1 or 2 with one cheap query. Embeddings exist for the 
 
 1. **Dates.** "last Tuesday" → `2026-10-14` (a date parser, no model) → open that day's summary.
 2. **Names.** Run the ladder on the names in the question → open those notes.
-3. **Links.** If an opened note or summary links to another and the budget allows, open it (one hop).
-4. **Fallback.** If 1–2 found nothing, the notes and summaries whose vectors are nearest the question's,
-   down to `MEMORY_EMBED_MIN_SCORE` (cosine, default 0.45: live with bge-m3 the right note scored 0.53 to
-   0.62 and unrelated ones 0.41 to 0.47); each says `similar to the question (0.53)`.
+3. **Links.** With a decide slot, the scorer picks which of the opened notes' links, backlinks and facts
+   matter for this question (the seeded decide step below); without one, every link, in order, one hop.
+4. **Fallback.** If 1–3 found nothing, the decide step (below): a scorer picks from the catalogue and
+   recall hops from the picks. Without a decide slot, or when it fails, the notes and summaries whose
+   vectors are nearest the question's, down to `MEMORY_EMBED_MIN_SCORE` (cosine, default 0.45: live with
+   bge-m3 the right note scored 0.53 to 0.62 and unrelated ones 0.41 to 0.47); each says
+   `similar to the question (0.53)`.
 5. **Pack.** Return a few `{note, excerpt, why}` items plus today's and yesterday's summaries.
 
 `budget` caps the pack (for example 8 notes) so it stays small enough for the planner. The pack is
@@ -347,27 +350,80 @@ no date, period or name, so the question is embedded and `places/ramen-place-xin
 `similar to the question (0.53)` with `used.embedding: true` (live, bge-m3 on Ollama; "the friend who is
 moving south" found `people/mei.md` at 0.58 from its Chinese first paragraph).
 
-### Where a decision model fits
+### The decide step
 
-Recall has two kinds of work. **Finding candidates** (dates, names, links) needs no model: it is
-exact, free and testable, and a model that returns choices rather than text could not do it anyway.
-**Deciding among candidates** is score-shaped, and that is what the `rerank` slot (ARCHITECTURE §11)
-is for:
+Recall has two kinds of work. **Finding candidates** (dates, periods, names, links) needs no model: it
+is exact, free and testable. **Deciding which candidates a vague question is about** is score-shaped,
+and that is the `decide` slot (`rpc.llm.decide`, ARCHITECTURE §11): a question and candidate texts in,
+a score in [0, 1] per candidate out. Memory's `decide/` package runs the loop around it:
 
-| Decision | Input | Returns |
-|---|---|---|
-| does this message need memory, and which kind? | message + snapshot | none / entity / time / module-data, with probability |
-| which of these 20 candidates matter? | question + 20 note summaries | a relevance score per candidate |
-| "Mei" matches two notes; which one? | question + both summaries | a choice with confidence; low confidence → open both |
+1. **The catalogue.** Every note as one line (name, aliases, type, first paragraph: the same line the
+   embedder uses), every week and month summary, the day summaries of the last `MEMORY_DECIDE_DAYS`
+   (14), and the dated facts of those days, one line each (`ramen-place-xinyi, 2026-10-14: dinner with
+   mei, 350 TWD`), at most 150, newest first: "how much was the dinner" lives in a fact, not in a first
+   paragraph. Above `MEMORY_DECIDE_CANDIDATES` (200) rows the embedding neighbours stand in for the
+   catalogue, which is the one job left to the vectors.
+2. **Score, pick.** One `rpc.llm.decide` call; what clears the floor is picked, best first, within the
+   recall budget. The floor is the scorer's own calibration and lives with it in `providers.yaml`
+   (`floor: 0.05` for the reranker, `0.5` for a chat model); `MEMORY_DECIDE_FLOOR` overrides it.
+3. **Hop, score again.** What the picks link to, what links to them, and the picked notes' dated facts
+   become the next round's candidates. A neighbour carries its link as context (`linked from mei:
+   ramen-place-xinyi, place. ...`), so a note that scored low on its own gets a second look for the
+   connection; a picked note's older facts, the ones outside the catalogue's window, come as one line
+   each (`mei, 2026-09-02: recommended the book "Project Hail Mary"`). `MEMORY_DECIDE_ROUNDS` (2) rounds
+   at most; the loop stops early when nothing new clears the floor.
+4. **The pack says why.** `scored 0.93 for the question`, `linked from mei, scored 0.81 for the question`,
+   `fact on 2026-09-02 of mei, scored 0.95 for the question`. A picked fact shows on its note's item
+   instead of opening the note twice, and the notes its `[[links]]` name are opened too (`named in mei's
+   fact of 2026-10-14`): the fact that answers "where did I eat with Mei" points at the place itself. `used.decide` carries seeds, rounds, calls, scored, picked, model and latency; `trace.decide`
+   keeps the run.
 
-The first decision rides on the gate call Main already makes for every event (one more field in the
-same parallel call), so recall only runs when it is useful.
+For a vague question round one is the catalogue. For a question with a name or a date, the notes the exact
+rungs opened seed the loop: round one is what they link to, what links to them and their facts, so
+"where did I eat with Mei" opens mei by name and the ramen note because the scorer says that link is
+what the question is about, with the dinner fact as the excerpt. When the slot fails on a vague question
+the embedding rung answers instead. Two kinds of scorer fit behind the slot, both through
+`providers.yaml` (`DECIDE_PROVIDER`):
 
-Providers for the slot: **Jev** (cloud, scores in ~100 ms) and a **local cross-encoder reranker**
-(`bge-reranker-v2-m3` or similar on GPU 1, a few milliseconds). Note summaries are the most personal
-text the system has, so for recall the local reranker is `active` and Jev is `shadow`, the reverse of
-the gate. Recall v0 ships without the slot at all; it goes in when the logs show candidates exceeding
-the budget often or ambiguity cases piling up.
+| scorer | kind | how | cost |
+|---|---|---|---|
+| a cross-encoder reranker, `bge-reranker-v2-m3` on TEI | `tei` | `POST /rerank`, one forward pass over all pairs | local |
+| any chat model | `vllm`, `claude`, ... | the candidates in the prompt, the answer through the forced tool `score_candidates` | tokens |
+
+`scripts/bench_decide.py` runs the same questions through each scorer and reports top-1, hit@3, MRR,
+the margin between the right note and the best wrong one, latency and cost; the question set for the
+fixture vault is `tests/fixtures/bench/decide.yaml`, and `--scorer embed` adds the embedding rung
+itself as the baseline. The numbers decide which scorer is active.
+
+**Benchmark, 2026-10-25.** The fixture vault (16 questions, 7 candidates) and the live vault (14
+questions, 11 candidates). Laya and the reranker ran on this laptop's CPU, the embeddings on Ollama,
+the chat model on the GPU box's vLLM (a reasoning model). Margin: the right note's score minus the best
+wrong one, averaged; what a threshold has to work with.
+
+| scorer | fixture top-1 | live top-1 | hit@3 | margin | p50 |
+|---|---|---|---|---|---|
+| `bge-reranker-v2-m3`, cross-encoder (`tei`) | 75% | 93% | 94% / 100% | +0.44 / +0.37 | 0.1 / 0.2 s |
+| `bge-m3` cosine, the embedding rung | 94% | 86% | 100% / 100% | +0.09 / +0.09 | 0.3 / 0.9 s |
+| vLLM reasoning model, forced tool | 88% | 100% | 100% / 100% | +0.39 / +0.55 | 26 / 32 s |
+| Laya, one choice question | 50% | 71% | 81% / 93% | +0.21 / +0.43 | 0.4 / 0.4 s |
+| Laya, a score question per candidate | 44% | 64% | 94% / 79% | +0.00 / +0.02 | 1.8 / 2.9 s |
+
+What it says. The embeddings rank well and separate badly: a 0.09 margin is why the fallback rung could
+not tell the right note from noise. The reranker separates (right notes 0.14 to 0.99, wrong ones under
+0.02) in a tenth of a second, and three of its four fixture misses were summaries that state the answer
+in words ("Mei is moving to Tainan in December" for "the friend who is moving south"). The chat model
+is the most accurate and the only one that could also reason about hops, but a reasoning model takes
+half a minute per call; a small non-reasoning model would be the thing to measure next. The one question
+every scorer missed, "what book did she recommend", lives in a dated fact, which is why the picked notes'
+facts now join the second round. Laya's base
+checkpoint is not a relevance model: its pair mode has no margin at all, its choice mode is fast but
+wrong a third of the time. It left the branch; `feat/infra-laya` keeps its serving files should fine-tuning
+on recall traces ever be worth trying.
+
+So: the reranker is the active scorer (`DECIDE_PROVIDER=tei`, floor 0.05: live, "what did the dinner cost"
+put the right fact at 0.09 and everything else at 0.00), the embeddings remain the
+prefilter above `MEMORY_DECIDE_CANDIDATES` rows and the fallback when the slot is down, and the chat
+model stays one variable away for a box with a fast model.
 
 ## 5. How Main uses memory
 
@@ -396,13 +452,13 @@ wrong answer can be traced to the wrong note being opened, or the right one not 
 notes and facts, index records, events, `rpc.memory.*` requests and replies, the recall pack, the
 consolidation digest and report); `index/` and `events/` are the two pluggable backends (in-memory
 and Postgres; jsonl and Postgres); `vault.py`, `indexer.py`, `recall.py`, `embedder.py`, the
-`consolidate/` package (prompts, tools, the model caller, the writer, rollups) and `schedule.py` are the
-logic; `service.py` the rpc handlers; `settings.py` the environment.
+`consolidate/` package (prompts, tools, the model caller, the writer, rollups), the `decide/` package
+(catalogue, expansion, the score-pick-hop loop) and `schedule.py` are the logic; `service.py` the rpc handlers; `settings.py` the environment.
 
 | Step | What you get |
 |---|---|
 | **M1** (done) vault format, indexer, `notes` + `links` + `facts` + `summaries`, lookup ladder (exact, alias, trgm), `remember` / `lookup` / `recall` / `reindex`, module notes on deploy, `mctl remember` / `lookup` / `recall` | memory usable from the CLI; pure code, no model needed. `services/memory/`, tests in `tests/unit/test_memory_*.py` and `tests/integration/test_memory_pg.py`, fixtures in `tests/fixtures/` |
 | **M2** (done) Main v0: gateway (Claude or a local OpenAI-compatible model, `services/gateway/`), thread in NATS KV, planner with the recall pack and the `remember` / `recall` / `ask_module` / `ask` tools (`services/main/`), `trace.plan` per answer, Telegram in and out with `out.ask` buttons, `mctl chat` | the chatbot core with memory, end to end. Tests in `tests/unit/test_gateway.py`, `test_main.py`, `test_telegram.py` |
 | **M3** (done) nightly consolidation (`services/memory/consolidate.py`, `schedule.py`): one forced tool call on the `consolidate` slot writes the day summary, dated facts with `ev:<id>`, new notes and state updates; `rpc.memory.consolidate` / `mctl consolidate` replay any day; `trace.consolidate` per run | memory that grows without being told to. Tests in `tests/unit/test_memory_consolidate.py` |
-| **M4** week and month rollups (done: `rollup()`, `rpc.memory.rollup`, period phrases in recall); embeddings as a candidate source (done: the gateway's `embed` slot and `rpc.llm.embed`, `embedder.py` sweeps, `rpc.memory.embed` / `mctl embed`, recall's fallback rung, `infra/embed/`); the `decide` slot driving multi-hop recall | fuzzy recall that can explain each hop. Tests in `tests/unit/test_memory_embed.py` |
+| **M4** week and month rollups (done: `rollup()`, `rpc.memory.rollup`, period phrases in recall); embeddings as a candidate source (done: the gateway's `embed` slot and `rpc.llm.embed`, `embedder.py` sweeps, `rpc.memory.embed` / `mctl embed`, recall's fallback rung, `infra/embed/`); the decide step (done: the gateway's `decide` slot and `rpc.llm.decide` with a TEI reranker or a chat model behind it, `decide/` score-pick-hop loop, `scripts/bench_decide.py`) | fuzzy recall that can explain each hop. Tests in `tests/unit/test_memory_embed.py`, `test_memory_decide.py` |
 | **M5** the eval set | you know when memory gets worse |

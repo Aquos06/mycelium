@@ -1,0 +1,41 @@
+# The decide benchmark on the fixture vault (tests/fixtures/vault): a vague question and the note it is about.
+# `expect` is one path or a list (any of them counts). `hard: true` marks questions whose answer is in a note's
+# dated facts: the benchmark scores catalogue lines in one call, so a scorer gets those only by luck; in recall
+# the second round brings the picked notes' facts as candidates, which is how they are found live.
+#
+#   .venv/bin/python scripts/bench_decide.py --vault tests/fixtures/vault --questions tests/fixtures/bench/decide.yaml \
+#       --scorer tei=http://localhost:8102 --scorer vllm=http://192.168.0.107:8000/v1 --scorer embed
+
+- q: that place with the good shoyu
+  expect: places/ramen-place-xinyi.md
+- q: the friend who is moving south
+  expect: people/mei.md
+- q: the friend from the climbing gym
+  expect: people/mei.md
+- q: my ramen spot near the MRT
+  expect: places/ramen-place-xinyi.md
+- q: the noodle place
+  expect: places/ramen-place-xinyi.md
+- q: which project am I writing docs for
+  expect: projects/mycelium.md
+- q: the thing that tracks my spending
+  expect: modules/expenses.md
+- q: the module that was deployed
+  expect: modules/expenses.md
+- q: how much did I spend that week
+  expect: summaries/2026/W42.md
+- q: the week with three climbing sessions
+  expect: summaries/2026/W42.md
+- q: the day I had dinner out and deployed a module
+  expect: summaries/2026/10/14.md
+- q: who lives in Taipei
+  expect: [hansen.md, people/mei.md]
+- q: 我的攀岩朋友
+  expect: people/mei.md
+- q: 那家拉麵
+  expect: places/ramen-place-xinyi.md
+- q: what I do twice a week
+  expect: hansen.md
+- q: what book did she recommend
+  expect: people/mei.md
+  hard: true
