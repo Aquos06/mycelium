@@ -15,9 +15,10 @@ venv: ## create .venv with sdk + dev deps
 up: ## start core stack (nats, postgres, tracer, supervisor, memory, gateway, main)
 	docker compose up -d --build
 
-local: ## start Ollama next to the stack and pull MODEL (default qwen2.5:14b); then set kind: ollama active or shadow
+local: ## start Ollama next to the stack and pull MODEL (default qwen2.5:14b) plus bge-m3 for embeddings; then set PLANNER_PROVIDER / EMBED_PROVIDER=ollama
 	docker compose --profile local up -d ollama
 	docker compose exec ollama ollama pull $(MODEL)
+	docker compose exec ollama ollama pull bge-m3
 
 migrate: ## run every owner's Alembic tree to head on the local Postgres (reads .env)
 	set -a; . ./.env; set +a; $(BIN)/python scripts/migrate.py

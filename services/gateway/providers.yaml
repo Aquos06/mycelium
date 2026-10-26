@@ -7,7 +7,7 @@
 #
 # ${VAR:-default} is filled from the gateway's environment (.env via compose), so this file stays the same
 # on every box: PLANNER_PROVIDER / CONSOLIDATE_PROVIDER pick the active provider, VLLM_ENDPOINT / VLLM_MODEL
-# point at a vLLM that is not the compose one.
+# point at a vLLM that is not the compose one; EMBED_PROVIDER / TEI_ENDPOINT do the same for embeddings.
 
 budget_usd_month: 30
 
@@ -50,3 +50,26 @@ consolidate:                # memory's nightly job: one structured call per day,
     endpoint: ${VLLM_ENDPOINT:-http://vllm:8000/v1}
     model: ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}
     max_tokens: 8192
+
+embed:                      # memory's vectors (rpc.llm.embed): one size for the whole index, 1024
+  task: embed
+  active: ${EMBED_PROVIDER:-tei}
+  tei:
+    kind: tei               # infra/embed/ on the GPU box, no key
+    endpoint: ${TEI_ENDPOINT:-http://tei:80/v1}
+    model: BAAI/bge-m3
+    dimensions: 1024
+  vllm:
+    kind: vllm              # a second vLLM with --task embed
+    endpoint: ${VLLM_EMBED_ENDPOINT:-http://vllm-embed:8001/v1}
+    model: BAAI/bge-m3
+    dimensions: 1024
+  ollama:
+    kind: ollama
+    model: bge-m3
+    dimensions: 1024
+  openai:
+    kind: openai            # OPENAI_API_KEY; asked for 1024 dimensions, which text-embedding-3 honours
+    model: text-embedding-3-small
+    dimensions: 1024
+    price_in_per_m: 0.02

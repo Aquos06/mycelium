@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..schemas import CompletionRequest, CompletionResult
+from ..schemas import CompletionRequest, CompletionResult, EmbedRequest, EmbedResult
 
 
 class ProviderError(RuntimeError):
@@ -16,3 +16,10 @@ class Provider(Protocol):
     model: str
 
     async def complete(self, req: CompletionRequest) -> CompletionResult: ...
+
+
+class EmbeddingProvider(Protocol):
+    name: str
+    model: str
+
+    async def embed(self, req: EmbedRequest) -> EmbedResult: ...

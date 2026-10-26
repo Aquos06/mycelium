@@ -34,8 +34,8 @@ data and event hooks — and plugs it into the same bus as everything else.
 | SDK | `sdk/` | `Module` runtime, bus (`NatsBus`, `InMemoryBus`), KV (`NatsKV`, `InMemoryKV`), envelope, manifest validation, subject rules |
 | Supervisor | `services/supervisor/` | the only thing with Docker access; validates manifests, builds + runs modules, reconciles on start |
 | Tracer | `services/tracer/` | records every bus message into Postgres `events` and every `trace.*` into `traces`; owns the JetStream `EVENTS` stream |
-| Memory | `services/memory/` | markdown vault (the truth) + Postgres index + recall; `rpc.memory.*` |
-| Gateway | `services/gateway/` | `rpc.llm.complete` behind slots and providers (`providers.yaml`): Claude, OpenAI, Ollama, vLLM, OpenRouter, Groq, DeepSeek, Mistral, Gemini, xAI or any OpenAI-compatible endpoint; shadow mode, monthly budget, `trace.llm` |
+| Memory | `services/memory/` | markdown vault (the truth) + Postgres index (pg_trgm, pgvector) + recall by dates, periods, names, links and, for the vague rest, embeddings; nightly consolidation and rollups; `rpc.memory.*` |
+| Gateway | `services/gateway/` | `rpc.llm.complete` and `rpc.llm.embed` behind slots and providers (`providers.yaml`): Claude, OpenAI, Ollama, vLLM, TEI, OpenRouter, Groq, DeepSeek, Mistral, Gemini, xAI or any OpenAI-compatible endpoint; shadow mode, monthly budget, `trace.llm` |
 | Main | `services/main/` | on `sense.chat`: recall pack + thread → planner with tools (`remember`, `recall`, `ask_module`, `ask`) → `out.say` / `out.ask` + `trace.plan` |
 | Telegram | `services/telegram/` | your phone ↔ `sense.chat` / `out.say`; `out.ask` as buttons, taps back as `sense.feedback` (optional profile) |
 | Template | `template/` | what every new module starts from, incl. **`CONTRACT.md`** (the builder's rulebook) |
@@ -66,6 +66,8 @@ make deploy-hello               # supervisor builds + starts modules/hello
 .venv/bin/python scripts/mctl.py recall "what did 小美 say about Tainan?"
 .venv/bin/python scripts/mctl.py consolidate 2026-10-14                   # (re)run the nightly consolidation for a day
 .venv/bin/python scripts/mctl.py rollup 2026-W42                          # (re)write a week or month summary from its days
+.venv/bin/python scripts/mctl.py embed                                    # embed notes and summaries that have no vector yet
+.venv/bin/python scripts/mctl.py recall "that place with the good shoyu"   # no name, no date: the embedding rung answers
 ```
 
 Without `ANTHROPIC_API_KEY`, `chat` still works end to end but Main answers that it cannot reach its

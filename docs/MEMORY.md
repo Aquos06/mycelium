@@ -99,7 +99,7 @@ Only one program writes the tables: the indexer. Nobody runs `INSERT INTO facts`
 ```
 writers of markdown                        the only writer of tables
   nightly consolidation  ─┐                  ┌─ indexer: watch vault → parse → upsert
-  rpc.memory.remember    ─┼─► vault/*.md ───►┤          (also computes embeddings)
+  rpc.memory.remember    ─┼─► vault/*.md ───►┤          (the embedder fills `embedding` after)
   module note on deploy  ─┤                  └─► notes · links · facts · summaries
   Hansen, in Obsidian    ─┘                                 │
                                                             ▼
@@ -124,11 +124,12 @@ CREATE TABLE notes (
     summary    TEXT NOT NULL DEFAULT '',      -- first paragraph
     body_hash  TEXT NOT NULL,                 -- skip unchanged files on re-index
     updated_at TIMESTAMPTZ NOT NULL,
-    embedding  VECTOR(1024)                   -- of name + summary; NULL until computed
+    embedding  VECTOR(1024),                  -- of name, aliases, type and summary; NULL until the sweep
+    embedding_model TEXT                      -- which model made it; another model means re-embed
 );
-CREATE INDEX notes_name_trgm    ON notes USING gin (name gin_trgm_ops);
-CREATE INDEX notes_aliases_idx  ON notes USING gin (aliases);
-CREATE INDEX notes_embedding    ON notes USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX notes_name_trgm       ON notes USING gin (name gin_trgm_ops);
+CREATE INDEX notes_aliases_idx     ON notes USING gin (aliases);
+CREATE INDEX notes_embedding_hnsw  ON notes USING hnsw (embedding vector_cosine_ops);
 
 CREATE TABLE links (
     from_note  BIGINT REFERENCES notes(id) ON DELETE CASCADE,
@@ -150,10 +151,15 @@ CREATE TABLE summaries (
     key        TEXT NOT NULL,                 -- 2026-10-14 | 2026-W42 | 2026-10
     path       TEXT NOT NULL,
     text       TEXT NOT NULL,
-    embedding  VECTOR(1024),
+    embedding  VECTOR(1024),                  -- of the summary text
+    embedding_model TEXT,
     PRIMARY KEY (period, key)
 );
+CREATE INDEX summaries_embedding_hnsw ON summaries USING hnsw (embedding vector_cosine_ops);
 ```
+
+The tables are SQLAlchemy `Table` objects in `index/tables.py`; Alembic autogenerates the migrations
+from them (`make migration OWNER=memory NAME=...`), so this listing is a reading aid, not the source.
 
 `events` is **not** in this database. It lives in `mycelium_tracer`; memory reads it through a
 read-only role.
@@ -248,6 +254,17 @@ rollup is traced on `trace.rollup`; a failed one is kept on the day's report and
 First live run (2026-10-23, a reasoning model on vLLM): a day of 44 events took one call of about
 25 s, the summary came back in English with links, and recall hopped from it to the notes it named.
 
+**Embeddings (M4).** Every note and summary gets one vector, of its name, aliases, type and first
+paragraph (a summary: its text), from the gateway's `embed` slot (`rpc.llm.embed`; `embedder.py`).
+Memory never meets the model vendor: the slot may be TEI on the GPU box (`infra/embed/`), a second vLLM,
+Ollama or a cloud model, all over the OpenAI embeddings shape, and the slot pins the size the index is
+built for, 1024. The index remembers which model made each vector; a re-indexed file drops its vector
+and a changed model makes every row stale, so the next sweep re-embeds exactly what needs it. Sweeps
+run at start, after each consolidation, every `MEMORY_EMBED_EVERY` minutes (default 10) and on
+`mctl embed`, each traced on `trace.embed`; a write from `remember` queues one in the background so
+the reply never waits on the model. `MEMORY_EMBED=false` turns all of it off and recall keeps the exact
+rungs only.
+
 **Modules.** On `sys.module.deployed`, memory writes or updates `modules/<name>.md` from the
 manifest: purpose, the requests it answers, and the rule that exact data is fetched from the module.
 
@@ -287,7 +304,9 @@ Most lookups stop at step 1 or 2 with one cheap query. Embeddings exist for the 
 1. **Dates.** "last Tuesday" → `2026-10-14` (a date parser, no model) → open that day's summary.
 2. **Names.** Run the ladder on the names in the question → open those notes.
 3. **Links.** If an opened note or summary links to another and the budget allows, open it (one hop).
-4. **Fallback.** If 1–2 found nothing, embedding search over notes and summaries.
+4. **Fallback.** If 1–2 found nothing, the notes and summaries whose vectors are nearest the question's,
+   down to `MEMORY_EMBED_MIN_SCORE` (cosine, default 0.45: live with bge-m3 the right note scored 0.53 to
+   0.62 and unrelated ones 0.41 to 0.47); each says `similar to the question (0.53)`.
 5. **Pack.** Return a few `{note, excerpt, why}` items plus today's and yesterday's summaries.
 
 `budget` caps the pack (for example 8 notes) so it stays small enough for the planner. The pack is
@@ -323,7 +342,10 @@ The pack the planner receives, and the trace stores:
 }
 ```
 
-No embedding was used. It would have been, had the question been "that place with the good shoyu".
+No embedding was used. It would have been, had the question been "that place with the good shoyu":
+no date, period or name, so the question is embedded and `places/ramen-place-xinyi.md` comes back as
+`similar to the question (0.53)` with `used.embedding: true` (live, bge-m3 on Ollama; "the friend who is
+moving south" found `people/mei.md` at 0.58 from its Chinese first paragraph).
 
 ### Where a decision model fits
 
@@ -373,13 +395,14 @@ wrong answer can be traced to the wrong note being opened, or the right one not 
 `services/memory/` has the same shape as the gateway: `schemas/` holds every pydantic shape (vault
 notes and facts, index records, events, `rpc.memory.*` requests and replies, the recall pack, the
 consolidation digest and report); `index/` and `events/` are the two pluggable backends (in-memory
-and Postgres; jsonl and Postgres); `vault.py`, `indexer.py`, `recall.py`, `consolidate.py` and
-`schedule.py` are the logic; `service.py` the rpc handlers; `settings.py` the environment.
+and Postgres; jsonl and Postgres); `vault.py`, `indexer.py`, `recall.py`, `embedder.py`, the
+`consolidate/` package (prompts, tools, the model caller, the writer, rollups) and `schedule.py` are the
+logic; `service.py` the rpc handlers; `settings.py` the environment.
 
 | Step | What you get |
 |---|---|
 | **M1** (done) vault format, indexer, `notes` + `links` + `facts` + `summaries`, lookup ladder (exact, alias, trgm), `remember` / `lookup` / `recall` / `reindex`, module notes on deploy, `mctl remember` / `lookup` / `recall` | memory usable from the CLI; pure code, no model needed. `services/memory/`, tests in `tests/unit/test_memory_*.py` and `tests/integration/test_memory_pg.py`, fixtures in `tests/fixtures/` |
 | **M2** (done) Main v0: gateway (Claude or a local OpenAI-compatible model, `services/gateway/`), thread in NATS KV, planner with the recall pack and the `remember` / `recall` / `ask_module` / `ask` tools (`services/main/`), `trace.plan` per answer, Telegram in and out with `out.ask` buttons, `mctl chat` | the chatbot core with memory, end to end. Tests in `tests/unit/test_gateway.py`, `test_main.py`, `test_telegram.py` |
 | **M3** (done) nightly consolidation (`services/memory/consolidate.py`, `schedule.py`): one forced tool call on the `consolidate` slot writes the day summary, dated facts with `ev:<id>`, new notes and state updates; `rpc.memory.consolidate` / `mctl consolidate` replay any day; `trace.consolidate` per run | memory that grows without being told to. Tests in `tests/unit/test_memory_consolidate.py` |
-| **M4** week and month rollups (done: `rollup()`, `rpc.memory.rollup`, period phrases in recall), embeddings as a candidate source, the `decide` slot driving multi-hop recall | fuzzy recall that can explain each hop |
+| **M4** week and month rollups (done: `rollup()`, `rpc.memory.rollup`, period phrases in recall); embeddings as a candidate source (done: the gateway's `embed` slot and `rpc.llm.embed`, `embedder.py` sweeps, `rpc.memory.embed` / `mctl embed`, recall's fallback rung, `infra/embed/`); the `decide` slot driving multi-hop recall | fuzzy recall that can explain each hop. Tests in `tests/unit/test_memory_embed.py` |
 | **M5** the eval set | you know when memory gets worse |

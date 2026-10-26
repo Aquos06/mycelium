@@ -6,6 +6,7 @@
     rpc.memory.reindex      {}                 -> IndexStats
     rpc.memory.consolidate  ConsolidateRequest -> ConsolidationReport   (default: yesterday)
     rpc.memory.rollup       RollupRequest      -> RollupReport           (a week or month from its days)
+    rpc.memory.embed        {}                 -> EmbedSweepReport       (vectors for rows that lack one)
     sys.module.deployed     -> writes modules/<name>.md from the manifest
 
 Payloads are validated with the models in schemas/rpc.py (the contract Main codes against).
@@ -14,6 +15,7 @@ Replies are {"ok": true, ...} or {"ok": false, "error": ...}, like the superviso
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from datetime import date, timedelta
@@ -24,6 +26,7 @@ from pydantic import BaseModel, ValidationError
 from mycelium_sdk import Bus, Message, validation_message
 
 from .consolidate import Consolidator
+from .embedder import Embedder
 from .index import Index
 from .indexer import index_file, reindex
 from .recall import lookup, recall
@@ -52,13 +55,16 @@ class MemoryService:
         vault: Vault,
         index: Index,
         consolidator: Consolidator | None = None,
+        embedder: Embedder | None = None,
         today: Callable[[], date] = date.today,
     ) -> None:
         self.bus = bus
         self.vault = vault
         self.index = index
         self.consolidator = consolidator
+        self.embedder = embedder
         self.today = today
+        self._sweep: asyncio.Task | None = None  # at most one background sweep queued behind a write
 
     async def start(self) -> None:
         await self.bus.connect()
@@ -70,6 +76,7 @@ class MemoryService:
         await self.bus.subscribe("rpc.memory.reindex", self._wrap(self.reindex), queue="memory")
         await self.bus.subscribe("rpc.memory.consolidate", self._wrap(self.consolidate), queue="memory")
         await self.bus.subscribe("rpc.memory.rollup", self._wrap(self.rollup), queue="memory")
+        await self.bus.subscribe("rpc.memory.embed", self._wrap(self.embed), queue="memory")
         await self.bus.subscribe("sys.module.deployed", self.on_module_deployed, queue="memory")
 
     def _wrap(self, fn):
@@ -113,6 +120,7 @@ class MemoryService:
 
         self.vault.write(note)
         await index_file(self.vault, self.index, note.path)
+        self.sweep_soon(cause=str(data.get("id")) if data.get("id") else None)
         return RememberReply(path=note.path, created=created)
 
     async def lookup(self, data: dict[str, Any]) -> LookupReply:
@@ -127,7 +135,15 @@ class MemoryService:
 
     async def recall(self, data: dict[str, Any]):
         req = RecallRequest.model_validate(data)
-        return await recall(self.vault, self.index, req.query, today=req.today or self.today(), budget=req.budget)
+        return await recall(
+            self.vault,
+            self.index,
+            req.query,
+            today=req.today or self.today(),
+            budget=req.budget,
+            embedder=self.embedder,
+            cause=str(data.get("id")) if data.get("id") else None,
+        )
 
     async def reindex(self, _data: dict[str, Any]):
         return await reindex(self.vault, self.index)
@@ -137,15 +153,31 @@ class MemoryService:
         if self.consolidator is None:
             raise ValueError("consolidation is not configured (no event source)")
         day = req.day or self.today() - timedelta(days=1)
-        return await self.consolidator.run(day, cause=str(data.get("id")) if data.get("id") else None)
+        cause = str(data.get("id")) if data.get("id") else None
+        report = await self.consolidator.run(day, cause=cause)
+        self.sweep_soon(cause)
+        return report
 
     async def rollup(self, data: dict[str, Any]):
         req = RollupRequest.model_validate(data)
         if self.consolidator is None:
             raise ValueError("consolidation is not configured (no event source)")
-        return await self.consolidator.rollup(
-            req.period, req.key, cause=str(data.get("id")) if data.get("id") else None
-        )
+        cause = str(data.get("id")) if data.get("id") else None
+        report = await self.consolidator.rollup(req.period, req.key, cause=cause)
+        self.sweep_soon(cause)
+        return report
+
+    async def embed(self, data: dict[str, Any]):
+        if self.embedder is None:
+            raise ValueError("embeddings are off (MEMORY_EMBED=false)")
+        return await self.embedder.sweep(cause=str(data.get("id")) if data.get("id") else None)
+
+    def sweep_soon(self, cause: str | None = None) -> None:
+        """Embed what a write just changed, in the background: the caller's reply never waits on the embed slot.
+        One queued sweep is enough, since a sweep takes everything stale at the time it runs."""
+        if self.embedder is None or (self._sweep is not None and not self._sweep.done()):
+            return
+        self._sweep = asyncio.create_task(self.embedder.sweep(cause))
 
     async def on_module_deployed(self, msg: Message) -> None:
         name = str(msg.data.get("name", "")).strip().lower()
@@ -168,6 +200,7 @@ class MemoryService:
             )
             self.vault.write(note)
             await index_file(self.vault, self.index, note.path)
+            self.sweep_soon()
         except Exception:
             log.exception("could not write module note for %s", name)
 

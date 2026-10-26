@@ -20,8 +20,10 @@ from .completion import Usage
 
 class LlmTrace(Envelope):
     source: str = "gateway"
+    op: str = "complete"  # complete | embed
     slot: str
     provider: str
+    items: int | None = None  # texts embedded, for embed calls
     model: str | None = None
     ok: bool
     latency_ms: int = Field(default=0, ge=0)

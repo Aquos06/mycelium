@@ -1,4 +1,5 @@
-"""The nightly tick: at a local time each day, consolidate yesterday; at start, catch up the days that were missed.
+"""The ticks: at a local time each day, consolidate yesterday; at start, catch up the days that were missed;
+every few minutes, embed what has no vector yet.
 
 The time comes from MemorySettings.consolidate_at (MEMORY_CONSOLIDATE_AT=03:30; empty disables it,
 `mctl consolidate` still works).
@@ -69,3 +70,18 @@ async def catch_up(
         except Exception:
             log.exception("catch-up consolidation for %s failed", day)
     return done
+
+
+async def every(run: Callable[[], Awaitable[object]], minutes: int, stop: asyncio.Event) -> None:
+    """Call run() now, then every `minutes` until `stop` is set (the embedding sweep). A failed run is logged."""
+    while not stop.is_set():
+        try:
+            await run()
+        except Exception:
+            log.exception("periodic run failed")
+        if minutes <= 0:
+            return
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=minutes * 60)
+        except TimeoutError:
+            continue

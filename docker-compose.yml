@@ -90,6 +90,8 @@ services:
       MEMORY_SCHEMA: memory
       MEMORY_TZ: ${MEMORY_TZ:-Asia/Taipei}
       MEMORY_CONSOLIDATE_AT: ${MEMORY_CONSOLIDATE_AT-03:30}    # nightly consolidation, local time; set empty to disable (`-`, not `:-`)
+      MEMORY_EMBED: ${MEMORY_EMBED:-true}                       # vectors through the gateway's embed slot (EMBED_PROVIDER)
+      MEMORY_EMBED_EVERY: ${MEMORY_EMBED_EVERY:-10}             # minutes between sweeps for rows without a vector
     volumes:
       - vault:/vault       # the markdown vault: the curated memory, human-editable (docs/MEMORY.md)
     networks: [mesh]
@@ -110,6 +112,9 @@ services:
       CONSOLIDATE_PROVIDER: ${CONSOLIDATE_PROVIDER:-}
       VLLM_ENDPOINT: ${VLLM_ENDPOINT:-}
       VLLM_MODEL: ${VLLM_MODEL:-}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-}
+      TEI_ENDPOINT: ${TEI_ENDPOINT:-}
+      VLLM_EMBED_ENDPOINT: ${VLLM_EMBED_ENDPOINT:-}
       # model keys live here and in the builder, nowhere else: one env var per kind (schemas/kinds.py)
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

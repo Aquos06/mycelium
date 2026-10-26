@@ -1,7 +1,8 @@
 """Recall: which notes should the planner get to read for this question?
 
-Dates, then names, then one hop of links, then (later) embeddings. Ordinary code: the same question
-opens the same notes, and the pack says why each one was opened.
+Dates and periods, then names, then one hop of links, and when none of those found anything, the notes and
+summaries whose vectors are near the question's. Ordinary code: the same question opens the same notes, and
+the pack says why each one was opened.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
+from .embedder import Embedder
 from .index import FUZZY_THRESHOLD, Index
 from .schemas import Match, NoteRecord, RecallBudget, RecallItem, RecallPack, RecallUsed
 from .vault import Vault, month_key, period_days, week_key
@@ -194,7 +196,15 @@ async def _excerpt(index: Index, record: NoteRecord, days: list[date], words: se
     return _clip(record.summary)
 
 
-async def recall(vault: Vault, index: Index, query: str, today: date, budget: int = 8) -> RecallPack:
+async def recall(
+    vault: Vault,
+    index: Index,
+    query: str,
+    today: date,
+    budget: int = 8,
+    embedder: Embedder | None = None,
+    cause: str | None = None,
+) -> RecallPack:
     items: list[RecallItem] = []
     opened: set[str] = set()
     used = RecallUsed()
@@ -260,5 +270,19 @@ async def recall(vault: Vault, index: Index, query: str, today: date, budget: in
         if s := await index.summary("day", d.isoformat()):
             add(s.path, why, _clip(s.text))
 
-    # 4. embeddings: not wired yet (M4); the pack says so
+    # 4. embeddings: when the exact rungs found nothing, the notes and summaries whose vectors are near the
+    #    question's. Nothing when the slot is off or down; the pack says so.
+    if embedder is not None and not (used.dates or used.periods or used.names) and len(items) < budget:
+        vector = await embedder.embed_query(query, cause)
+        if vector is not None:
+            used.embedding = True
+            for nb in await index.nearest(vector, limit=budget):
+                if nb.score < embedder.min_score:
+                    break
+                why = f"similar to the question ({nb.score:.2f})"
+                if isinstance(nb.record, NoteRecord):
+                    await add_note(nb.record, why)
+                else:
+                    add(nb.record.path, why, _clip(nb.record.text))
+
     return RecallPack(query=query, items=items, used=used, budget=RecallBudget(notes_opened=len(items), max=budget))

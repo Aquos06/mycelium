@@ -26,6 +26,29 @@ class MemorySettings(ServiceSettings):
         description="local time of the nightly consolidation; empty disables it (mctl consolidate still works)",
     )
 
+    embed: bool = Field(
+        default=True,
+        validation_alias="MEMORY_EMBED",
+        description="embed notes and summaries through the gateway's embed slot; off, recall has no fuzzy rung",
+    )
+    embed_every: int = Field(
+        default=10,
+        ge=0,
+        validation_alias="MEMORY_EMBED_EVERY",
+        description="minutes between sweeps for rows without a vector; 0 sweeps only at start, after consolidation and on mctl embed",
+    )
+    embed_batch: int = Field(default=64, ge=1, le=256, validation_alias="MEMORY_EMBED_BATCH")
+    embed_timeout: float = Field(
+        default=60.0, gt=0, validation_alias="MEMORY_EMBED_TIMEOUT", description="seconds per batch"
+    )
+    embed_min_score: float = Field(
+        default=0.45,
+        ge=0.0,
+        le=1.0,
+        validation_alias="MEMORY_EMBED_MIN_SCORE",
+        description="cosine similarity under which a neighbour is noise and recall leaves it out",
+    )
+
     @field_validator("tz")
     @classmethod
     def _tz(cls, v: str) -> str:

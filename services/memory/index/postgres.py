@@ -8,14 +8,14 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import any_, delete, func, insert, select, text, union_all
+from sqlalchemy import any_, bindparam, delete, func, insert, literal_column, or_, select, text, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from mycelium_sdk.db import migrate
 
-from ..schemas import Fact, FactRecord, NoteRecord, SummaryRecord
-from .tables import IndexTables
+from ..schemas import EmbedTarget, Fact, FactRecord, Neighbour, NoteRecord, SummaryRecord, embedding_text
+from .tables import EMBEDDING_DIMENSIONS, IndexTables, Vector
 
 SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
@@ -93,6 +93,8 @@ class PostgresIndex:
                     "summary": stmt.excluded.summary,
                     "body_hash": stmt.excluded.body_hash,
                     "updated_at": func.now(),
+                    "embedding": None,  # the text changed: re-embed
+                    "embedding_model": None,
                 },
             ).returning(n.c.id)
             note_id = (await conn.execute(stmt)).scalar_one()
@@ -130,6 +132,8 @@ class PostgresIndex:
                 "text": stmt.excluded.text,
                 "links": stmt.excluded.links,
                 "body_hash": stmt.excluded.body_hash,
+                "embedding": None,
+                "embedding_model": None,
             },
         )
         async with self.engine.begin() as conn:
@@ -184,16 +188,7 @@ class PostgresIndex:
         s = self.t.summaries
         async with self.engine.connect() as conn:
             row = (await conn.execute(select(s).where(s.c.period == period, s.c.key == key))).mappings().first()
-        if row is None:
-            return None
-        return SummaryRecord(
-            period=row["period"],
-            key=row["key"],
-            path=row["path"],
-            text=row["text"],
-            links=list(row["links"] or []),
-            body_hash=row["body_hash"],
-        )
+        return _summary(row) if row is not None else None
 
     async def summaries_in(self, period: str, keys: list[str]) -> list[SummaryRecord]:
         """Several keys in one query, in the order asked."""
@@ -202,17 +197,7 @@ class PostgresIndex:
         s = self.t.summaries
         async with self.engine.connect() as conn:
             rows = (await conn.execute(select(s).where(s.c.period == period, s.c.key.in_(keys)))).mappings().all()
-        by_key = {
-            r["key"]: SummaryRecord(
-                period=r["period"],
-                key=r["key"],
-                path=r["path"],
-                text=r["text"],
-                links=list(r["links"] or []),
-                body_hash=r["body_hash"],
-            )
-            for r in rows
-        }
+        by_key = {r["key"]: _summary(r) for r in rows}
         return [by_key[k] for k in keys if k in by_key]
 
     async def vocabulary(self) -> list[tuple[str, str]]:
@@ -224,3 +209,60 @@ class PostgresIndex:
             out.append((name, name))
             out.extend((a, name) for a in (aliases or []) if a != name)
         return out
+
+    # ---- embeddings ---------------------------------------------------------------------------
+
+    async def stale_embeddings(self, model: str, limit: int = 200) -> list[EmbedTarget]:
+        n, s = self.t.notes, self.t.summaries
+        stale_n = (
+            select(n).where(or_(n.c.embedding.is_(None), n.c.embedding_model.is_distinct_from(model))).limit(limit)
+        )
+        stale_s = (
+            select(s).where(or_(s.c.embedding.is_(None), s.c.embedding_model.is_distinct_from(model))).limit(limit)
+        )
+        out: list[EmbedTarget] = []
+        async with self.engine.connect() as conn:
+            for r in (await conn.execute(stale_n)).mappings().all():
+                out.append(EmbedTarget(path=r["path"], text=embedding_text(_note(r))))
+            for r in (await conn.execute(stale_s)).mappings().all():
+                out.append(EmbedTarget(path=r["path"], text=embedding_text(_summary(r))))
+        return out[:limit]
+
+    async def set_embedding(self, path: str, vector: list[float], model: str) -> None:
+        if len(vector) != EMBEDDING_DIMENSIONS:
+            raise ValueError(f"{len(vector)} dimensions; the index is built for {EMBEDDING_DIMENSIONS}")
+        n, s = self.t.notes, self.t.summaries
+        async with self.engine.begin() as conn:
+            r = await conn.execute(update(n).where(n.c.path == path).values(embedding=vector, embedding_model=model))
+            if r.rowcount == 0:
+                await conn.execute(update(s).where(s.c.path == path).values(embedding=vector, embedding_model=model))
+
+    async def nearest(self, vector: list[float], limit: int = 8) -> list[Neighbour]:
+        """Cosine similarity through pgvector's <=> operator (the HNSW index is built for it)."""
+        n, s = self.t.notes, self.t.summaries
+        q = bindparam("q", vector, type_=Vector(EMBEDDING_DIMENSIONS))
+        score_n = (literal_column("1") - n.c.embedding.op("<=>")(q)).label("score")
+        score_s = (literal_column("1") - s.c.embedding.op("<=>")(q)).label("score")
+        notes_q = select(n, score_n).where(n.c.embedding.is_not(None)).order_by(n.c.embedding.op("<=>")(q)).limit(limit)
+        sums_q = select(s, score_s).where(s.c.embedding.is_not(None)).order_by(s.c.embedding.op("<=>")(q)).limit(limit)
+        out: list[Neighbour] = []
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(notes_q)).mappings().all()
+            links = await self._links_for(conn, [r["id"] for r in rows])
+            for r in rows:
+                out.append(Neighbour(record=_note(r, links.get(r["id"])), score=round(float(r["score"]), 4)))
+            for r in (await conn.execute(sums_q)).mappings().all():
+                out.append(Neighbour(record=_summary(r), score=round(float(r["score"]), 4)))
+        out.sort(key=lambda x: (-x.score, x.record.path))
+        return out[:limit]
+
+
+def _summary(row: Any) -> SummaryRecord:
+    return SummaryRecord(
+        period=row["period"],
+        key=row["key"],
+        path=row["path"],
+        text=row["text"],
+        links=list(row["links"] or []),
+        body_hash=row["body_hash"],
+    )
