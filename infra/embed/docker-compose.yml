@@ -1,0 +1,73 @@
+# Text Embeddings Inference (TEI) on the GPU box: `tei` embeds (memory's vectors), `tei-rerank` scores (the decide step).
+#
+#   cp .env.example .env            # the host port and, if the model is gated, a HF token
+#   docker compose up -d
+#   curl -s localhost:8101/v1/embeddings -H 'content-type: application/json' \
+#        -d '{"input": ["hello"], "model": "BAAI/bge-m3"}' | head -c 200
+#
+# Then on the stack: EMBED_PROVIDER=tei and TEI_ENDPOINT=http://<this box>:8101/v1 in .env (providers.yaml
+# `embed` slot). bge-m3 gives 1024 dimensions, the size memory's index is built for; another model of the
+# same size works as is, a model of another size needs the index rebuilt (docs/MEMORY.md, Embeddings).
+# For the decide step: DECIDE_PROVIDER=tei and TEI_RERANK_ENDPOINT=http://<this box>:8102. The CUDA images run
+# any model from safetensors; the CPU image needs ONNX weights, which this reranker's repo does not ship.
+
+services:
+  tei:
+    # cuda-* runs on every CUDA arch; the arch-specific tags (86-*, 89-*, hopper-*) are a little faster.
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cuda-1.9}
+    command:
+      - --model-id
+      - ${TEI_MODEL:-BAAI/bge-m3}
+      - --max-client-batch-size
+      - "256"                      # the gateway sends up to 256 texts per call
+      - --auto-truncate            # a very long note is cut at the model's 8192 tokens instead of failing the batch
+      - --port
+      - "80"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    ports:
+      - "${TEI_PORT:-8101}:80"
+    volumes:
+      - hf-cache:/data
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s          # first start downloads the model (2.2 GB for bge-m3)
+    restart: unless-stopped
+
+  tei-rerank:
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cuda-1.9}
+    command:
+      - --model-id
+      - ${TEI_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      - --max-client-batch-size
+      - "256"                      # one call scores up to 256 candidates
+      - --auto-truncate
+      - --port
+      - "80"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    ports:
+      - "${TEI_RERANK_PORT:-8102}:80"
+    volumes:
+      - hf-cache:/data
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
