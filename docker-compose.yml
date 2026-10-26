@@ -173,6 +173,46 @@ services:
     networks: [mesh]
     restart: unless-stopped
 
+  tei:
+    profiles: [gpu]          # embeddings next to vllm (providers.yaml kind: tei). On a separate box use infra/embed/ instead.
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cuda-1.9}
+    command:
+      - --model-id
+      - ${TEI_MODEL:-BAAI/bge-m3}
+      - --max-client-batch-size
+      - "256"
+      - --auto-truncate
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - hf-cache:/data
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+    networks: [mesh]
+    restart: unless-stopped
+
+  tei-rerank:
+    profiles: [gpu]          # the decide step's scorer (providers.yaml kind: tei, slot decide); infra/embed/ on a separate box
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cuda-1.9}
+    command:
+      - --model-id
+      - ${TEI_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      - --max-client-batch-size
+      - "256"
+      - --auto-truncate
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - hf-cache:/data
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+    networks: [mesh]
+    restart: unless-stopped
+
   telegram:
     profiles: [telegram]
     build: { context: ., dockerfile: services/telegram/Dockerfile }
