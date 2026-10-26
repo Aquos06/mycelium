@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fromEvents, merge, order, waiting, type ChatItem } from "@/lib/chat";
+import { fromEvents, merge, order, pendingTurn, waiting, type ChatItem } from "@/lib/chat";
 import type { BusEvent } from "@/lib/schemas";
 
 let seq = 0;
@@ -51,6 +51,8 @@ describe("a conversation from the bus", () => {
     const now = Date.parse("2026-10-26T14:00:30Z");
     const you: ChatItem = { kind: "user", id: "u", ts: "2026-10-26T14:00:00Z", text: "a" };
     expect(waiting([you], now)).toBe(true);
+    expect(pendingTurn([you], now)).toBe("u"); // the cause a reply being written streams under
+    expect(pendingTurn([], now)).toBeNull();
     expect(waiting([{ ...you, pending: true }], now)).toBe(false);
     expect(waiting([you, { kind: "assistant", id: "a", ts: "2026-10-26T14:00:05Z", text: "A", cause: "u" }], now)).toBe(false);
     expect(waiting([you], now + 10 * 60_000)).toBe(false);

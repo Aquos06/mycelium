@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from ..schemas import CompletionRequest, CompletionResult, DecideRequest, DecideResult, EmbedRequest, EmbedResult
+
+#: Called with each piece of the reply's text as the model produces it (gateway.stream.TextStreamer.on_text).
+#: A provider that cannot stream ignores it and answers whole; the caller never depends on it being called.
+OnText = Callable[[str], Awaitable[None]]
 
 
 class ProviderError(RuntimeError):
@@ -15,7 +20,7 @@ class Provider(Protocol):
     name: str
     model: str
 
-    async def complete(self, req: CompletionRequest) -> CompletionResult: ...
+    async def complete(self, req: CompletionRequest, on_text: OnText | None = None) -> CompletionResult: ...
 
 
 class EmbeddingProvider(Protocol):

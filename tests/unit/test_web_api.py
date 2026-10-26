@@ -221,3 +221,25 @@ def test_unknown_routes_answer_the_error_envelope():
         r = client.get(f"{API}/nope")
         assert r.status_code == 404 and r.json() == {"ok": False, "error": "Not Found"}
         assert client.get("/anything").status_code == 404
+
+
+def test_the_socket_forwards_stream_frames_live_and_the_buffer_never_keeps_them():
+    with _client() as (client, gw, bus):
+        with client.websocket_connect(f"{API}/events/ws") as ws:
+            assert ws.receive_json()["type"] == "hello"
+            delta = {
+                "cause": "m1",
+                "request": "r1",
+                "slot": "planner",
+                "provider": "claude",
+                "seq": 1,
+                "text": "Hel",
+                "done": False,
+            }
+            client.portal.call(bus.publish, "stream.llm", delta)
+            frame = ws.receive_json()
+            assert frame == {"type": "stream", "subject": "stream.llm", "data": delta}
+            client.portal.call(bus.publish, "out.say", {"channel": "web", "thread": "web", "text": "Hello"})
+            assert ws.receive_json()["type"] == "event"
+        page = client.get(f"{API}/events").json()
+        assert page["seq"] == 1 and [e["subject"] for e in page["events"]] == ["out.say"]  # the stream left no trace

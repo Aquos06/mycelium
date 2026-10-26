@@ -10,7 +10,7 @@ describe.py     rpc.llm.config: the loaded slots and providers with key states, 
 trace.py        what goes on trace.llm and trace.llm.shadow
 """
 
-from .completion import ROLES, CompletionReply, CompletionRequest, CompletionResult, ToolCall, Usage
+from .completion import ROLES, CompletionReply, CompletionRequest, CompletionResult, StreamDelta, ToolCall, Usage
 from .config import GatewayConfig, KeyState, ProviderConfig, SlotConfig, SlotTask
 from .decide import Candidate, DecideReply, DecideRequest, DecideResult, Score, ScoreSheet
 from .describe import ConfigReply, ProviderInfo, SlotInfo
@@ -26,6 +26,7 @@ __all__ = [
     "CompletionResult",
     "ToolCall",
     "Usage",
+    "StreamDelta",
     "GatewayConfig",
     "KeyState",
     "ProviderConfig",

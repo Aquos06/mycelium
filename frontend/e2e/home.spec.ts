@@ -7,7 +7,8 @@ test.describe("home", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(/Good \w+, Hansen/);
     const timeline = page.getByRole("list", { name: "Timeline" });
-    await expect(timeline.getByText("You said “dinner with Mei at 7, remind me at 6”")).toBeVisible();
+    await expect(timeline.getByText("You said “dinner with Mei at 7, remind me at 6” on telegram")).toBeVisible();
+    await expect(timeline.getByText(/trace\.plan/)).toHaveCount(0); // plain words; the machine's side only in raw mode
     await expect(page.getByRole("link", { name: /hello/ }).first()).toBeVisible();
     await expect(page.getByTitle("telegram", { exact: true })).toHaveText("Chat");
   });

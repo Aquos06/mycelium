@@ -33,5 +33,24 @@ export const eventFrameSchema = z.object({
   received: z.string(),
 });
 
-export const frameSchema = z.discriminatedUnion("type", [helloFrameSchema, eventFrameSchema]);
+/** A piece of a reply as the model writes it (services/gateway/schemas/completion.py::StreamDelta). */
+export const streamDeltaSchema = z.looseObject({
+  cause: z.string(),
+  request: z.string(),
+  slot: z.string().default("planner"),
+  provider: z.string().default(""),
+  seq: z.number().int(),
+  text: z.string().default(""),
+  done: z.boolean().default(false),
+});
+export type StreamDelta = z.infer<typeof streamDeltaSchema>;
+
+/** Live, never numbered, never kept: the gateway forwards stream.* as it comes. */
+export const streamFrameSchema = z.object({
+  type: z.literal("stream"),
+  subject: z.string(),
+  data: streamDeltaSchema,
+});
+
+export const frameSchema = z.discriminatedUnion("type", [helloFrameSchema, eventFrameSchema, streamFrameSchema]);
 export type Frame = z.infer<typeof frameSchema>;

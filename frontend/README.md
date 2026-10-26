@@ -4,8 +4,9 @@ Next.js 16 · Tailwind v4 · shadcn-style primitives on Base UI · TanStack Quer
 Paper, not chrome. Colour means a place on the bus. Motion only for real activity.
 
 The app talks to one service, the web gateway (`services/web`, ARCHITECTURE §10): REST under `/api/v1`
-for what you say and ask, one websocket for everything the bus says back. Nothing in the UI is faked:
-every number comes from the bus or an `rpc.*` reply.
+for what you say and ask, one websocket for everything the bus says back, including the reply being
+written (`stream.llm` frames, shown under your message until the reply lands whole). Nothing in the UI
+is faked: every number comes from the bus or an `rpc.*` reply.
 
 > **Read [`AGENTS.md`](AGENTS.md) before editing.** This is Next.js **16**; the bundled guides in
 > `node_modules/next/dist/docs/` are the reference.

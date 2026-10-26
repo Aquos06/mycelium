@@ -15,7 +15,7 @@ import asyncio
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from ..api.deps import WS_BEARER, Gateway, Settings, authorized, bearer_from_subprotocols, origin_allowed
-from .schemas import EventsPage, Frame, Hello
+from .schemas import BusEvent, EventsPage, Frame, Hello, StreamFrame
 
 router = APIRouter()
 
@@ -63,9 +63,11 @@ async def stream(socket: WebSocket, gw: Gateway, settings: Settings, token: str 
             if ev is None:
                 await socket.close(code=WS_TOO_SLOW)
                 break
-            await socket.send_json(
-                Frame(seq=ev.seq, subject=ev.subject, data=ev.data, received=ev.received).model_dump()
-            )
+            if isinstance(ev, BusEvent):
+                frame: Frame | StreamFrame = Frame(seq=ev.seq, subject=ev.subject, data=ev.data, received=ev.received)
+            else:
+                frame = StreamFrame(subject=ev.subject, data=ev.data)
+            await socket.send_json(frame.model_dump())
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

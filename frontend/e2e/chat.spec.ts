@@ -3,13 +3,18 @@ import { expect, test } from "@playwright/test";
 // A conversation: what you type lands, the plan shows, the reply follows, a vote goes out.
 
 test.describe("chat", () => {
-  test("a turn: message, plan, reply", async ({ page }) => {
+  test("a turn: message, the reply being written, then the plan and the reply", async ({ page }) => {
     await page.goto("/chat/web");
     await page.getByRole("textbox", { name: "Message" }).fill("coffee 85");
     await page.keyboard.press("Enter");
     await expect(page.getByText("coffee 85").first()).toBeVisible();
+    // the stream: pieces of the reply appear before the reply itself lands
+    const live = page.locator("[data-kind=stream]");
+    await expect(live).toBeVisible();
+    await expect(live).toContainText("Noted");
     await expect(page.getByText("Planned", { exact: true })).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText(/Noted: “coffee 85”/)).toBeVisible();
+    await expect(live).toHaveCount(0); // replaced by the reply, not shown twice
     await page.getByRole("button", { name: "Good answer" }).first().click();
     await expect(page.getByRole("button", { name: "Good answer" }).first()).toHaveAttribute("aria-pressed", "true");
   });
