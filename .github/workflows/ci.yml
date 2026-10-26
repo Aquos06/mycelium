@@ -1,10 +1,10 @@
-# CI: runs on every pull request into dev / stage / main, and is reused by cd.yml on every push.
+# CI: runs on every pull request, whatever its base (a PR stacked on another feature branch is checked
+# too), and is reused by cd.yml on every push to dev / stage / main.
 # lint -> unit (+ every module's own tests) -> integration (real NATS + Postgres) -> e2e (full compose stack)
 name: ci
 
 on:
   pull_request:
-    branches: [dev, stage, main]
   workflow_call:
   workflow_dispatch:
 
