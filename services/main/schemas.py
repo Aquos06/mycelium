@@ -29,6 +29,7 @@ class PlannerRequest(BaseModel):
     cause: str | None = None  # the message this turn answers
     hops: int = Field(default=0, ge=0)  # that message's hops
     timeout: float = Field(gt=0)  # seconds Main waits; the gateway gives up first
+    stream: bool = True  # the gateway publishes the text on stream.llm as it is written; the web app shows it by cause
 
 
 class Say(Envelope):

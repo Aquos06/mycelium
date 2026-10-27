@@ -1,6 +1,7 @@
 "use client";
 
-// The bus as a list you can read: grouped by when, one line per event, the subject's hue as a mark.
+// The bus as a list you can read: grouped by when, one plain sentence per event, the subject's hue as a
+// mark. The machine's side (subject, payload, numbers) only in raw mode.
 
 import { useMemo } from "react";
 import { DOMAIN, domainOf, read } from "@/lib/domains";
@@ -37,10 +38,14 @@ export function Timeline({ events, raw, now }: { events: BusEvent[]; raw: boolea
                 <span className="pt-0.5 text-right font-mono text-[11.5px] text-ink3">{fresh ? "now" : hhmm(e.received)}</span>
                 <span className="mt-1.5 size-2 justify-self-center rounded-full" style={{ background: DOMAIN[domainOf(e.subject)].c }} />
                 <span className="flex min-w-0 flex-col">
-                  <span className="text-[14px] leading-[1.4] wrap-break-word text-pretty text-ink">{r.text}</span>
-                  <span className="truncate font-mono text-[11.5px] text-ink3" title={r.meta}>
-                    {r.meta}
+                  <span className="text-[14px] leading-[1.4] wrap-break-word text-pretty text-ink" title={raw ? undefined : r.meta}>
+                    {r.text}
                   </span>
+                  {raw && (
+                    <span className="truncate font-mono text-[11.5px] text-ink3" title={r.meta}>
+                      {r.meta}
+                    </span>
+                  )}
                 </span>
               </div>
             );

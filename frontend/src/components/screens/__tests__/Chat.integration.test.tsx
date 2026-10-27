@@ -59,6 +59,31 @@ describe("Chat", () => {
     expect(screen.getByRole("button", { name: "Good answer" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("shows the reply being written while your last message is unanswered, Planning… before the first piece", () => {
+    const u = envelope("u2");
+    const mine = [event("sense.chat", { ...u, ts: new Date().toISOString(), channel: "web", thread: "web", text: "what is running?" })];
+    const { unmount } = renderScreen(<Chat thread="web" />, mine, "live", {});
+    expect(screen.getByRole("status")).toHaveTextContent("Planning…");
+    unmount();
+    renderScreen(<Chat thread="web" />, mine, "live", { u2: { request: "r1", provider: "claude", text: "hello is run", done: false } });
+    const live = screen.getByRole("status", { name: "Main is writing" });
+    expect(live).toHaveTextContent("hello is run");
+    expect(live).toHaveAttribute("data-kind", "stream");
+    expect(screen.queryByText("Planning…")).not.toBeInTheDocument();
+  });
+
+  it("drops the live text once the reply itself is there", () => {
+    const u = envelope("u3");
+    const a = envelope("a3", "u3");
+    const done = [
+      event("sense.chat", { ...u, ts: new Date().toISOString(), channel: "web", thread: "web", text: "hi" }),
+      event("out.say", { ...a, ts: new Date().toISOString(), channel: "web", thread: "web", text: "Hello there." }),
+    ];
+    renderScreen(<Chat thread="web" />, done, "live", { u3: { request: "r1", provider: "claude", text: "Hello th", done: true } });
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByText("Hello there.")).toBeInTheDocument();
+  });
+
   it("sending shows your message at once and asks the gateway", async () => {
     renderScreen(<Chat thread="web" />, []);
     const before = mockBus.all().filter((e) => e.subject === "sense.chat").length;

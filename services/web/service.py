@@ -3,7 +3,8 @@
 Subscribes to every event prefix (never rpc.*), keeps the last few hundred events for a page that just
 opened, fans each new one out to the connected sockets, and turns what the app says into bus messages
 on channel "web": chat into sense.chat, an answer or a vote into sense.feedback. rpc() forwards a
-request/reply to any rpc.* subject and returns the responder's own reply.
+request/reply to any rpc.* subject and returns the responder's own reply. Live stream.* frames (a reply
+as the model writes it) are fanned out the same way but never kept.
 """
 
 from __future__ import annotations
@@ -17,10 +18,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from mycelium_sdk import Bus, Envelope, Message
-from mycelium_sdk.subjects import EVENT_PREFIXES
+from mycelium_sdk.subjects import EVENT_PREFIXES, STREAM_PREFIX
 
 from .chat.schemas import ChatIn, FeedbackIn, Sent
-from .events.schemas import BusEvent
+from .events.schemas import BusEvent, StreamEvent
 from .rpc.schemas import RpcIn
 from .schemas import CHANNEL
 
@@ -29,6 +30,8 @@ log = logging.getLogger("mycelium.web")
 RPC_RE = re.compile(r"^rpc(?:\.[A-Za-z0-9_-]+){2,}$")  # rpc.sys.list, rpc.mod.hello.stats, rpc.memory.recall
 CLIENT_QUEUE = 1000  # frames a slow socket may fall behind before it is dropped
 
+Outgoing = BusEvent | StreamEvent
+
 
 class WebGateway:
     def __init__(self, bus: Bus, *, buffer: int = 300, rpc_timeout: float = 10.0) -> None:
@@ -36,12 +39,13 @@ class WebGateway:
         self.rpc_timeout = rpc_timeout
         self.recent: deque[BusEvent] = deque(maxlen=buffer)
         self._seq = 0
-        self._clients: set[asyncio.Queue[BusEvent | None]] = set()
+        self._clients: set[asyncio.Queue[Outgoing | None]] = set()
 
     async def start(self) -> None:
         await self.bus.connect()
         for prefix in EVENT_PREFIXES:
             await self.bus.subscribe(prefix + ">", self._on_event)
+        await self.bus.subscribe(STREAM_PREFIX + ">", self._on_stream)
 
     # ---- bus -> browser ---------------------------------------------------------------------
 
@@ -49,12 +53,18 @@ class WebGateway:
         self._seq += 1
         ev = BusEvent(seq=self._seq, subject=msg.subject, data=msg.data, received=datetime.now(UTC).isoformat())
         self.recent.append(ev)
+        self._fan_out(ev)
+
+    async def _on_stream(self, msg: Message) -> None:
+        self._fan_out(StreamEvent(subject=msg.subject, data=msg.data))  # live only: not numbered, not kept
+
+    def _fan_out(self, item: Outgoing) -> None:
         for q in list(self._clients):
             if q.qsize() >= CLIENT_QUEUE:  # a socket that stopped reading: cut it loose, it will reconnect
                 self._clients.discard(q)
                 q.put_nowait(None)
                 continue
-            q.put_nowait(ev)
+            q.put_nowait(item)
 
     @property
     def seq(self) -> int:
@@ -64,12 +74,12 @@ class WebGateway:
     def clients(self) -> int:
         return len(self._clients)
 
-    def attach(self) -> asyncio.Queue[BusEvent | None]:
-        q: asyncio.Queue[BusEvent | None] = asyncio.Queue()
+    def attach(self) -> asyncio.Queue[Outgoing | None]:
+        q: asyncio.Queue[Outgoing | None] = asyncio.Queue()
         self._clients.add(q)
         return q
 
-    def detach(self, q: asyncio.Queue[BusEvent | None]) -> None:
+    def detach(self, q: asyncio.Queue[Outgoing | None]) -> None:
         self._clients.discard(q)
 
     def events(self, limit: int | None = None, after: int = 0) -> list[BusEvent]:

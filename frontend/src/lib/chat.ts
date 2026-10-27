@@ -138,9 +138,15 @@ export function order(items: ChatItem[]): ChatItem[] {
   return keyed.map((k) => k.i);
 }
 
+/** The id of your last message when Main has not planned or replied to it yet (and it is fresh), else null.
+ *  That id is the `cause` a reply being written streams under. */
+export function pendingTurn(items: ChatItem[], now = Date.now()): string | null {
+  const last = items[items.length - 1];
+  if (!last || last.kind !== "user" || last.pending) return null;
+  return now - new Date(last.ts).getTime() < 180_000 ? last.id : null;
+}
+
 /** True when the last thing in the thread is you, and Main has not planned or replied yet. */
 export function waiting(items: ChatItem[], now = Date.now()): boolean {
-  const last = items[items.length - 1];
-  if (!last || last.kind !== "user" || last.pending) return false;
-  return now - new Date(last.ts).getTime() < 180_000;
+  return pendingTurn(items, now) !== null;
 }

@@ -28,8 +28,9 @@ describe("Home", () => {
     expect(within(needs).getByText(/Yesterday's notes are consolidated/)).toBeInTheDocument();
 
     const timeline = screen.getByRole("list", { name: "Timeline" });
-    expect(within(timeline).getByText("You said “dinner with Mei at 7, remind me at 6”")).toBeInTheDocument();
-    expect(within(timeline).getByText("Planned a reply with memory.remember")).toBeInTheDocument();
+    expect(within(timeline).getByText("You said “dinner with Mei at 7, remind me at 6” on telegram")).toBeInTheDocument();
+    expect(within(timeline).getByText("Planned a reply and remembered it")).toBeInTheDocument();
+    expect(within(timeline).queryByText(/trace\.plan/)).not.toBeInTheDocument(); // the machine's side only in raw mode
 
     // the alive tile and the senses come from the same events
     expect(await screen.findByText("hello")).toBeInTheDocument();

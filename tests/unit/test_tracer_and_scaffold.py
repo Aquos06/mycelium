@@ -24,6 +24,7 @@ def test_should_record():
     assert should_record("sense.chat")
     assert not should_record("_INBOX.abc")
     assert not should_record("$JS.API.STREAM.INFO")
+    assert not should_record("stream.llm")  # a reply as it is written: live only, the reply itself lands on out.say
 
 
 def test_decode():

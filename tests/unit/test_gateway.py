@@ -842,3 +842,157 @@ async def test_rpc_llm_config_describes_slots_with_key_states_and_never_a_key():
 
     bare = GatewayService(bus, cfg, InMemoryKV(), providers=providers, env={})
     assert (await bare.describe({})).slots["planner"].providers["claude"].key_state == "missing"
+
+
+# ---- streaming ---------------------------------------------------------------------------------------
+
+
+async def test_text_streamer_batches_pieces_and_ends_with_a_done_frame():
+    from gateway.stream import TextStreamer
+
+    bus = InMemoryBus()
+    s = TextStreamer(bus, cause="m1", slot="planner", provider="claude", flush_ms=20, flush_chars=10)
+    await s.on_text("Hel")
+    await s.on_text("lo ")  # 6 chars: below the batch size, so it waits for the tick
+    assert bus.events("stream.llm") == []
+    await asyncio.sleep(0.06)
+    await s.on_text("world, and more")  # over the batch size: sent at once
+    await s.close()
+    await s.close()  # idempotent
+    frames = [d for _, d in bus.events("stream.llm")]
+    assert [f["text"] for f in frames] == ["Hello ", "world, and more", ""]
+    assert [f["seq"] for f in frames] == [1, 2, 3] and [f["done"] for f in frames] == [False, False, True]
+    assert {f["cause"] for f in frames} == {"m1"} and len({f["request"] for f in frames}) == 1
+    assert frames[0]["slot"] == "planner" and frames[0]["provider"] == "claude"
+
+
+class StreamingProvider(ScriptedProvider):
+    """A provider that can stream: hands the text over in pieces before answering whole."""
+
+    def __init__(self, name, model, results, pieces=("Hi ", "there")):
+        super().__init__(name, model, results)
+        self.pieces = pieces
+        self.streamed = 0
+
+    async def complete(self, req, on_text=None):
+        if on_text is not None:
+            self.streamed += 1
+            for piece in self.pieces:
+                await on_text(piece)
+        return await super().complete(req)
+
+
+async def test_rpc_llm_complete_streams_the_text_when_asked_and_only_for_a_known_cause():
+    bus, kv = InMemoryBus(), InMemoryKV()
+    active = StreamingProvider("claude", "claude-sonnet-5-5", [_result("Hi there")] * 3)
+    shadow = ScriptedProvider("local", "qwen", [_result("shadow")] * 3)  # written before streaming: one argument
+    svc = GatewayService(
+        bus,
+        _config(shadow="local"),
+        kv,
+        providers={("planner", "claude"): active, ("planner", "local"): shadow},
+        now=lambda: datetime(2026, 10, 26, tzinfo=UTC),
+    )
+    await svc.start()
+    msgs = [{"role": "user", "content": "hi"}]
+
+    reply = await bus.request("rpc.llm.complete", {"messages": msgs, "cause": "ev1", "stream": True})
+    await svc.drain()
+    assert reply["ok"] and reply["text"] == "Hi there"
+    frames = [d for _, d in bus.events("stream.llm")]
+    assert "".join(f["text"] for f in frames) == "Hi there" and frames[-1]["done"] is True
+    assert {f["cause"] for f in frames} == {"ev1"} and len({f["request"] for f in frames}) == 1
+    assert active.streamed == 1 and len(shadow.requests) == 1  # the shadow ran, whole, never streamed
+
+    await bus.request("rpc.llm.complete", {"messages": msgs, "stream": True})  # no cause: nothing to match by
+    await bus.request("rpc.llm.complete", {"messages": msgs, "cause": "ev2"})  # not asked
+    await svc.drain()
+    assert len(bus.events("stream.llm")) == len(frames) and active.streamed == 1
+
+
+async def test_openai_compat_streams_when_given_on_text_and_reassembles_the_tool_call():
+    seen = {}
+    sse = "\n".join(
+        [
+            'data: {"model":"qwen2.5:14b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}',
+            "",
+            'data: {"choices":[{"index":0,"delta":{"content":"lo"}}]}',
+            "",
+            ": keep-alive",
+            'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"remember","arguments":"{\\"no"}}]}}]}',
+            'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"te\\": \\"mei\\"}"}}]}}]}',
+            'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+            'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":5}}',
+            "data: [DONE]",
+            "",
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        if not seen["body"].get("stream"):  # the plain path still asks for one JSON document
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Hello"}, "finish_reason": "stop"}]})
+        return httpx.Response(200, content=sse.encode(), headers={"content-type": "text/event-stream"})
+
+    pieces = []
+
+    async def on_text(t):
+        pieces.append(t)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    p = OpenAICompatProvider("local", "qwen2.5:14b", "http://ollama:11434/v1", http=http)
+    r = await p.complete(CompletionRequest(messages=[{"role": "user", "content": "x"}], tools=[REMEMBER_TOOL]), on_text)
+    assert seen["body"]["stream"] is True and seen["body"]["stream_options"] == {"include_usage": True}
+    assert pieces == ["Hel", "lo"] and r.text == "Hello"
+    assert r.tool_calls == [ToolCall(id="call_1", name="remember", input={"note": "mei"})]
+    assert r.stop_reason == "tool_use" and r.usage.input_tokens == 12 and r.usage.output_tokens == 5
+    assert r.model == "qwen2.5:14b"
+
+    plain = await p.complete(CompletionRequest(messages=[{"role": "user", "content": "x"}]))  # the old path, unchanged
+    assert "stream" not in seen["body"] and plain.text == "Hello"  # the mock answers the same bytes either way
+
+
+async def test_claude_provider_streams_through_the_sdk_helper_when_given_on_text():
+    final = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="hi there")],
+        stop_reason="end_turn",
+        model="claude-sonnet-5-5",
+        usage=SimpleNamespace(input_tokens=3, output_tokens=2),
+    )
+
+    class FakeStream:
+        def __init__(self, kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        @property
+        async def text_stream(self):
+            for piece in ("hi ", "there"):
+                yield piece
+
+        async def get_final_message(self):
+            return final
+
+    class StreamingMessages(FakeMessages):
+        def stream(self, **kwargs):
+            self.stream_kwargs = kwargs
+            return FakeStream(kwargs)
+
+    client = SimpleNamespace(messages=StreamingMessages(final))
+    p = ClaudeProvider("claude", "claude-sonnet-5-5", api_key="k", client=client)
+    pieces = []
+
+    async def on_text(t):
+        pieces.append(t)
+
+    r = await p.complete(CompletionRequest(system="S", messages=[{"role": "user", "content": "x"}], timeout=9), on_text)
+    assert pieces == ["hi ", "there"] and r.text == "hi there" and r.usage.output_tokens == 2
+    assert client.messages.stream_kwargs["system"] == "S" and client.messages.stream_kwargs["timeout"] == 9
+    assert client.messages.kwargs is None  # create() was not used
+    await p.complete(CompletionRequest(messages=[{"role": "user", "content": "x"}]))
+    assert client.messages.kwargs is not None  # without on_text: create(), as before

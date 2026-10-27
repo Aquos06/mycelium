@@ -25,7 +25,9 @@ from mycelium_sdk.subjects import EVENT_STREAM_SUBJECTS
 
 log = logging.getLogger("mycelium.tracer")
 
-SKIP_PREFIXES = ("_INBOX", "$JS", "$SYS", "$KV", "_R_")
+# stream.: a reply's text as the model writes it (gateway.stream), read live and never kept: the reply itself
+# arrives whole on out.say, and one frame per few tokens would swamp the events table
+SKIP_PREFIXES = ("_INBOX", "$JS", "$SYS", "$KV", "_R_", "stream.")
 
 
 def source_of(subject: str, data: dict[str, Any]) -> str:

@@ -538,7 +538,11 @@ whole app from fixtures and is what Playwright drives.
 buffer over REST and every new bus event over `/api/v1/events/ws`; `rpc/<subject>` forwards any `rpc.*`
 request and returns the responder's own reply; `system/health` is the state and the login check. One
 bearer token (`WEB_TOKEN`) is a default-deny gate on the whole surface, CORS admits the app's origin,
-every refusal is `{ok: false, error}`. The app has Home (the live bus, what needs you, what is alive),
+every refusal is `{ok: false, error}`. **The chat streams**: Main asks the model gateway for the text as
+it is written, the gateway publishes it in small batches on `stream.llm` keyed by the message's id (not
+an event: not in the JetStream stream, the tracer skips it, nobody keeps it), the web gateway forwards
+those frames live, and the app shows the reply being written under your message until `out.say` lands
+whole. A planner round that ends in tool calls starts the text over. The app has Home (the live bus, what needs you, what is alive),
 Chat (a thread with Main, its plan under each reply, `out.ask` as a card), Modules and a module page
 (manifest wiring, ask it directly, logs, pause and rebuild), Settings (slots and providers from
 `rpc.llm.config`, key states, the environment, read-only), the Voice screen as a placeholder until a

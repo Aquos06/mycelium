@@ -10,7 +10,19 @@
 // message every few seconds, and a chat turn typed here gets a plan and a reply in under a second.
 
 import { ApiError, getToken, mockLockedRequested, unauthorized } from "@/lib/api/client";
-import type { BusEvent, ConfigReply, EventsPage, Health, Json, ListReply, ModuleRow, Reply, Sent, UsageReply } from "@/lib/schemas";
+import type {
+  BusEvent,
+  ConfigReply,
+  EventsPage,
+  Health,
+  Json,
+  ListReply,
+  ModuleRow,
+  Reply,
+  Sent,
+  StreamDelta,
+  UsageReply,
+} from "@/lib/schemas";
 
 export const MOCK_NAME = "Hansen";
 /** What the locked mock gateway accepts (see `mockLockedRequested`). */
@@ -43,10 +55,12 @@ function env(source: string, cause: string | null = null): Json {
 // ---- the bus -------------------------------------------------------------------------------
 
 type Listener = (e: BusEvent) => void;
+type StreamListener = (d: StreamDelta) => void;
 
 class MockBus {
   private events: BusEvent[] = [];
   private listeners = new Set<Listener>();
+  private streamListeners = new Set<StreamListener>();
   private seq = 0;
   private ticking: ReturnType<typeof setInterval> | null = null;
 
@@ -80,6 +94,18 @@ class MockBus {
     this.events.push(e);
     for (const l of this.listeners) l(e);
     return e;
+  }
+
+  /** Live frames: a reply as it is written. Never kept, exactly like the gateway's stream.llm. */
+  subscribeStream(fn: StreamListener): () => void {
+    this.streamListeners.add(fn);
+    return () => {
+      this.streamListeners.delete(fn);
+    };
+  }
+
+  stream(d: StreamDelta): void {
+    for (const l of this.streamListeners) l(d);
   }
 
   private tick() {
@@ -136,15 +162,31 @@ export function mockEventsPage(after: number, limit: number): EventsPage {
   return mockBus.page(after, limit);
 }
 
-/** A turn: what you said lands now, the plan and the reply follow in under a second. */
+/** How a mock reply arrives: the text in four pieces, one every STREAM_STEP_MS, then the plan and the reply. */
+export const STREAM_STEP_MS = 280;
+
+/** A turn: what you said lands now, the reply is written in pieces, then the plan and the reply land whole. */
 export function mockSendChat(text: string, thread: string): Sent {
   const said = env("web");
+  const cause = String(said.id);
   mockBus.publish("sense.chat", { ...said, channel: "web", thread, text });
+  const asksForModules = /running|alive|module/i.test(text);
+  const answer = asksForModules
+    ? "Right now hello is running and counting messages; budget is still building, garden is paused."
+    : `Noted: “${text.slice(0, 80)}”. I remember it for you.`;
+  const request = id();
+  const words = answer.split(" ");
+  const pieces = [0, 1, 2, 3].map((i) => words.slice(Math.ceil((words.length * i) / 4), Math.ceil((words.length * (i + 1)) / 4)).join(" "));
+  pieces.forEach((piece, i) => {
+    setTimeout(() => {
+      mockBus.stream({ cause, request, slot: "planner", provider: "claude", seq: i + 1, text: (i ? " " : "") + piece, done: false });
+    }, STREAM_STEP_MS * (i + 1));
+  });
   setTimeout(() => {
-    const reply = env("main", String(said.id));
-    const asksForModules = /running|alive|module/i.test(text);
+    mockBus.stream({ cause, request, slot: "planner", provider: "claude", seq: 5, text: "", done: true });
+    const reply = env("main", cause);
     mockBus.publish("trace.plan", {
-      ...env("main", String(said.id)),
+      ...env("main", cause),
       channel: "web",
       thread,
       input: text,
@@ -154,18 +196,11 @@ export function mockSendChat(text: string, thread: string): Sent {
       rounds: 1,
       reply_id: reply.id,
       error: null,
-      latency_ms: 640,
+      latency_ms: STREAM_STEP_MS * 5,
     });
-    mockBus.publish("out.say", {
-      ...reply,
-      channel: "web",
-      thread,
-      text: asksForModules
-        ? "Right now hello is running and counting messages; budget is still building, garden is paused."
-        : `Noted: “${text.slice(0, 80)}”. I remember it for you.`,
-    });
-  }, 700);
-  return { ok: true, id: String(said.id), thread };
+    mockBus.publish("out.say", { ...reply, channel: "web", thread, text: answer });
+  }, STREAM_STEP_MS * 5);
+  return { ok: true, id: cause, thread };
 }
 
 export function mockFeedback(ref: string, thread: string, fields: { answer?: string; vote?: number }): Sent {

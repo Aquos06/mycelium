@@ -42,6 +42,7 @@ class CompletionRequest(BaseModel):
     cause: str | None = None  # id of the message this call serves; copied to trace.llm
     hops: int = Field(default=0, ge=0)  # that message's hops; trace.llm is one step further down
     timeout: float | None = Field(default=None, gt=0)  # seconds the caller waits; the gateway gives up first
+    stream: bool = False  # publish the text on stream.llm as it is produced (needs a cause to match it by)
 
     @field_validator("messages")
     @classmethod
@@ -83,3 +84,19 @@ class CompletionReply(CompletionResult):
 
     provider: str
     cost_usd: float = Field(default=0.0, ge=0)
+
+
+class StreamDelta(BaseModel):
+    """One frame on stream.llm (gateway.stream): a piece of a reply as the model writes it.
+
+    `request` tells one model call from the next within a turn (a planner round that ends in tool calls is
+    followed by another call); a reader shows the text of the latest request and drops the earlier one.
+    """
+
+    cause: str  # the message being answered: how a reader finds its own stream
+    request: str  # this model call
+    slot: str
+    provider: str
+    seq: int = Field(ge=0)
+    text: str = ""
+    done: bool = False

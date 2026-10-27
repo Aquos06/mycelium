@@ -21,9 +21,9 @@ export function mockNavigation(pathname = "/") {
   }));
 }
 
-export function renderScreen(ui: ReactNode, events: BusEvent[], status: BusState["status"] = "live") {
+export function renderScreen(ui: ReactNode, events: BusEvent[], status: BusState["status"] = "live", streams: BusState["streams"] = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const bus: BusState = { events, status, name: "Hansen", retry: () => {} };
+  const bus: BusState = { events, streams, status, name: "Hansen", retry: () => {} };
   return render(
     <QueryClientProvider client={client}>
       <BusContext.Provider value={bus}>{ui}</BusContext.Provider>

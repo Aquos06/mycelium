@@ -1,4 +1,9 @@
-"""The events domain: one bus event as the browser sees it, the page of recent ones, the socket frames."""
+"""The events domain: one bus event as the browser sees it, the page of recent ones, the socket frames.
+
+Two kinds travel the socket. An `event` is a bus message the gateway keeps (seq, the replay buffer); a
+`stream` frame is live text of a reply being written (stream.llm): forwarded as it comes, never kept, never
+numbered, so a page that reconnects fetches the gap of events and simply waits for the reply itself.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,11 @@ class BusEvent(WebSchema):
     subject: str
     data: dict[str, Any]  # the publisher's payload, whatever its shape
     received: str  # UTC ISO-8601, when the gateway saw it
+
+
+class StreamEvent(WebSchema):
+    subject: str  # stream.llm
+    data: dict[str, Any]  # gateway.schemas.StreamDelta: cause, request, seq, text, done
 
 
 class EventsPage(WebSchema):
@@ -32,3 +42,9 @@ class Frame(WebSchema):
     subject: str
     data: dict[str, Any]
     received: str
+
+
+class StreamFrame(WebSchema):
+    type: Literal["stream"] = "stream"
+    subject: str
+    data: dict[str, Any]

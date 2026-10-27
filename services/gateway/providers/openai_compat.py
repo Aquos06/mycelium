@@ -15,11 +15,11 @@ without quirks (groq, deepseek, mistral, ...) use this class directly with their
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from ..schemas import CompletionRequest, CompletionResult, ToolCall, Usage
-from .base import ProviderError
+from .base import OnText, ProviderError
 
 _FINISH = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}
 
@@ -106,6 +106,66 @@ def parse_openai_response(data: Mapping[str, Any], model: str) -> CompletionResu
     )
 
 
+async def collect_sse(lines: AsyncIterator[str], on_text: OnText) -> dict[str, Any]:
+    """A `stream: true` response, reassembled into the shape parse_openai_response reads.
+
+    Content deltas go to `on_text` as they arrive and are joined; tool-call deltas are keyed by `index` and
+    their `arguments` fragments concatenated (that is how every OpenAI-shaped server streams a call); the
+    last chunk carries `usage` when `stream_options.include_usage` was honoured, and finish_reason comes on
+    the last chunk of the choice.
+    """
+    content: list[str] = []
+    calls: dict[int, dict[str, Any]] = {}
+    finish: str | None = None
+    usage: dict[str, Any] = {}
+    model: str | None = None
+    async for line in lines:
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            if payload == "[DONE]":
+                break
+            continue
+        try:
+            chunk = json.loads(payload)
+        except json.JSONDecodeError:
+            continue  # a keep-alive or a partial line: nothing to read
+        model = chunk.get("model") or model
+        if chunk.get("usage"):
+            usage = chunk["usage"]
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                content.append(piece)
+                await on_text(piece)
+            for tc in delta.get("tool_calls") or []:
+                slot = calls.setdefault(
+                    int(tc.get("index") or 0), {"id": None, "function": {"name": "", "arguments": ""}}
+                )
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["function"]["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["function"]["arguments"] += fn["arguments"]
+            if choice.get("finish_reason"):
+                finish = choice["finish_reason"]
+    tool_calls = [calls[i] for i in sorted(calls)]
+    return {
+        "model": model,
+        "usage": usage,
+        "choices": [
+            {
+                "finish_reason": finish,
+                "message": {"content": "".join(content) or None, "tool_calls": tool_calls or None},
+            }
+        ],
+    }
+
+
 class OpenAICompatProvider:
     max_tokens_field = "max_tokens"  # OpenAI itself moved on to max_completion_tokens (openai.py)
 
@@ -155,21 +215,24 @@ class OpenAICompatProvider:
         body.update(self.extra_body)
         return body
 
-    async def complete(self, req: CompletionRequest) -> CompletionResult:
+    async def complete(self, req: CompletionRequest, on_text: OnText | None = None) -> CompletionResult:
         if self.require_key and not self.api_key:
             raise ProviderError(f"provider {self.name!r} has no API key")
         headers = dict(self.headers)
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        url = f"{self.endpoint}/chat/completions"
+        timeout = req.timeout or self.timeout  # the caller's budget, not a fixed client default
         try:
-            r = await self._get_http().post(
-                f"{self.endpoint}/chat/completions",
-                json=self.body(req),
-                headers=headers,
-                timeout=req.timeout or self.timeout,  # the caller's budget, not a fixed client default
-            )
-            r.raise_for_status()
-            data = r.json()
+            if on_text is None:
+                r = await self._get_http().post(url, json=self.body(req), headers=headers, timeout=timeout)
+                r.raise_for_status()
+                data = r.json()
+            else:
+                body = {**self.body(req), "stream": True, "stream_options": {"include_usage": True}}
+                async with self._get_http().stream("POST", url, json=body, headers=headers, timeout=timeout) as r:
+                    r.raise_for_status()
+                    data = await collect_sse(r.aiter_lines(), on_text)
         except Exception as e:
             raise ProviderError(f"{self.name}: {type(e).__name__}: {e}") from e
         return parse_openai_response(data, self.model)

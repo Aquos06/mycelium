@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useBus } from "@/lib/bus";
 import { threads } from "@/lib/chat";
+import { isNoise } from "@/lib/domains";
 import { dayPart, plural, sparkline } from "@/lib/format";
 import { useNow } from "@/lib/hooks";
 import { ROUTES } from "@/lib/nav";
@@ -43,6 +44,8 @@ export function Home() {
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
 
   const recent = useMemo(() => events.slice().reverse(), [events]);
+  // the sweeps that found nothing to do (embedded 0 notes, nothing to consolidate) only clutter; raw shows them
+  const shown = useMemo(() => (raw ? recent : recent.filter((e) => !isNoise(e))), [recent, raw]);
   const lastHour = now ? recent.filter((e) => now - new Date(e.received).getTime() < 3600_000).length : 0;
   const alive = modules.filter((m) => statusOf(m) === "running");
 
@@ -163,10 +166,14 @@ export function Home() {
                 raw bus
               </button>
             </div>
-            {recent.length === 0 || now === null ? (
-              <Empty>Nothing on the bus since the gateway started. Say something, or deploy a module.</Empty>
+            {shown.length === 0 || now === null ? (
+              <Empty>
+                {recent.length === 0
+                  ? "Nothing on the bus since the gateway started. Say something, or deploy a module."
+                  : "Only quiet sweeps so far. Say something, or turn on raw bus to see them."}
+              </Empty>
             ) : (
-              <Timeline events={recent.slice(0, 60)} raw={raw} now={now} />
+              <Timeline events={shown.slice(0, 60)} raw={raw} now={now} />
             )}
           </section>
 

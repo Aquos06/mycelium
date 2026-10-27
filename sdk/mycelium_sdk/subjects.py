@@ -9,6 +9,9 @@ Events (fire-and-forget, recorded in the JetStream EVENTS stream):
     out.<kind>                  outputs: out.say (reply on a thread), out.notify, out.ask (choices), out.ha
     trace.<kind>                decision traces: trace.plan, trace.llm, trace.consolidate, trace.rollup, trace.embed, trace.decide, trace.feedback
 
+Live (fire-and-forget, NOT an event: not in the stream, the tracer skips it, nobody keeps it):
+    stream.llm                  a reply's text as the model writes it, a frame per few tokens, matched by `cause`
+
 Requests (request/reply, NOT stored in the stream so JetStream never answers them):
     rpc.sys.<action>            supervisor: deploy, stop, logs, list, health
     rpc.mod.<module>.<action>   ask a module something
@@ -18,6 +21,7 @@ Requests (request/reply, NOT stored in the stream so JetStream never answers the
 
 EVENT_PREFIXES = ("sense.", "brain.", "mod.", "sys.", "build.", "out.", "trace.")
 EVENT_STREAM_SUBJECTS = [p + ">" for p in EVENT_PREFIXES]
+STREAM_PREFIX = "stream."  # live frames: forwarded to whoever is watching, never recorded
 OBSERVE = "brain.observe"
 
 

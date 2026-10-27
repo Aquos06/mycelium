@@ -29,6 +29,7 @@ from pydantic import BaseModel, ValidationError
 from mycelium_sdk import KV, Bus, Message, validation_message
 
 from .providers import ProviderError, build_provider
+from .providers.base import OnText
 from .schemas import (
     CompletionReply,
     CompletionRequest,
@@ -51,6 +52,7 @@ from .schemas import (
     UsageRecord,
     UsageReply,
 )
+from .stream import TextStreamer
 
 log = logging.getLogger("mycelium.gateway")
 
@@ -140,7 +142,19 @@ class GatewayService:
             await self._trace(req, slot.active, ok=False, error="budget exceeded")
             raise BudgetExceeded(f"budget exceeded: ${used.usd:.2f} of ${budget:.2f} this month")
 
-        result, latency_ms = await self._call(provider, req, slot.active)
+        # the text as it is written, for whoever is watching this message's reply (the web app, by cause)
+        streamer = (
+            TextStreamer(self.bus, cause=req.cause, slot=req.slot, provider=slot.active)
+            if req.stream and req.cause
+            else None
+        )
+        try:
+            result, latency_ms = await self._call(
+                provider, req, slot.active, on_text=streamer.on_text if streamer else None
+            )
+        finally:
+            if streamer:
+                await streamer.close()
         cost = pcfg.cost(result.usage.input_tokens, result.usage.output_tokens)
         await self._bill(month, cost, result.usage)
         await self._trace(req, slot.active, ok=True, result=result, cost=cost, latency_ms=latency_ms)
@@ -270,12 +284,14 @@ class GatewayService:
         return result, cost
 
     async def _call(
-        self, provider: Any, req: CompletionRequest, name: str, shadow: bool = False
+        self, provider: Any, req: CompletionRequest, name: str, shadow: bool = False, on_text: OnText | None = None
     ) -> tuple[CompletionResult, int]:
         """One vendor call within the caller's timeout. Failures are traced here and raised as ProviderError."""
         t0 = time.monotonic()
         try:
-            result = await asyncio.wait_for(provider.complete(req), timeout=req.timeout)
+            # on_text only when there is one: providers written before streaming take a single argument
+            call = provider.complete(req, on_text) if on_text is not None else provider.complete(req)
+            result = await asyncio.wait_for(call, timeout=req.timeout)
         except TimeoutError:
             error = f"{name}: timed out after {req.timeout:g}s"
             await self._trace(req, name, ok=False, latency_ms=_ms(t0), error=error, shadow=shadow)
@@ -283,7 +299,7 @@ class GatewayService:
         except ProviderError as e:
             if req.tool_choice and "tool_choice" in str(e):  # a model that cannot be forced: ask once more, unforced
                 log.warning("%s rejected tool_choice=%r; retrying without forcing", name, req.tool_choice)
-                return await self._call(provider, req.model_copy(update={"tool_choice": None}), name, shadow)
+                return await self._call(provider, req.model_copy(update={"tool_choice": None}), name, shadow, on_text)
             await self._trace(req, name, ok=False, latency_ms=_ms(t0), error=str(e), shadow=shadow)
             raise
         return result, _ms(t0)
