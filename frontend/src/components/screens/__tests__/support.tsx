@@ -23,12 +23,15 @@ export function mockNavigation(pathname = "/") {
 
 export function renderScreen(ui: ReactNode, events: BusEvent[], status: BusState["status"] = "live", streams: BusState["streams"] = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const bus: BusState = { events, streams, status, name: "Hansen", retry: () => {} };
-  return render(
+  const tree = (now: BusState["streams"]) => (
     <QueryClientProvider client={client}>
-      <BusContext.Provider value={bus}>{ui}</BusContext.Provider>
-    </QueryClientProvider>,
+      <BusContext.Provider value={{ events, streams: now, status, name: "Hansen", retry: () => {} }}>{ui}</BusContext.Provider>
+    </QueryClientProvider>
   );
+  const view = render(tree(streams));
+  /** The same mounted screen, with the replies being written moved on (the next frame, the next planner round). */
+  const restream = (next: BusState["streams"]) => view.rerender(tree(next));
+  return { ...view, restream };
 }
 
 let seq = 0;

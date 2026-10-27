@@ -99,4 +99,5 @@ class StreamDelta(BaseModel):
     provider: str
     seq: int = Field(ge=0)
     text: str = ""
+    thinking: str = ""  # the model's reasoning before the reply (a reasoning model): shown live, never the reply
     done: bool = False

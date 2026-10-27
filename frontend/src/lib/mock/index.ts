@@ -162,7 +162,8 @@ export function mockEventsPage(after: number, limit: number): EventsPage {
   return mockBus.page(after, limit);
 }
 
-/** How a mock reply arrives: the text in four pieces, one every STREAM_STEP_MS, then the plan and the reply. */
+/** How a mock reply arrives: a line of thinking, the text in four pieces, one every STREAM_STEP_MS, then the plan
+ *  and the reply. Streamed as the vLLM planner: only a reasoning model's stream carries thinking. */
 export const STREAM_STEP_MS = 280;
 
 /** A turn: what you said lands now, the reply is written in pieces, then the plan and the reply land whole. */
@@ -177,13 +178,19 @@ export function mockSendChat(text: string, thread: string): Sent {
   const request = id();
   const words = answer.split(" ");
   const pieces = [0, 1, 2, 3].map((i) => words.slice(Math.ceil((words.length * i) / 4), Math.ceil((words.length * (i + 1)) / 4)).join(" "));
+  const thinking = asksForModules
+    ? `${MOCK_NAME} asks what is running. The module list is in my context.`
+    : `${MOCK_NAME} states a fact. Worth keeping.`;
+  setTimeout(() => {
+    mockBus.stream({ cause, request, slot: "planner", provider: "vllm", seq: 1, text: "", thinking, done: false });
+  }, STREAM_STEP_MS / 2);
   pieces.forEach((piece, i) => {
     setTimeout(() => {
-      mockBus.stream({ cause, request, slot: "planner", provider: "claude", seq: i + 1, text: (i ? " " : "") + piece, done: false });
+      mockBus.stream({ cause, request, slot: "planner", provider: "vllm", seq: i + 2, text: (i ? " " : "") + piece, thinking: "", done: false });
     }, STREAM_STEP_MS * (i + 1));
   });
   setTimeout(() => {
-    mockBus.stream({ cause, request, slot: "planner", provider: "claude", seq: 5, text: "", done: true });
+    mockBus.stream({ cause, request, slot: "planner", provider: "vllm", seq: 6, text: "", thinking: "", done: true });
     const reply = env("main", cause);
     mockBus.publish("trace.plan", {
       ...env("main", cause),

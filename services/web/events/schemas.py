@@ -21,7 +21,7 @@ class BusEvent(WebSchema):
 
 class StreamEvent(WebSchema):
     subject: str  # stream.llm
-    data: dict[str, Any]  # gateway.schemas.StreamDelta: cause, request, seq, text, done
+    data: dict[str, Any]  # gateway.schemas.StreamDelta: cause, request, seq, text, thinking, done; passed on whole
 
 
 class EventsPage(WebSchema):

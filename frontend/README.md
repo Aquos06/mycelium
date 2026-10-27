@@ -5,7 +5,8 @@ Paper, not chrome. Colour means a place on the bus. Motion only for real activit
 
 The app talks to one service, the web gateway (`services/web`, ARCHITECTURE §10): REST under `/api/v1`
 for what you say and ask, one websocket for everything the bus says back, including the reply being
-written (`stream.llm` frames, shown under your message until the reply lands whole). Nothing in the UI
+written and a reasoning model's thinking before it (`stream.llm` frames, shown under your message until
+the reply lands whole). Nothing in the UI
 is faked: every number comes from the bus or an `rpc.*` reply.
 
 > **Read [`AGENTS.md`](AGENTS.md) before editing.** This is Next.js **16**; the bundled guides in

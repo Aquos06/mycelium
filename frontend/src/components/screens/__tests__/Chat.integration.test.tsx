@@ -65,11 +65,57 @@ describe("Chat", () => {
     const { unmount } = renderScreen(<Chat thread="web" />, mine, "live", {});
     expect(screen.getByRole("status")).toHaveTextContent("Planning…");
     unmount();
-    renderScreen(<Chat thread="web" />, mine, "live", { u2: { request: "r1", provider: "claude", text: "hello is run", done: false } });
+    renderScreen(<Chat thread="web" />, mine, "live", { u2: { request: "r1", provider: "claude", text: "hello is run", thinking: "", done: false } });
     const live = screen.getByRole("status", { name: "Main is writing" });
     expect(live).toHaveTextContent("hello is run");
     expect(live).toHaveAttribute("data-kind", "stream");
     expect(screen.queryByText("Planning…")).not.toBeInTheDocument();
+  });
+
+  it("shows the thinking in place of Planning…, then folds it away once the reply is being written", async () => {
+    const u = envelope("u4");
+    const mine = [event("sense.chat", { ...u, ts: new Date().toISOString(), channel: "web", thread: "web", text: "hi" })];
+    const { unmount } = renderScreen(<Chat thread="web" />, mine, "live", {
+      u4: { request: "r1", provider: "vllm", text: "", thinking: "The user says hi. Keep it short.", done: false },
+    });
+    const status = screen.getByRole("status", { name: "Main is thinking" });
+    expect(status).toHaveTextContent("Thinking…");
+    expect(status).not.toHaveTextContent("The user says hi."); // the text is shown, not announced frame by frame
+    expect(screen.getByText("The user says hi. Keep it short.")).toHaveAttribute("aria-live", "off");
+    expect(screen.queryByText("Planning…")).not.toBeInTheDocument();
+    unmount();
+
+    const { restream } = renderScreen(<Chat thread="web" />, mine, "live", {
+      u4: { request: "r1", provider: "vllm", text: "Hi!", thinking: "The user says hi. Keep it short.", done: false },
+    });
+    expect(screen.getByRole("status", { name: "Main is writing" })).toHaveTextContent("Hi!");
+    expect(screen.queryByRole("status", { name: "Main is thinking" })).not.toBeInTheDocument();
+    expect(screen.queryByText("The user says hi. Keep it short.")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show thinking" }));
+    expect(screen.getByText("The user says hi. Keep it short.")).toBeInTheDocument();
+
+    // the next planner round thinks again, and once it writes, its thinking is folded, not left open
+    restream({ u4: { request: "r2", provider: "vllm", text: "", thinking: "Saved. Now answer.", done: false } });
+    expect(screen.getByRole("status", { name: "Main is thinking" })).toBeInTheDocument();
+    restream({ u4: { request: "r2", provider: "vllm", text: "Done.", thinking: "Saved. Now answer.", done: false } });
+    expect(screen.getByRole("button", { name: "Show thinking" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Saved. Now answer.")).not.toBeInTheDocument();
+  });
+
+  it("takes blank lines for nothing: no empty bubble after the thinking, Planning… before any real thought", () => {
+    const u = envelope("u5");
+    const mine = [event("sense.chat", { ...u, ts: new Date().toISOString(), channel: "web", thread: "web", text: "hi" })];
+    const { unmount } = renderScreen(<Chat thread="web" />, mine, "live", {
+      u5: { request: "r1", provider: "vllm", text: "\n\n", thinking: "Remember the name first.", done: false },
+    });
+    expect(screen.getByRole("status", { name: "Main is thinking" })).toBeInTheDocument();
+    expect(screen.getByText("Remember the name first.")).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Main is writing" })).not.toBeInTheDocument();
+    unmount();
+
+    renderScreen(<Chat thread="web" />, mine, "live", { u5: { request: "r1", provider: "vllm", text: "", thinking: "\n", done: false } });
+    expect(screen.getByRole("status")).toHaveTextContent("Planning…");
+    expect(document.querySelector("[data-kind=thinking]")).toBeNull();
   });
 
   it("drops the live text once the reply itself is there", () => {
@@ -79,7 +125,7 @@ describe("Chat", () => {
       event("sense.chat", { ...u, ts: new Date().toISOString(), channel: "web", thread: "web", text: "hi" }),
       event("out.say", { ...a, ts: new Date().toISOString(), channel: "web", thread: "web", text: "Hello there." }),
     ];
-    renderScreen(<Chat thread="web" />, done, "live", { u3: { request: "r1", provider: "claude", text: "Hello th", done: true } });
+    renderScreen(<Chat thread="web" />, done, "live", { u3: { request: "r1", provider: "claude", text: "Hello th", thinking: "", done: true } });
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.getByText("Hello there.")).toBeInTheDocument();
   });

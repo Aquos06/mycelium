@@ -27,6 +27,7 @@ describe("the schemas mirror the gateway's pydantic models", () => {
     expect(f.type === "event" && f.subject).toBe("out.say");
     const s = frameSchema.parse({ type: "stream", subject: "stream.llm", data: { cause: "m1", request: "r1", seq: 1, text: "He" } });
     expect(s.type === "stream" && s.data.done).toBe(false);
+    expect(s.type === "stream" && s.data.thinking).toBe(""); // a gateway from before thinking: none
     expect(frameSchema.safeParse({ type: "stream", subject: "stream.llm", data: { seq: 1 } }).success).toBe(false); // no cause: unmatchable
     expect(frameSchema.safeParse({ type: "bye" }).success).toBe(false);
   });
