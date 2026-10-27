@@ -1,7 +1,8 @@
 """Live text of a reply on `stream.llm`, as the model produces it (ARCHITECTURE §10: the chat streams).
 
 Batched: a frame every FLUSH_MS or every FLUSH_CHARS, whichever comes first, so a reply is a handful of
-messages rather than one per token. `stream.` is not an event: no envelope, not in the EVENTS stream, the
+messages rather than one per token. A reasoning model's thinking rides in the same frames, in `thinking`
+next to `text`: it is most of the wait before the first word, so the reader shows it while it lasts. `stream.` is not an event: no envelope, not in the EVENTS stream, the
 tracer skips it. It is only ever read live, by whoever is showing the reply being written: the web app
 matches frames to its own message by `cause`. The final frame says `done`, with whatever text was left.
 
@@ -44,7 +45,8 @@ class TextStreamer:
         self.flush_ms = flush_ms
         self.flush_chars = flush_chars
         self.clock = clock
-        self._buf: list[str] = []
+        self._text: list[str] = []
+        self._thinking: list[str] = []
         self._size = 0
         self._seq = 0
         self._timer: asyncio.Task | None = None
@@ -56,9 +58,16 @@ class TextStreamer:
 
     async def on_text(self, text: str) -> None:
         """A piece of the reply. Sent now when the batch is full, otherwise with the next tick."""
+        await self._add(self._text, text)
+
+    async def on_thinking(self, text: str) -> None:
+        """A piece of the model's reasoning, batched with the reply's text but never part of it."""
+        await self._add(self._thinking, text)
+
+    async def _add(self, buf: list[str], text: str) -> None:
         if self._closed or not text:
             return
-        self._buf.append(text)
+        buf.append(text)
         self._size += len(text)
         if self._size >= self.flush_chars:
             await self.flush()
@@ -72,13 +81,14 @@ class TextStreamer:
     async def flush(self, done: bool = False) -> None:
         if self._timer is not None and not self._timer.done() and asyncio.current_task() is not self._timer:
             self._timer.cancel()
-        text = "".join(self._buf)
-        self._buf.clear()
+        text, thinking = "".join(self._text), "".join(self._thinking)
+        self._text.clear()
+        self._thinking.clear()
         self._size = 0
-        if not text and not done:
+        if not text and not thinking and not done:
             return
         self._seq += 1
-        frame = self.head.model_copy(update={"seq": self._seq, "text": text, "done": done})
+        frame = self.head.model_copy(update={"seq": self._seq, "text": text, "thinking": thinking, "done": done})
         try:
             await self.bus.publish(SUBJECT, frame)
         except Exception:  # the stream is a courtesy; the reply still comes back whole

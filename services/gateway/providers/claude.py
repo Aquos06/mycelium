@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..schemas import CompletionRequest, CompletionResult, ToolCall, Usage
-from .base import OnText, ProviderError
+from .base import ProviderError, StreamSink
 
 
 def parse_claude_response(resp: Any, model: str) -> CompletionResult:
@@ -60,7 +60,7 @@ class ClaudeProvider:
             self._client = AsyncAnthropic(**kwargs)
         return self._client
 
-    async def complete(self, req: CompletionRequest, on_text: OnText | None = None) -> CompletionResult:
+    async def complete(self, req: CompletionRequest, sink: StreamSink | None = None) -> CompletionResult:
         client = self._get_client()
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -78,11 +78,12 @@ class ClaudeProvider:
         if req.timeout:
             kwargs["timeout"] = req.timeout  # the SDK's per-request timeout follows the caller's budget
         try:
-            if on_text is not None and hasattr(client.messages, "stream"):
-                # the SDK's stream helper: text pieces as they come, then the same Message object as create()
+            if sink is not None and hasattr(client.messages, "stream"):
+                # the SDK's stream helper: text pieces as they come, then the same Message object as create().
+                # Extended thinking is never requested, so there is no thinking to hand to the sink.
                 async with client.messages.stream(**kwargs) as stream:
                     async for piece in stream.text_stream:
-                        await on_text(piece)
+                        await sink.on_text(piece)
                     resp = await stream.get_final_message()
             else:
                 resp = await client.messages.create(**kwargs)

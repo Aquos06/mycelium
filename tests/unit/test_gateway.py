@@ -357,12 +357,12 @@ class ScriptedProvider:
         return r
 
 
-def _config(shadow=None, budget=10.0):
+def _config(shadow=None, budget=10.0, active="claude"):
     return GatewayConfig.model_validate(
         {
             "budget_usd_month": budget,
             "planner": {
-                "active": "claude",
+                "active": active,
                 "shadow": shadow,
                 "claude": {"model": "claude-sonnet-5-5", "price_in_per_m": 3.0, "price_out_per_m": 15.0},
                 "local": {"model": "qwen", "endpoint": "http://ollama:11434/v1"},
@@ -864,21 +864,55 @@ async def test_text_streamer_batches_pieces_and_ends_with_a_done_frame():
     assert [f["seq"] for f in frames] == [1, 2, 3] and [f["done"] for f in frames] == [False, False, True]
     assert {f["cause"] for f in frames} == {"m1"} and len({f["request"] for f in frames}) == 1
     assert frames[0]["slot"] == "planner" and frames[0]["provider"] == "claude"
+    assert {f["thinking"] for f in frames} == {""}
+
+
+async def test_text_streamer_sends_the_thinking_in_the_same_frames_and_never_as_text():
+    from gateway.stream import TextStreamer
+
+    bus = InMemoryBus()
+    s = TextStreamer(bus, cause="m1", slot="planner", provider="vllm", flush_ms=20, flush_chars=10)
+    await s.on_thinking("The user ")  # 9 chars: waits for the tick
+    assert bus.events("stream.llm") == []
+    await s.on_thinking("says hi.")  # 17 together: over the batch size, sent at once
+    await s.on_text("Hi!")
+    await s.close()
+    frames = [d for _, d in bus.events("stream.llm")]
+    assert [(f["thinking"], f["text"], f["done"]) for f in frames] == [
+        ("The user says hi.", "", False),
+        ("", "Hi!", True),
+    ]
+
+
+class Sink:
+    """What a provider streams into, kept (gateway.stream.TextStreamer in production)."""
+
+    def __init__(self):
+        self.text, self.thinking = [], []
+
+    async def on_text(self, text):
+        self.text.append(text)
+
+    async def on_thinking(self, text):
+        self.thinking.append(text)
 
 
 class StreamingProvider(ScriptedProvider):
-    """A provider that can stream: hands the text over in pieces before answering whole."""
+    """A provider that can stream: hands its thinking, then the text over in pieces before answering whole."""
 
-    def __init__(self, name, model, results, pieces=("Hi ", "there")):
+    def __init__(self, name, model, results, pieces=("Hi ", "there"), thoughts=()):
         super().__init__(name, model, results)
         self.pieces = pieces
+        self.thoughts = thoughts
         self.streamed = 0
 
-    async def complete(self, req, on_text=None):
-        if on_text is not None:
+    async def complete(self, req, sink=None):
+        if sink is not None:
             self.streamed += 1
+            for thought in self.thoughts:
+                await sink.on_thinking(thought)
             for piece in self.pieces:
-                await on_text(piece)
+                await sink.on_text(piece)
         return await super().complete(req)
 
 
@@ -910,7 +944,28 @@ async def test_rpc_llm_complete_streams_the_text_when_asked_and_only_for_a_known
     assert len(bus.events("stream.llm")) == len(frames) and active.streamed == 1
 
 
-async def test_openai_compat_streams_when_given_on_text_and_reassembles_the_tool_call():
+async def test_rpc_llm_complete_streams_the_thinking_before_the_text():
+    bus, kv = InMemoryBus(), InMemoryKV()
+    thought = "A greeting: one short line back is all it needs. "  # over the batch size: its own frame, at once
+    active = StreamingProvider("local", "qwen", [_result("Hi there")], thoughts=(thought,))
+    svc = GatewayService(
+        bus,
+        _config(active="local"),
+        kv,
+        providers={("planner", "local"): active},
+        now=lambda: datetime(2026, 10, 26, tzinfo=UTC),
+    )
+    await svc.start()
+    reply = await bus.request(
+        "rpc.llm.complete", {"messages": [{"role": "user", "content": "hi"}], "cause": "ev1", "stream": True}
+    )
+    await svc.drain()
+    assert reply["ok"] and reply["text"] == "Hi there"  # the thinking never reaches the reply
+    frames = [d for _, d in bus.events("stream.llm")]
+    assert [(f["thinking"], f["text"], f["done"]) for f in frames] == [(thought, "", False), ("", "Hi there", True)]
+
+
+async def test_openai_compat_streams_when_given_a_sink_and_reassembles_the_tool_call():
     seen = {}
     sse = "\n".join(
         [
@@ -934,16 +989,12 @@ async def test_openai_compat_streams_when_given_on_text_and_reassembles_the_tool
             return httpx.Response(200, json={"choices": [{"message": {"content": "Hello"}, "finish_reason": "stop"}]})
         return httpx.Response(200, content=sse.encode(), headers={"content-type": "text/event-stream"})
 
-    pieces = []
-
-    async def on_text(t):
-        pieces.append(t)
-
+    sink = Sink()
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     p = OpenAICompatProvider("local", "qwen2.5:14b", "http://ollama:11434/v1", http=http)
-    r = await p.complete(CompletionRequest(messages=[{"role": "user", "content": "x"}], tools=[REMEMBER_TOOL]), on_text)
+    r = await p.complete(CompletionRequest(messages=[{"role": "user", "content": "x"}], tools=[REMEMBER_TOOL]), sink)
     assert seen["body"]["stream"] is True and seen["body"]["stream_options"] == {"include_usage": True}
-    assert pieces == ["Hel", "lo"] and r.text == "Hello"
+    assert sink.text == ["Hel", "lo"] and sink.thinking == [] and r.text == "Hello"
     assert r.tool_calls == [ToolCall(id="call_1", name="remember", input={"note": "mei"})]
     assert r.stop_reason == "tool_use" and r.usage.input_tokens == 12 and r.usage.output_tokens == 5
     assert r.model == "qwen2.5:14b"
@@ -952,7 +1003,29 @@ async def test_openai_compat_streams_when_given_on_text_and_reassembles_the_tool
     assert "stream" not in seen["body"] and plain.text == "Hello"  # the mock answers the same bytes either way
 
 
-async def test_claude_provider_streams_through_the_sdk_helper_when_given_on_text():
+async def test_openai_compat_sends_reasoning_deltas_to_the_thinking_and_keeps_them_out_of_the_reply():
+    sse = "\n".join(
+        [
+            'data: {"model":"/model","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The user"}}]}',
+            'data: {"choices":[{"index":0,"delta":{"reasoning":" says hi."}}]}',  # newer vLLM, Ollama, OpenRouter
+            'data: {"choices":[{"index":0,"delta":{"content":"\\n\\nHi!"}}]}',
+            'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+            "data: [DONE]",
+            "",
+        ]
+    )
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=sse.encode(), headers={"content-type": "text/event-stream"})
+        )
+    )
+    sink = Sink()
+    p = OpenAICompatProvider("vllm", "/model", "http://vllm:8000/v1", http=http)
+    r = await p.complete(CompletionRequest(messages=[{"role": "user", "content": "hi"}]), sink)
+    assert sink.thinking == ["The user", " says hi."] and sink.text == ["\n\nHi!"] and r.text == "\n\nHi!"
+
+
+async def test_claude_provider_streams_through_the_sdk_helper_when_given_a_sink():
     final = SimpleNamespace(
         content=[SimpleNamespace(type="text", text="hi there")],
         stop_reason="end_turn",
@@ -985,14 +1058,10 @@ async def test_claude_provider_streams_through_the_sdk_helper_when_given_on_text
 
     client = SimpleNamespace(messages=StreamingMessages(final))
     p = ClaudeProvider("claude", "claude-sonnet-5-5", api_key="k", client=client)
-    pieces = []
-
-    async def on_text(t):
-        pieces.append(t)
-
-    r = await p.complete(CompletionRequest(system="S", messages=[{"role": "user", "content": "x"}], timeout=9), on_text)
-    assert pieces == ["hi ", "there"] and r.text == "hi there" and r.usage.output_tokens == 2
+    sink = Sink()
+    r = await p.complete(CompletionRequest(system="S", messages=[{"role": "user", "content": "x"}], timeout=9), sink)
+    assert sink.text == ["hi ", "there"] and r.text == "hi there" and r.usage.output_tokens == 2
     assert client.messages.stream_kwargs["system"] == "S" and client.messages.stream_kwargs["timeout"] == 9
     assert client.messages.kwargs is None  # create() was not used
     await p.complete(CompletionRequest(messages=[{"role": "user", "content": "x"}]))
-    assert client.messages.kwargs is not None  # without on_text: create(), as before
+    assert client.messages.kwargs is not None  # without a sink: create(), as before

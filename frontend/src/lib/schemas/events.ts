@@ -41,6 +41,7 @@ export const streamDeltaSchema = z.looseObject({
   provider: z.string().default(""),
   seq: z.number().int(),
   text: z.string().default(""),
+  thinking: z.string().default(""), // a reasoning model's thinking before the reply: shown live, never the reply
   done: z.boolean().default(false),
 });
 export type StreamDelta = z.infer<typeof streamDeltaSchema>;

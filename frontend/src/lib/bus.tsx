@@ -19,11 +19,13 @@ import { frameSchema, type BusEvent, type StreamDelta } from "@/lib/schemas";
 /** refused: the gateway does not serve this page's origin (WEB_CORS_ORIGINS); reconnecting cannot fix it. */
 export type BusStatus = "connecting" | "live" | "offline" | "unauthorized" | "refused";
 
-/** A reply being written: the text so far of the model call that is running for one message. */
+/** A reply being written: the text so far of the model call that is running for one message, and the
+ *  thinking that came before it (a reasoning model). */
 export interface StreamText {
   request: string;
   provider: string;
   text: string;
+  thinking: string;
   done: boolean;
 }
 
@@ -56,13 +58,13 @@ export function mergeEvents(prev: BusEvent[], incoming: BusEvent[]): BusEvent[] 
 }
 
 /** One stream frame folded in. A new `request` for the same cause (the next planner round) starts over:
- *  the text of a round that ended in tool calls is not the reply. */
+ *  the text of a round that ended in tool calls is not the reply, and its thinking was about that round. */
 export function applyStream(prev: Record<string, StreamText>, d: StreamDelta): Record<string, StreamText> {
   const cur = prev[d.cause];
   const next: StreamText =
     cur && cur.request === d.request
-      ? { ...cur, text: cur.text + d.text, done: d.done }
-      : { request: d.request, provider: d.provider, text: d.text, done: d.done };
+      ? { ...cur, text: cur.text + d.text, thinking: cur.thinking + d.thinking, done: d.done }
+      : { request: d.request, provider: d.provider, text: d.text, thinking: d.thinking, done: d.done };
   return { ...prev, [d.cause]: next };
 }
 

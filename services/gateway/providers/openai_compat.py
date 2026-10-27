@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from ..schemas import CompletionRequest, CompletionResult, ToolCall, Usage
-from .base import OnText, ProviderError
+from .base import ProviderError, StreamSink
 
 _FINISH = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}
 
@@ -106,10 +106,12 @@ def parse_openai_response(data: Mapping[str, Any], model: str) -> CompletionResu
     )
 
 
-async def collect_sse(lines: AsyncIterator[str], on_text: OnText) -> dict[str, Any]:
+async def collect_sse(lines: AsyncIterator[str], sink: StreamSink) -> dict[str, Any]:
     """A `stream: true` response, reassembled into the shape parse_openai_response reads.
 
-    Content deltas go to `on_text` as they arrive and are joined; tool-call deltas are keyed by `index` and
+    Content deltas go to `sink.on_text` as they arrive and are joined; reasoning deltas go to `sink.on_thinking`
+    and nowhere else (vLLM with a reasoning parser and DeepSeek name them `reasoning_content`, newer vLLM,
+    Ollama and OpenRouter `reasoning`); tool-call deltas are keyed by `index` and
     their `arguments` fragments concatenated (that is how every OpenAI-shaped server streams a call); the
     last chunk carries `usage` when `stream_options.include_usage` was honoured, and finish_reason comes on
     the last chunk of the choice.
@@ -136,10 +138,13 @@ async def collect_sse(lines: AsyncIterator[str], on_text: OnText) -> dict[str, A
             usage = chunk["usage"]
         for choice in chunk.get("choices") or []:
             delta = choice.get("delta") or {}
+            thought = delta.get("reasoning_content") or delta.get("reasoning")
+            if thought and isinstance(thought, str):
+                await sink.on_thinking(thought)
             piece = delta.get("content")
             if piece:
                 content.append(piece)
-                await on_text(piece)
+                await sink.on_text(piece)
             for tc in delta.get("tool_calls") or []:
                 slot = calls.setdefault(
                     int(tc.get("index") or 0), {"id": None, "function": {"name": "", "arguments": ""}}
@@ -215,7 +220,7 @@ class OpenAICompatProvider:
         body.update(self.extra_body)
         return body
 
-    async def complete(self, req: CompletionRequest, on_text: OnText | None = None) -> CompletionResult:
+    async def complete(self, req: CompletionRequest, sink: StreamSink | None = None) -> CompletionResult:
         if self.require_key and not self.api_key:
             raise ProviderError(f"provider {self.name!r} has no API key")
         headers = dict(self.headers)
@@ -224,7 +229,7 @@ class OpenAICompatProvider:
         url = f"{self.endpoint}/chat/completions"
         timeout = req.timeout or self.timeout  # the caller's budget, not a fixed client default
         try:
-            if on_text is None:
+            if sink is None:
                 r = await self._get_http().post(url, json=self.body(req), headers=headers, timeout=timeout)
                 r.raise_for_status()
                 data = r.json()
@@ -232,7 +237,7 @@ class OpenAICompatProvider:
                 body = {**self.body(req), "stream": True, "stream_options": {"include_usage": True}}
                 async with self._get_http().stream("POST", url, json=body, headers=headers, timeout=timeout) as r:
                     r.raise_for_status()
-                    data = await collect_sse(r.aiter_lines(), on_text)
+                    data = await collect_sse(r.aiter_lines(), sink)
         except Exception as e:
             raise ProviderError(f"{self.name}: {type(e).__name__}: {e}") from e
         return parse_openai_response(data, self.model)

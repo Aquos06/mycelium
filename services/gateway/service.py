@@ -29,7 +29,7 @@ from pydantic import BaseModel, ValidationError
 from mycelium_sdk import KV, Bus, Message, validation_message
 
 from .providers import ProviderError, build_provider
-from .providers.base import OnText
+from .providers.base import StreamSink
 from .schemas import (
     CompletionReply,
     CompletionRequest,
@@ -149,9 +149,7 @@ class GatewayService:
             else None
         )
         try:
-            result, latency_ms = await self._call(
-                provider, req, slot.active, on_text=streamer.on_text if streamer else None
-            )
+            result, latency_ms = await self._call(provider, req, slot.active, sink=streamer)
         finally:
             if streamer:
                 await streamer.close()
@@ -284,13 +282,13 @@ class GatewayService:
         return result, cost
 
     async def _call(
-        self, provider: Any, req: CompletionRequest, name: str, shadow: bool = False, on_text: OnText | None = None
+        self, provider: Any, req: CompletionRequest, name: str, shadow: bool = False, sink: StreamSink | None = None
     ) -> tuple[CompletionResult, int]:
         """One vendor call within the caller's timeout. Failures are traced here and raised as ProviderError."""
         t0 = time.monotonic()
         try:
-            # on_text only when there is one: providers written before streaming take a single argument
-            call = provider.complete(req, on_text) if on_text is not None else provider.complete(req)
+            # the sink only when streaming: providers written before streaming take a single argument
+            call = provider.complete(req, sink) if sink is not None else provider.complete(req)
             result = await asyncio.wait_for(call, timeout=req.timeout)
         except TimeoutError:
             error = f"{name}: timed out after {req.timeout:g}s"
@@ -299,7 +297,7 @@ class GatewayService:
         except ProviderError as e:
             if req.tool_choice and "tool_choice" in str(e):  # a model that cannot be forced: ask once more, unforced
                 log.warning("%s rejected tool_choice=%r; retrying without forcing", name, req.tool_choice)
-                return await self._call(provider, req.model_copy(update={"tool_choice": None}), name, shadow, on_text)
+                return await self._call(provider, req.model_copy(update={"tool_choice": None}), name, shadow, sink)
             await self._trace(req, name, ok=False, latency_ms=_ms(t0), error=str(e), shadow=shadow)
             raise
         return result, _ms(t0)
