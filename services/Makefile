@@ -22,7 +22,7 @@ BACKEND := nats postgres tracer supervisor memory gateway main web
 PORT ?= 8081
 SERVICE ?=
 RELOAD_DIRS := --reload-dir $(ROOT)/services/web --reload-dir $(ROOT)/sdk/mycelium_sdk
-ENV = set -a; . $(ROOT)/.env; set +a; export NATS_URL=$${NATS_URL:-nats://localhost:$${NATS_PORT:-4222}}; export DATABASE_URL=$${DATABASE_URL:-postgresql://mycelium:$$POSTGRES_PASSWORD@localhost:$${PG_PORT:-5432}/mycelium}; export PYTHONPATH=$(ROOT)/services:$(ROOT)/services/supervisor
+ENV = set -a; . $(ROOT)/.env; set +a; export NATS_URL=$${NATS_URL:-nats://localhost:$${NATS_PORT:-4222}}; export DATABASE_URL=$${DATABASE_URL:-postgresql://mycelium:$$POSTGRES_PASSWORD@localhost:$${PG_PORT:-5432}/mycelium}; export PYTHONPATH=$(ROOT)/services
 
 .DEFAULT_GOAL := help
 .PHONY: help dev up down restart build logs ps urls dev-web run install test test-unit test-integration test-e2e lint fmt migrate migration shell env clean
@@ -70,7 +70,7 @@ dev-web: ## the web gateway natively on :8081 (PORT=) with hot reload, on the bu
 
 run: ## SERVICE=main|memory|gateway|web|supervisor -> one service natively, as its container runs it (stop the container first)
 	@test -n "$(SERVICE)" || (echo "usage: make run SERVICE=main|memory|gateway|web|supervisor"; exit 1)
-	$(ENV); cd $(ROOT)/services && $(BIN)/python -m $(if $(filter supervisor,$(SERVICE)),supervisor.app,$(SERVICE))
+	$(ENV); cd $(ROOT)/services && $(BIN)/python -m $(SERVICE)
 
 install: ## .venv with the sdk (editable), the dev tools and every service's requirements.txt
 	test -x $(BIN)/python || $(PY) -m venv $(VENV)

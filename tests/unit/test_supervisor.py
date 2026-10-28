@@ -5,9 +5,9 @@ import pytest
 import yaml
 
 from mycelium_sdk import InMemoryBus, validate_manifest
-from supervisor.app import Supervisor
 from supervisor.docker_ops import ContainerInfo
 from supervisor.registry import MemoryRegistry
+from supervisor.service import Supervisor
 
 
 class FakeDocker:

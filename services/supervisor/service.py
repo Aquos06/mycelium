@@ -14,11 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal
 from pathlib import Path
 from typing import Any
 
-from mycelium_sdk import Bus, ManifestError, Message, NatsBus, load_manifest
+from mycelium_sdk import Bus, ManifestError, Message, load_manifest
 from mycelium_sdk.manifest import NAME_RE
 from mycelium_sdk.subjects import mod_rpc
 
@@ -168,41 +167,3 @@ class Supervisor:
             except Exception as e:
                 results[c.name] = {"ok": False, "error": type(e).__name__}
         return {"modules": results}
-
-
-async def main() -> None:
-    from .docker_ops import RealDockerOps
-    from .registry import PostgresRegistry
-    from .settings import SupervisorSettings
-
-    s = SupervisorSettings()
-    logging.basicConfig(level=s.log_level)
-    bus = NatsBus(s.nats_url, name="supervisor")
-    await bus.connect()
-    registry = PostgresRegistry(s.database_url)
-    await registry.connect()
-    docker = RealDockerOps(
-        nats_url=s.nats_url,
-        bus_network=s.module_network or "",
-        internet_network=s.internet_network or "",
-        stack=s.stack,
-    )
-    sup = Supervisor(
-        bus=bus,
-        docker=docker,
-        registry=registry,
-        modules_dir=s.modules_dir,
-        sdk_dir=s.sdk_dir,
-        approved_actuators=s.approved,
-    )
-    await sup.start(reconcile=s.reconcile_on_start)
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, stop.set)
-    await stop.wait()
-    await bus.close()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
