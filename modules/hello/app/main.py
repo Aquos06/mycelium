@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, date, datetime
+from datetime import date
 from pathlib import Path
 
 from mycelium_sdk import Module
@@ -30,13 +30,12 @@ class Store:
         return int(row[0])
 
 
-def today() -> str:
-    return datetime.now(UTC).date().isoformat()
-
-
 def build(**kwargs) -> Module:
     mod = Module(**kwargs)
     store = Store(mod.data_dir)
+
+    def today() -> str:
+        return mod.today().isoformat()  # the user's day (TZ), not UTC's
 
     @mod.on("sense.chat")
     async def on_chat(msg):

@@ -3,6 +3,7 @@
 
     python scripts/mctl.py list
     python scripts/mctl.py deploy hello
+    python scripts/mctl.py verify hello                           # its tests, locked down (--staging: a build)
     python scripts/mctl.py stop hello
     python scripts/mctl.py logs hello --tail 50
     python scripts/mctl.py health
@@ -112,6 +113,14 @@ async def run(args) -> int:
             reply = await bus.request("rpc.llm.usage", {}, timeout=args.timeout)
         elif args.cmd in ("deploy", "stop"):
             reply = await bus.request(f"rpc.sys.{args.cmd}", {"name": args.name}, timeout=args.timeout)
+        elif args.cmd == "verify":
+            reply = await bus.request(
+                "rpc.sys.verify", {"name": args.name, "staging": args.staging}, timeout=args.timeout
+            )
+            if reply.get("ok"):
+                print(reply.pop("output"))
+                print(json.dumps(reply, indent=2))
+                return 0 if reply["passed"] else 1
         elif args.cmd == "logs":
             reply = await bus.request("rpc.sys.logs", {"name": args.name, "tail": args.tail}, timeout=args.timeout)
             if reply.get("ok"):
@@ -133,6 +142,11 @@ def main() -> int:
     sub.add_parser("health")
     for c in ("deploy", "stop"):
         sub.add_parser(c).add_argument("name")
+    ve = sub.add_parser("verify", help="run a module's tests in a locked-down throwaway container")
+    ve.add_argument("name")
+    ve.add_argument(
+        "--staging", action="store_true", help="the build staged in GROWN_DIR/.staging, not the deployed one"
+    )
     lg = sub.add_parser("logs")
     lg.add_argument("name")
     lg.add_argument("--tail", type=int, default=100)

@@ -94,6 +94,14 @@ def test_supervisor_settings_derive_networks_from_the_stack():
     assert SupervisorSettings.model_validate({"DATABASE_URL": PG}).approved == set()
     with pytest.raises(ValidationError, match="STACK"):
         SupervisorSettings.model_validate({"DATABASE_URL": PG, "STACK": "Prod Stack"})
+    assert s.grown_dir is None and s.module_tz == "UTC" and s.verify_timeout == 300
+    grown = SupervisorSettings.model_validate(
+        {"DATABASE_URL": PG, "GROWN_DIR": "/workspace/grown", "MODULE_TZ": "Asia/Taipei", "VERIFY_TIMEOUT": "120"}
+    )
+    assert grown.grown_dir == Path("/workspace/grown") and grown.module_tz == "Asia/Taipei"
+    assert grown.verify_timeout == 120
+    with pytest.raises(ValidationError, match="unknown timezone"):
+        SupervisorSettings.model_validate({"DATABASE_URL": PG, "MODULE_TZ": "Mars/Olympus"})
 
 
 def test_memory_today_is_the_local_date_not_the_containers_utc_clock():

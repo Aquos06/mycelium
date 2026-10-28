@@ -10,6 +10,8 @@ __pycache__/
 # the stack
 reports/
 builds/
+# grown modules: their own git repo (GROWN_DIR), never part of this one
+grown/
 .env
 .env.*
 !.env.example

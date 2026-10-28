@@ -85,3 +85,26 @@ async def test_crashing_handler_is_observed_not_fatal(tmp_path):
     errs = [d for _, d in bus.events("brain.observe") if d["type"] == "handler.error"]
     assert errs and "kaboom" in errs[0]["summary"]
     await mod.stop()
+
+
+def test_today_is_the_users_day_from_tz(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    import mycelium_sdk.module as runtime
+
+    class Clock(datetime):  # 2026-10-27 23:30 UTC is already the 28th in Taipei
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 27, 23, 30, tzinfo=UTC).astimezone(tz)
+
+    monkeypatch.setattr(runtime, "datetime", Clock)
+    mod, _ = make(tmp_path)
+    assert mod.today().isoformat() == "2026-10-27"  # no TZ: UTC
+    monkeypatch.setenv("TZ", "Asia/Taipei")
+    mod, _ = make(tmp_path)
+    assert mod.today().isoformat() == "2026-10-28" and mod.now().hour == 7
+    pinned = Module(manifest=mod.manifest, bus=InMemoryBus(), data_dir=tmp_path, tz="America/New_York")
+    assert pinned.today().isoformat() == "2026-10-27"
+    monkeypatch.setenv("TZ", "Mars/Olympus")  # unknown: still starts, in UTC
+    mod, _ = make(tmp_path)
+    assert mod.tz is UTC

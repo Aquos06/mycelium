@@ -42,13 +42,30 @@ Do not create files outside this folder. Do not edit CONTRACT.md.
 8. **Handlers must not crash the module.** The SDK catches exceptions, but write defensive code.
 9. **Keep it small.** One job. If the spec asks for two unrelated jobs, implement the first and
    note the second in `manifest.yaml` under `need`.
+10. **Time is the user's.** Use `mod.now()` and `mod.today()`: they are in the user's time zone (the
+    supervisor sets `TZ`). Never `datetime.now(UTC)` or `datetime.utcnow()` for a day: an expense at
+    07:00 in Taipei belongs to that day.
+
+## What you receive
+
+A chat message on `sense.chat` arrives as `msg.data`, a dict:
+
+```json
+{"id": "001a17...", "ts": "2026-10-28T09:12:03+00:00", "source": "web", "channel": "web",
+ "thread": "web", "text": "dinner 350", "cause": null, "hops": 0}
+```
+
+Read the words with `msg.data.get("text", "")`. Every message reaches you, also the ones that are not for
+you: ignore what does not match, quietly.
 
 ## Tests
 
 - Use `mycelium_sdk.InMemoryBus` so tests never need a real NATS server.
-- Build the module with `Module(manifest_path=..., bus=InMemoryBus(), data_dir=tmp_path)`.
+- Build the module with `Module(manifest_path=..., bus=InMemoryBus(), data_dir=tmp_path)`; add
+  `tz="Asia/Taipei"` when a test depends on the day.
 - Cover: every request action (happy path + bad input), every subscribed event, every emit.
-- Tests run in CI and again by the supervisor's verify step in a fresh container.
+- Tests run in CI and again by the supervisor's verify step in a fresh container with no network and
+  no environment beyond `TZ`: a test that needs either fails there.
 
 ## Definition of done
 
