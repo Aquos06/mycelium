@@ -13,6 +13,7 @@ venv: ## create .venv with sdk + dev deps
 	$(BIN)/pip install -q -e sdk -r requirements-dev.txt
 
 up: ## start core stack (nats, postgres, tracer, supervisor, memory, gateway, main, web gateway on :8080, the app on :3000)
+	@mkdir -p grown  # yours, before Docker would create the mount source as root
 	docker compose up -d --build
 
 local: ## start Ollama next to the stack and pull MODEL (default qwen2.5:14b) plus bge-m3 for embeddings; then set PLANNER_PROVIDER / EMBED_PROVIDER=ollama

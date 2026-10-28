@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.main import build, today
+from app.main import build
 from mycelium_sdk import InMemoryBus, load_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,10 +33,10 @@ async def test_counts_chat_and_emits(running):
 
 @pytest.mark.asyncio
 async def test_stats_today(running):
-    bus, _ = running
+    bus, mod = running
     await bus.publish("sense.chat", {"text": "hi"})
     reply = await bus.request("rpc.mod.hello.stats", {})
-    assert reply == {"ok": True, "day": today(), "count": 1, "total": 1}
+    assert reply == {"ok": True, "day": mod.today().isoformat(), "count": 1, "total": 1}
 
 
 @pytest.mark.asyncio

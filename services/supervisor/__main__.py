@@ -26,14 +26,17 @@ async def main() -> None:
         bus_network=s.module_network or "",
         internet_network=s.internet_network or "",
         stack=s.stack,
+        tz=s.module_tz,
     )
     sup = Supervisor(
         bus=bus,
         docker=docker,
         registry=registry,
         modules_dir=s.modules_dir,
+        grown_dir=s.grown_dir,
         sdk_dir=s.sdk_dir,
         approved_actuators=s.approved,
+        verify_timeout=s.verify_timeout,
     )
     await sup.start(reconcile=s.reconcile_on_start)
     stop = asyncio.Event()

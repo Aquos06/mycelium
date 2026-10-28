@@ -33,6 +33,7 @@ help: ## this list
 # ---------------------------------------------------------------------------------------------------- the stack
 
 dev: ## up the backend: nats, postgres, tracer, supervisor, memory, gateway, main, web gateway; waits until healthy
+	@mkdir -p $(ROOT)/grown  # yours, before Docker would create the mount source as root
 	$(COMPOSE) up -d --build --wait --wait-timeout 300 $(BACKEND)
 	@$(MAKE) --no-print-directory urls
 

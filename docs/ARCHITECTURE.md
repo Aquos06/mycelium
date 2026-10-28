@@ -299,13 +299,22 @@ The only service with Docker access. Turns a module folder into a running contai
 | | |
 |---|---|
 | Owns | `modules` table (deployed manifests, status), images, per-module volumes |
-| Answers | `rpc.sys.deploy / stop / logs / list / health` |
+| Answers | `rpc.sys.deploy / verify / stop / logs / list / health` |
 | Publishes | `sys.module.deployed / stopped / failed` |
 | Extend: **catalog** | `rpc.sys.catalog`: every deployed module's events, requests and their fields, plus the static core subjects (`sense.*`, `out.*`). Built from the manifests already stored; nothing kept by hand. |
 | Extend: **compat check** | Refuse a deploy that changes an event other modules subscribe to in a non-additive way. |
 | Extend: **secrets** | Inject declared secrets from a local store at container start. |
 | Extend: **backends** | Start a pinned third-party container next to a module that wraps it; only those two share a network. |
 | Extend: **rollback** | Keep the previous image and a `/data` snapshot; `rpc.sys.rollback <module>`. |
+
+*Built:* modules come from two roots: `MODULES_DIR` (hand-written: `hello`) and `GROWN_DIR` (the grown
+modules' own git repo, which the builder writes); a name in both is refused. **`rpc.sys.verify`** builds a
+module's image as `:verify` and runs its tests in a throwaway container with no network, no environment
+beyond `TZ`, a read-only filesystem with a small `/tmp`, no capabilities and bounded memory and processes,
+then removes it. That is the builder's independent check and the only place generated code runs before it
+is deployed. A build is staged in `GROWN_DIR/.staging/<name>` (never a valid module name, so never deployed)
+until verify passes. Every module gets `TZ` from `MODULE_TZ`, so `mod.today()` is Hansen's day. Reconcile
+never retires modules because a whole root is missing (a `GROWN_DIR` without `.git` counts as missing).
 
 ---
 

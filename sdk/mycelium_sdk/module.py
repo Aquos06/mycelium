@@ -17,6 +17,9 @@
 
 The runtime enforces the manifest: you can only emit events you declared,
 answer actions you declared, and run intervals you declared.
+
+`mod.now()` and `mod.today()` are in the user's time zone (TZ, which the supervisor sets from MODULE_TZ):
+"today" is the user's day, not UTC's.
 """
 
 from __future__ import annotations
@@ -26,9 +29,10 @@ import logging
 import os
 import signal
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, tzinfo
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .bus import Bus, Message, NatsBus
 from .manifest import Manifest, load_manifest
@@ -47,6 +51,17 @@ class ContractViolation(RuntimeError):
     pass
 
 
+def local_zone(name: str | None) -> tzinfo:
+    """The user's zone by name (Asia/Taipei); UTC when unset or unknown, so a module always starts."""
+    if not name:
+        return UTC
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        log.warning("unknown time zone %r, using UTC", name)
+        return UTC
+
+
 class Module:
     def __init__(
         self,
@@ -54,6 +69,7 @@ class Module:
         manifest_path: str | os.PathLike | None = None,
         bus: Bus | None = None,
         data_dir: str | os.PathLike | None = None,
+        tz: str | None = None,
     ) -> None:
         if manifest is None:
             path = manifest_path or os.environ.get("MODULE_MANIFEST", "/app/manifest.yaml")
@@ -62,6 +78,7 @@ class Module:
         self.name = manifest.name
         self.bus: Bus = bus or NatsBus(os.environ.get("NATS_URL", "nats://localhost:4222"), name=f"mod-{self.name}")
         self.data_dir = Path(data_dir or os.environ.get("MODULE_DATA_DIR", "/data"))
+        self.tz = local_zone(tz or os.environ.get("TZ"))  # tests pin it with tz="Asia/Taipei"
         self._events: list[tuple[str, EventHandler]] = []
         self._requests: dict[str, RequestHandler] = {}
         self._intervals: list[tuple[int, IntervalHandler]] = []
@@ -100,6 +117,15 @@ class Module:
             return fn
 
         return deco
+
+    # ---- time ---------------------------------------------------------
+    def now(self) -> datetime:
+        """The current time in the user's zone."""
+        return datetime.now(self.tz)
+
+    def today(self) -> date:
+        """The user's date: an expense at 07:00 in Taipei belongs to that day, not to yesterday in UTC."""
+        return self.now().date()
 
     # ---- outbound -----------------------------------------------------
     async def emit(self, event: str, data: dict[str, Any]) -> None:

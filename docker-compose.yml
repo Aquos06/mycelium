@@ -65,15 +65,18 @@ services:
     environment:
       <<: *core-env
       MODULES_DIR: /workspace/modules
+      GROWN_DIR: /workspace/grown
       SDK_DIR: /workspace/sdk
       STACK: ${STACK:-mycelium}
       MODULE_NETWORK: ${STACK:-mycelium}-modules   # internal: bus only, no internet
       INTERNET_NETWORK: ${STACK:-mycelium}-mesh    # attached only for permissions.network
       RECONCILE_ON_START: ${RECONCILE_ON_START:-true}
       APPROVED_ACTUATORS: ${APPROVED_ACTUATORS:-}
+      MODULE_TZ: ${MODULE_TZ:-${MEMORY_TZ:-Asia/Taipei}}   # every module's TZ: mod.today() is your day
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # the ONLY container with Docker access
       - ./modules:/workspace/modules:ro
+      - ${GROWN_DIR:-./grown}:/workspace/grown:ro   # grown modules: their own git repo, written by the builder
       - ./sdk:/workspace/sdk:ro
     networks: [mesh]
     depends_on:
