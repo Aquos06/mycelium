@@ -17,6 +17,7 @@ from datetime import date
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .periods import Period, parse_period_key
+from .recall import MatchVia
 from .vault import NAME_RE, NoteType
 
 DEFAULT_BUDGET = 8
@@ -98,7 +99,7 @@ class LookupMatch(BaseModel):
     name: str
     path: str
     type: str
-    via: str  # exact | alias | fuzzy
+    via: MatchVia
     score: float
 
 

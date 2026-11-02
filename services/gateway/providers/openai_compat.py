@@ -208,11 +208,11 @@ class OpenAICompatProvider:
     def body(self, req: CompletionRequest) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": to_openai_messages(req.system, req.messages),
+            "messages": to_openai_messages(req.system, [m.model_dump(mode="json") for m in req.messages]),
             self.max_tokens_field: req.max_tokens or self.max_tokens,
         }
         if req.tools:
-            body["tools"] = to_openai_tools(req.tools)
+            body["tools"] = to_openai_tools([t.model_dump(mode="json") for t in req.tools])
         if req.tool_choice:
             body["tool_choice"] = {"type": "function", "function": {"name": req.tool_choice}}
         if req.temperature is not None:

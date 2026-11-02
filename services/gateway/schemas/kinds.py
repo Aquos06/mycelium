@@ -21,25 +21,31 @@ has quirks (providers/openai.py, ollama.py, vllm.py).
 
 from __future__ import annotations
 
-from typing import Literal
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
-ProviderKind = Literal[
-    "claude",
-    "openai",
-    "ollama",
-    "vllm",
-    "tei",
-    "openrouter",
-    "groq",
-    "deepseek",
-    "mistral",
-    "gemini",
-    "xai",
-    "openai_compat",
-]
-Protocol = Literal["anthropic", "openai"]
+
+class ProviderKind(StrEnum):
+    CLAUDE = "claude"
+    OPENAI = "openai"
+    OLLAMA = "ollama"
+    VLLM = "vllm"
+    TEI = "tei"
+    OPENROUTER = "openrouter"
+    GROQ = "groq"
+    DEEPSEEK = "deepseek"
+    MISTRAL = "mistral"
+    GEMINI = "gemini"
+    XAI = "xai"
+    OPENAI_COMPAT = "openai_compat"
+
+
+class Protocol(StrEnum):
+    """The wire a kind speaks."""
+
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
 
 
 class KindInfo(BaseModel):

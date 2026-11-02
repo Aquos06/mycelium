@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
 from mycelium_sdk import Envelope
@@ -61,6 +59,3 @@ def embedding_text(record: NoteRecord | SummaryRecord) -> str:
         head = f"{record.name}{aliases}, {record.type}"
         return f"{head}. {record.summary}" if record.summary else head
     return f"{record.period} {record.key}: {record.text}"
-
-
-Kind = Literal["note", "summary"]

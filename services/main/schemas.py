@@ -1,10 +1,11 @@
 """Main's messages and records: what it sends, what it publishes, what it holds while planning.
 
-PlannerRequest           -> rpc.llm.complete (the gateway validates it again as CompletionRequest)
 Say, Ask                 -> out.say, out.ask        (envelopes; `ref` on Ask is its own id)
 PlanTrace                -> trace.plan              (one per handled message; votes attach by reply_id)
 FeedbackTrace            -> trace.feedback
 ModuleInfo, PackSummary, LlmCall: what the planner was given and what it cost, kept for the trace
+
+What it sends the planner model is the SDK's CompletionRequest (mycelium_sdk.llm).
 """
 
 from __future__ import annotations
@@ -14,22 +15,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from mycelium_sdk import Envelope
+from mycelium_sdk import Envelope, Usage
 
 from .tools import AskArgs, ToolOutcome
 
 # ---- what Main sends ---------------------------------------------------------------------------------
-
-
-class PlannerRequest(BaseModel):
-    slot: str = "planner"
-    system: str
-    messages: list[dict[str, Any]]
-    tools: list[dict[str, Any]]
-    cause: str | None = None  # the message this turn answers
-    hops: int = Field(default=0, ge=0)  # that message's hops
-    timeout: float = Field(gt=0)  # seconds Main waits; the gateway gives up first
-    stream: bool = True  # the gateway publishes the text on stream.llm as it is written; the web app shows it by cause
 
 
 class Say(Envelope):
@@ -85,16 +75,11 @@ class PackSummary(BaseModel):
         )
 
 
-class TokenUsage(BaseModel):
-    input_tokens: int = 0
-    output_tokens: int = 0
-
-
 class LlmCall(BaseModel):
-    """One planner round as the gateway reported it (extra reply fields are ignored)."""
+    """One planner round as the gateway reported it: what the trace keeps of a CompletionReply."""
 
     model: str | None = None
-    usage: TokenUsage | None = None
+    usage: Usage | None = None
     cost_usd: float = 0.0
 
 

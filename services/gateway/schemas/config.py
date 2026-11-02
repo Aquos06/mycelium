@@ -21,21 +21,26 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from .kinds import KINDS, KindInfo, Protocol, ProviderKind
 
-KeyState = Literal["ok", "missing", "not-needed"]
+
+class KeyState(StrEnum):
+    OK = "ok"
+    MISSING = "missing"
+    NOT_NEEDED = "not-needed"  # a local kind: no key at all
 
 
 class ProviderConfig(BaseModel):
     """One model behind one name: which vendor, how to reach it, what it costs."""
 
-    kind: ProviderKind = "claude"
+    kind: ProviderKind = ProviderKind.CLAUDE
     model: str
     key_env: str | None = None  # env var holding the API key (never the key); default per kind
     endpoint: str | None = None  # base URL ending in /v1; default per kind; for claude: a proxy's base_url
@@ -51,7 +56,7 @@ class ProviderConfig(BaseModel):
     @classmethod
     def _infer_kind(cls, data: Any) -> Any:
         if isinstance(data, dict) and "kind" not in data:
-            data = {**data, "kind": "openai_compat" if data.get("endpoint") else "claude"}
+            data = {**data, "kind": ProviderKind.OPENAI_COMPAT if data.get("endpoint") else ProviderKind.CLAUDE}
         return data
 
     @model_validator(mode="after")
@@ -61,7 +66,7 @@ class ProviderConfig(BaseModel):
             self.endpoint = info.endpoint
         if self.key_env is None:
             self.key_env = info.key_env
-        if info.protocol == "openai" and not self.endpoint:
+        if info.protocol == Protocol.OPENAI and not self.endpoint:
             raise ValueError(f"{self.kind} provider needs an endpoint")
         return self
 
@@ -75,20 +80,23 @@ class ProviderConfig(BaseModel):
 
     def key_state(self, env: Mapping[str, str]) -> KeyState:
         if not self.info.needs_key:
-            return "not-needed"
-        return "ok" if self.key_env and env.get(self.key_env) else "missing"
+            return KeyState.NOT_NEEDED
+        return KeyState.OK if self.key_env and env.get(self.key_env) else KeyState.MISSING
 
     def cost(self, input_tokens: int, output_tokens: int) -> float:
         return round((input_tokens * self.price_in_per_m + output_tokens * self.price_out_per_m) / 1_000_000, 6)
 
 
-SlotTask = Literal["complete", "embed", "decide"]
+class SlotTask(StrEnum):
+    COMPLETE = "complete"  # rpc.llm.complete
+    EMBED = "embed"  # rpc.llm.embed (OpenAI-shaped vendors)
+    DECIDE = "decide"  # rpc.llm.decide (any kind)
 
 
 class SlotConfig(BaseModel):
     """One job (planner, consolidate, embed, ...): which provider acts, which one shadows, and the choices."""
 
-    task: SlotTask = "complete"  # embed: rpc.llm.embed (OpenAI-shaped vendors); decide: rpc.llm.decide (any kind)
+    task: SlotTask = SlotTask.COMPLETE
     active: str
     shadow: str | None = None
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
@@ -117,9 +125,9 @@ class SlotConfig(BaseModel):
             raise ValueError(f"shadow provider {self.shadow!r} is not defined")
         if self.shadow == self.active:
             raise ValueError("shadow must differ from active")
-        if self.task == "embed":
+        if self.task == SlotTask.EMBED:
             for name, p in self.providers.items():
-                if p.protocol != "openai":
+                if p.protocol != Protocol.OPENAI:
                     raise ValueError(
                         f"provider {name!r} ({p.kind}) cannot embed; embed slots need an OpenAI-shaped vendor"
                     )

@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from mycelium_sdk import input_schema
+from mycelium_sdk import ChatMessage, Prompt, Role, Tool
 
 from ..schemas import CompletionRequest, DecideRequest, DecideResult, Score, ScoreSheet
 from .base import Provider, ProviderError
@@ -76,11 +76,11 @@ class TeiRerankProvider:
 
 # ---- any chat model, through a forced tool -------------------------------------------------------------
 
-SCORE_TOOL = {
-    "name": "score_candidates",
-    "description": "Score every candidate: how much it is what the question is about.",
-    "input_schema": input_schema(ScoreSheet),
-}
+SCORE_TOOL = Tool(
+    name="score_candidates",
+    description="Score every candidate: how much it is what the question is about.",
+    args=ScoreSheet,
+)
 SYSTEM = (
     "You judge which notes from someone's personal memory a question is about. Each candidate is one note: "
     "its name, aliases and type, then its current state; or a day, week or month summary. Give every candidate a "
@@ -90,10 +90,10 @@ SYSTEM = (
 )
 
 
-def decide_prompt(req: DecideRequest) -> str:
+def decide_prompt(req: DecideRequest) -> Prompt:
     lines = [f"Question: {req.query}", "", "Candidates:"]
     lines += [f"- id: {c.id}\n  {c.text}" for c in req.candidates]
-    return "\n".join(lines)
+    return Prompt(system=SYSTEM, user="\n".join(lines))
 
 
 class ToolDecideProvider:
@@ -103,12 +103,13 @@ class ToolDecideProvider:
         self.model = model
 
     async def decide(self, req: DecideRequest) -> DecideResult:
+        prompt = decide_prompt(req)
         call = CompletionRequest(
             slot=req.slot,
-            system=SYSTEM,
-            messages=[{"role": "user", "content": decide_prompt(req)}],
-            tools=[SCORE_TOOL],
-            tool_choice=SCORE_TOOL["name"],
+            system=prompt.system,
+            messages=[ChatMessage(role=Role.USER, content=prompt.user)],
+            tools=[SCORE_TOOL.spec()],
+            tool_choice=SCORE_TOOL.name,
             cause=req.cause,
             hops=req.hops,
             timeout=req.timeout,
@@ -120,9 +121,9 @@ class ToolDecideProvider:
             if "tool_choice" not in str(e):
                 raise
             result = await self.inner.complete(call.model_copy(update={"tool_choice": None}))  # ask unforced
-        sheet = next((c for c in result.tool_calls if c.name == SCORE_TOOL["name"]), None)
+        sheet = next((c for c in result.tool_calls if c.name == SCORE_TOOL.name), None)
         if sheet is None:
-            raise ProviderError(f"{self.name}: the model did not call {SCORE_TOOL['name']}")
+            raise ProviderError(f"{self.name}: the model did not call {SCORE_TOOL.name}")
         try:
             parsed = ScoreSheet.model_validate(sheet.input)
         except ValueError as e:

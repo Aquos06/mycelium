@@ -30,14 +30,14 @@ __all__ = [
     "week_key",
 ]
 
-TYPES = ("self", "person", "place", "project", "thing", "routine", "module")
+TYPES = tuple(NoteType)
 FOLDER_TYPES = {
-    "people": "person",
-    "places": "place",
-    "projects": "project",
-    "modules": "module",
-    "things": "thing",
-    "routines": "routine",
+    "people": NoteType.PERSON,
+    "places": NoteType.PLACE,
+    "projects": NoteType.PROJECT,
+    "modules": NoteType.MODULE,
+    "things": NoteType.THING,
+    "routines": NoteType.ROUTINE,
 }
 TYPE_FOLDERS = {v: k for k, v in FOLDER_TYPES.items()}
 SOURCES = ("hansen", "consolidation", "sys")
@@ -53,11 +53,11 @@ def summary_path(day: date) -> str:
     return f"summaries/{day:%Y/%m/%d}.md"
 
 
-def type_for_path(path: str) -> str:
+def type_for_path(path: str) -> NoteType:
     parts = Path(path).parts
     if len(parts) == 1:
-        return "self" if parts[0] == "hansen.md" else "thing"
-    return FOLDER_TYPES.get(parts[0], "thing")
+        return NoteType.SELF if parts[0] == "hansen.md" else NoteType.THING
+    return FOLDER_TYPES.get(parts[0], NoteType.THING)
 
 
 def extract_links(text: str) -> list[str]:
@@ -163,7 +163,7 @@ class Vault:
     def path_for(self, name: str, type: str) -> str:
         if not NAME_RE.match(name):
             raise ValueError(f"bad note name: {name!r}")
-        if type == "self":
+        if type == NoteType.SELF:
             return f"{name}.md"
         if type not in TYPE_FOLDERS:
             raise ValueError(f"unknown note type: {type!r}")

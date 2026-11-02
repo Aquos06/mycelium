@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from mycelium_sdk import NoteType  # the same list memory files notes by
+
 from .base import Tool, ToolContext
-
-NoteType = Literal["self", "person", "place", "project", "thing", "routine", "module"]
-
 
 # ---- remember --------------------------------------------------------------------------------------
 

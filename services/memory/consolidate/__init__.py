@@ -10,7 +10,7 @@
 One object per concern:
 
     prompts.py       what the model reads: Prompt(system, user), day_prompt(), period_prompt(), the renderers
-    tools.py         what the model answers through: StructuredTool, WRITE_DAY, WRITE_PERIOD
+    tools.py         what the model answers through: WRITE_DAY, WRITE_PERIOD (the SDK's Tool)
     model.py         ModelCaller: the forced tool call against the gateway, retried once with the field errors
     linking.py       autolink(), plain(), has_fact(): ordinary code around the model's text
     writer.py        DigestWriter: a DayDigest into the vault (notes, facts, summary), only what changed
@@ -30,7 +30,7 @@ from .linking import autolink, has_fact, plain
 from .model import ModelCaller
 from .prompts import Prompt, day_prompt, describe, period_prompt, render_events, render_notes, render_recorded
 from .rollups import Rollups
-from .tools import WRITE_DAY, WRITE_PERIOD, StructuredTool
+from .tools import WRITE_DAY, WRITE_PERIOD
 from .writer import DigestWriter
 
 TOOL_NAME = WRITE_DAY.name
@@ -44,7 +44,6 @@ __all__ = [
     "PERIOD_TOOL",
     "Prompt",
     "Rollups",
-    "StructuredTool",
     "TOOL_NAME",
     "WRITE_DAY",
     "WRITE_PERIOD",

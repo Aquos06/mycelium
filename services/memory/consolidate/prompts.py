@@ -1,4 +1,4 @@
-"""What the model reads. A Prompt is the system text and the user message; the builders render the
+"""What the model reads. A Prompt (the SDK's) is the system text and the user message; the builders render the
 day's material (known notes, what is already recorded, the events) or a period's day summaries into it.
 
 Everything here is deterministic text. Change the wording here, never inside the job.
@@ -10,7 +10,7 @@ import json
 from collections.abc import Iterable
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict
+from mycelium_sdk import Prompt
 
 from ..schemas import Event, FactRecord, Note, SummaryRecord
 
@@ -38,13 +38,6 @@ How to write:
 - Keep the [[slug]] links of the notes that matter for the period; drop one-off noise (routine checks, single expenses, test messages).
 - No event ids and no dates inside sentences unless the day itself matters; the period is already known.
 - Never invent. Write in the language the day summaries use."""
-
-
-class Prompt(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    system: str
-    user: str
 
 
 # ---- renderers --------------------------------------------------------------------------------------

@@ -6,15 +6,13 @@ keeping longer goes to the vault through `remember`.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
-from mycelium_sdk import KV, kv_key, now_iso
+from mycelium_sdk import KV, ChatMessage, Role, kv_key, now_iso
 
 
 class Turn(BaseModel):
-    role: Literal["user", "assistant"]
+    role: Role
     text: str
     ts: str
     id: str | None = None  # the bus message id this turn came from
@@ -30,9 +28,9 @@ class Thread(BaseModel):
     def key(self) -> str:
         return kv_key("thread", self.channel, self.thread)
 
-    def messages(self) -> list[dict[str, str]]:
-        """The turns in the gateway's message shape."""
-        return [{"role": t.role, "content": t.text} for t in self.turns]
+    def messages(self) -> list[ChatMessage]:
+        """The turns as the planner's earlier messages."""
+        return [ChatMessage(role=t.role, content=t.text) for t in self.turns]
 
 
 class ThreadStore:

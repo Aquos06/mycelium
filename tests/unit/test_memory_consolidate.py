@@ -116,7 +116,7 @@ def test_digest_schema_validates_slugs_and_text():
         DayDigest.model_validate({"summary": "x", "facts": [{"note": "../etc", "text": "y"}]})
     with pytest.raises(ValidationError, match="summary"):
         DayDigest.model_validate({"summary": "   "})
-    schema = WRITE_DAY.spec()["input_schema"]
+    schema = WRITE_DAY.spec().input_schema
     assert schema["required"] == ["summary"] and "title" not in json.dumps(schema)
     assert schema["properties"]["facts"]["items"]["properties"]["type"]["enum"][0] == "self"
 

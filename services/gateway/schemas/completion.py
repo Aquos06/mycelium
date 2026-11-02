@@ -1,6 +1,7 @@
 """rpc.llm.complete: the request, what a provider returns, and the reply on the bus.
 
-The wire format is the Anthropic Messages shape, because it is the richer one:
+The request, the result and the reply are the SDK's (mycelium_sdk.llm), the same models every caller sends
+and reads; the gateway adds only the stream frame. The wire format is the Anthropic Messages shape:
 
     messages: [{"role": "user" | "assistant", "content": str | [block, ...]}]
     block:    {"type": "text", "text": ...}
@@ -13,77 +14,28 @@ Providers that speak something else (OpenAI-compatible) convert both ways in gat
 
 from __future__ import annotations
 
-from typing import Any
+from pydantic import BaseModel, Field
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from mycelium_sdk.llm import (
+    ChatMessage,
+    CompletionReply,
+    CompletionRequest,
+    CompletionResult,
+    ToolCall,
+    ToolSpec,
+    Usage,
+)
 
-ROLES = ("user", "assistant")
-
-
-class ToolCall(BaseModel):
-    id: str
-    name: str
-    input: dict[str, Any] = Field(default_factory=dict)
-
-
-class Usage(BaseModel):
-    input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
-
-
-class CompletionRequest(BaseModel):
-    slot: str = "planner"
-    system: str = ""
-    messages: list[dict[str, Any]] = Field(min_length=1)
-    tools: list[dict[str, Any]] = Field(default_factory=list)
-    tool_choice: str | None = None  # force this tool (by name): the reply is then always that tool call
-    max_tokens: int | None = Field(default=None, ge=1)
-    temperature: float | None = Field(default=None, ge=0, le=2)
-    cause: str | None = None  # id of the message this call serves; copied to trace.llm
-    hops: int = Field(default=0, ge=0)  # that message's hops; trace.llm is one step further down
-    timeout: float | None = Field(default=None, gt=0)  # seconds the caller waits; the gateway gives up first
-    stream: bool = False  # publish the text on stream.llm as it is produced (needs a cause to match it by)
-
-    @field_validator("messages")
-    @classmethod
-    def _roles(cls, v: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        for i, m in enumerate(v):
-            if m.get("role") not in ROLES:
-                raise ValueError(f"messages[{i}].role must be one of {ROLES}")
-            if "content" not in m:
-                raise ValueError(f"messages[{i}] has no content")
-        return v
-
-    @field_validator("tools")
-    @classmethod
-    def _tools(cls, v: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        for i, t in enumerate(v):
-            if not t.get("name") or not isinstance(t.get("input_schema"), dict):
-                raise ValueError(f"tools[{i}] needs a name and an input_schema")
-        return v
-
-    @model_validator(mode="after")
-    def _tool_choice_is_offered(self) -> CompletionRequest:
-        if self.tool_choice is not None and self.tool_choice not in {t["name"] for t in self.tools}:
-            raise ValueError(f"tool_choice {self.tool_choice!r} is not one of the tools offered")
-        return self
-
-
-class CompletionResult(BaseModel):
-    """What a provider returns, vendor differences already smoothed out."""
-
-    text: str = ""
-    tool_calls: list[ToolCall] = Field(default_factory=list)
-    stop_reason: str = "end_turn"  # end_turn | tool_use | max_tokens
-    model: str
-    usage: Usage = Field(default_factory=Usage)
-
-
-class CompletionReply(CompletionResult):
-    """The rpc.llm.complete reply body (the handler adds ok=true): the result, who served it, what it cost."""
-
-    provider: str
-    cost_usd: float = Field(default=0.0, ge=0)
+__all__ = [
+    "ChatMessage",
+    "CompletionReply",
+    "CompletionRequest",
+    "CompletionResult",
+    "StreamDelta",
+    "ToolCall",
+    "ToolSpec",
+    "Usage",
+]
 
 
 class StreamDelta(BaseModel):

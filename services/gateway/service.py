@@ -333,7 +333,7 @@ class GatewayService:
                 usage=result.usage if result else usage,
                 stop_reason=result.stop_reason if result else None,
                 tool_calls=[c.name for c in result.tool_calls] if result else [],
-                tools_offered=[t["name"] for t in req.tools] if isinstance(req, CompletionRequest) else [],
+                tools_offered=[t.name for t in req.tools] if isinstance(req, CompletionRequest) else [],
                 items=items,
                 error=error,
                 shadow=shadow,
