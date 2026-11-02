@@ -23,7 +23,7 @@ async def main() -> None:
     registry = PostgresRegistry(s.database_url)
     await registry.connect()
     docker = RealDockerOps(
-        nats_url=s.nats_url,
+        nats_url=s.module_nats_url,  # modules get the `module` login, never the supervisor's own
         bus_network=s.module_network or "",
         internet_network=s.internet_network or "",
         stack=s.stack,

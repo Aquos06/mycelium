@@ -12,6 +12,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from .subjects import MODULE_LISTENS
+
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}\Z")  # \Z: `$` would also take a trailing newline
 TOKEN_RE = re.compile(r"^[a-z0-9_*>-]+(\.[a-z0-9_*>-]+)*\Z")
 RESERVED = {"sys", "brain", "build", "memory", "out", "trace", "sense", "rpc", "supervisor", "main"}
@@ -77,8 +79,8 @@ class Manifest(BaseModel):
         for s in v:
             if not TOKEN_RE.match(s):
                 raise ValueError(f"invalid subject pattern: {s}")
-            if s.startswith(("rpc.", "_INBOX")) or s in (">", "*"):
-                raise ValueError(f"modules may not subscribe to {s}")
+            if not s.startswith(tuple(p.removesuffix(">") for p in MODULE_LISTENS)):
+                raise ValueError(f"modules may not subscribe to {s}; they listen to {', '.join(MODULE_LISTENS)}")
         return v
 
     @field_validator("emits", "requests")

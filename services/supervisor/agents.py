@@ -59,7 +59,8 @@ def describe(recipes: Mapping[str, AgentRecipe], env: Mapping[str, str]) -> list
 
 # Redaction takes a key out where an agent wrote it as is (a config line, a log). It is not a boundary: the
 # container reaches the internet, so an agent told to send its key somewhere can. Who may write an agent's prompt
-# (rpc.sys.agent, and the spec behind rpc.build.start) is the boundary, and the bus has no authorization yet.
+# (rpc.sys.agent, and the spec behind rpc.build.start) is the boundary: the services' bus login, never a module's
+# (services/nats/nats.conf), and never the web app's passthrough.
 def secrets(env: Mapping[str, str]) -> list[str]:
     """Values never to hand back: anything in a *KEY* / *TOKEN* variable."""
     return [v for k, v in env.items() if ("KEY" in k or "TOKEN" in k) and len(v) >= 8 and v != "none"]

@@ -27,7 +27,9 @@ def test_purpose_required():
         validate_manifest({"name": "expenses", "purpose": "x"})
 
 
-@pytest.mark.parametrize("sub", [">", "*", "rpc.sys.deploy", "_INBOX.abc", "bad subject"])
+@pytest.mark.parametrize(
+    "sub", [">", "*", "rpc.sys.deploy", "_INBOX.abc", "bad subject", "trace.plan", "stream.llm", "*.chat"]
+)
 def test_forbidden_subscriptions(sub):
     with pytest.raises(ManifestError):
         validate_manifest(m(subscribes=[sub]))

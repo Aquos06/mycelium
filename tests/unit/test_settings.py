@@ -97,6 +97,27 @@ def test_supervisor_settings_derive_networks_from_the_stack():
         SupervisorSettings.model_validate({"DATABASE_URL": PG, "STACK": "Prod Stack"})
 
 
+def test_modules_never_get_the_services_nats_login():
+    core = "nats://core:s3cret@nats:4222"
+    s = SupervisorSettings.model_validate({"DATABASE_URL": PG, "NATS_URL": core})
+    assert s.module_nats_url == "nats://module:module@nats:4222"
+    with pytest.raises(ValidationError, match="same login as NATS_URL"):
+        SupervisorSettings.model_validate({"DATABASE_URL": PG, "NATS_URL": core, "MODULE_NATS_URL": core})
+    with pytest.raises(ValidationError, match="same login as NATS_URL"):  # no login at all is the same login
+        SupervisorSettings.model_validate(
+            {"DATABASE_URL": PG, "NATS_URL": "nats://nats:4222", "MODULE_NATS_URL": "nats://nats:4222"}
+        )
+    assert s.grown_dir is None and s.module_tz == "UTC" and s.verify_timeout == 300
+    grown = SupervisorSettings.model_validate(
+        {"DATABASE_URL": PG, "GROWN_DIR": "/workspace/grown", "MODULE_TZ": "Asia/Taipei", "VERIFY_TIMEOUT": "120"}
+    )
+    assert grown.grown_dir == Path("/workspace/grown") and grown.module_tz == "Asia/Taipei"
+    assert grown.verify_timeout == 120
+    assert (s.agents_dir / "agents.yaml").exists() and s.agent_timeout == 3600
+    with pytest.raises(ValidationError, match="unknown timezone"):
+        SupervisorSettings.model_validate({"DATABASE_URL": PG, "MODULE_TZ": "Mars/Olympus"})
+
+
 def test_builder_settings():
     s = BuilderSettings.model_validate({})
     assert s.grown_dir == Path("/workspace/grown") and s.coder == "mycelium" and s.coder_slot == "coder"

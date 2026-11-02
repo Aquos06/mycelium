@@ -82,6 +82,7 @@ jobs:
       NATS_MON_PORT: ${{ vars.NATS_MON_PORT }}
       PG_PORT: ${{ vars.PG_PORT }}
       POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      NATS_CORE_PASSWORD: ${{ secrets.NATS_CORE_PASSWORD }}   # the services' bus login; modules get `module`
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -119,6 +120,7 @@ jobs:
             echo "NATS_MON_PORT=${NATS_MON_PORT:-8222}"
             echo "PG_PORT=${PG_PORT:-5432}"
             echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD secret}"
+            echo "NATS_CORE_PASSWORD=${NATS_CORE_PASSWORD:?set NATS_CORE_PASSWORD secret}"
             echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
             echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
             echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
@@ -156,6 +158,6 @@ jobs:
         run: |
           python3 -m venv .deploy-venv
           .deploy-venv/bin/pip install -q ./sdk
-          export NATS_URL="nats://localhost:${NATS_PORT:-4222}"
+          export NATS_URL="nats://core:${NATS_CORE_PASSWORD}@localhost:${NATS_PORT:-4222}"
           .deploy-venv/bin/python scripts/mctl.py --timeout 60 list
           .deploy-venv/bin/python scripts/mctl.py --timeout 60 health

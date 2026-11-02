@@ -24,7 +24,7 @@
     python scripts/mctl.py answer <ref> "9pm"                     # answer an out.ask shown by chat
     python scripts/mctl.py usage                                  # gateway spend this month
 
-NATS_URL defaults to nats://localhost:4222 (the port docker compose exposes).
+NATS_URL defaults to the core login on the port docker compose exposes: nats://core:$NATS_CORE_PASSWORD@localhost:$NATS_PORT.
 """
 
 from __future__ import annotations
@@ -101,8 +101,17 @@ async def follow_build(bus: NatsBus, args) -> int:
             return 0 if subject == "build.done" else 1
 
 
+def nats_url() -> str:
+    """NATS_URL, or the core login on localhost: mctl asks for rpc.sys.* and rpc.build.*, which a module may not."""
+    if os.environ.get("NATS_URL"):
+        return os.environ["NATS_URL"]
+    port = os.environ.get("NATS_PORT") or "4222"
+    password = os.environ.get("NATS_CORE_PASSWORD")
+    return f"nats://core:{password}@localhost:{port}" if password else f"nats://localhost:{port}"
+
+
 async def run(args) -> int:
-    bus = NatsBus(os.environ.get("NATS_URL", "nats://localhost:4222"), name="mctl")
+    bus = NatsBus(nats_url(), name="mctl")
     await bus.connect()
     try:
         if args.cmd == "pub":

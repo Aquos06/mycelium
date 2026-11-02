@@ -277,6 +277,7 @@ The only way anything talks to anything.
 | Events (stored) | `sense.*`, `brain.*`, `mod.*`, `sys.*`, `build.*`, `out.*`, `trace.*` |
 | Requests (not stored) | `rpc.sys.*`, `rpc.mod.<module>.*`, `rpc.memory.*` |
 | Rule | Events by default. A request only when the caller needs an answer back. `rpc.*` is never in the stream. |
+| Logins | Two (`services/nats/nats.conf`). `core`: the services and mctl, everything. `module`: the only login a module gets (the supervisor's `MODULE_NATS_URL`), exactly what the SDK's `Module` does: publish `mod.>`, `brain.observe`, `sys.module.started`; answer its own requests; listen to `sense.*`, `brain.*`, `mod.*`, `sys.*`, `build.*`, `out.*`. No `rpc.*` request of any kind, no `trace.*`, no `stream.*`, no JetStream. So a module, generated or not, cannot deploy, start a build, run a coding agent, call a model or read memory. The supervisor refuses to start if `MODULE_NATS_URL` has the core login. Not yet: one login per module (a module can still emit another's events or answer another's requests). |
 | MQTT | NATS can serve as an MQTT broker. Frigate, Home Assistant and most devices can publish straight onto the bus; a bridge renames their subjects to `sense.*`. |
 
 ---

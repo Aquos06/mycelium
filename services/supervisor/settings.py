@@ -17,6 +17,11 @@ class SupervisorSettings(ServiceSettings):
         pattern=r"^[a-z][a-z0-9-]{0,40}$",
         description="namespaces containers, networks, volumes and images (dev / staging / production side by side)",
     )
+    module_nats_url: str = Field(
+        default="nats://module:module@nats:4222",
+        validation_alias="MODULE_NATS_URL",
+        description="the bus as modules reach it: the `module` login (services/nats/nats.conf), never NATS_URL's",
+    )
     module_network: str | None = Field(
         default=None, validation_alias="MODULE_NETWORK", description="bus only, no internet; default <stack>-modules"
     )
@@ -57,6 +62,15 @@ class SupervisorSettings(ServiceSettings):
         return timezone(v)
 
     @model_validator(mode="after")
+    def _modules_never_get_the_core_login(self) -> SupervisorSettings:
+        if _login(self.module_nats_url) == _login(self.nats_url):
+            raise ValueError(
+                "MODULE_NATS_URL has the same login as NATS_URL: every module would hold the services' login; "
+                "give it the `module` user (services/nats/nats.conf)"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _network_defaults(self) -> SupervisorSettings:
         self.module_network = self.module_network or f"{self.stack}-modules"
         self.internet_network = self.internet_network or f"{self.stack}-mesh"
@@ -65,3 +79,9 @@ class SupervisorSettings(ServiceSettings):
     @property
     def approved(self) -> set[str]:
         return {s.strip() for s in self.approved_actuators.split(",") if s.strip()}
+
+
+def _login(url: str) -> str:
+    """The user part of nats://user:password@host:port ('' when there is none)."""
+    rest = url.split("://", 1)[-1]
+    return rest.split("@", 1)[0].split(":", 1)[0] if "@" in rest else ""

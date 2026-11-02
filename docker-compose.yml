@@ -10,19 +10,24 @@
 name: ${STACK:-mycelium}
 
 x-env: &core-env
-  NATS_URL: nats://nats:4222
+  # the services' NATS login; modules get another (services/nats/nats.conf, the supervisor's MODULE_NATS_URL)
+  NATS_URL: nats://core:${NATS_CORE_PASSWORD:?set NATS_CORE_PASSWORD in .env}@nats:4222
   DATABASE_URL: postgresql://mycelium:${POSTGRES_PASSWORD:-mycelium}@postgres:5432/mycelium
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
 services:
   nats:
     image: nats:2.10-alpine
-    command: ["-js", "-sd", "/data", "-m", "8222"]
+    command: ["-c", "/etc/nats/nats.conf"]   # JetStream in /data, monitoring on 8222, the two logins
+    environment:
+      NATS_CORE_PASSWORD: ${NATS_CORE_PASSWORD:?set NATS_CORE_PASSWORD in .env}
+      NATS_MODULE_PASSWORD: ${NATS_MODULE_PASSWORD:-module}
     ports:
       - "127.0.0.1:${NATS_PORT:-4222}:4222"
       - "127.0.0.1:${NATS_MON_PORT:-8222}:8222"
     volumes:
       - nats-data:/data
+      - ./services/nats/nats.conf:/etc/nats/nats.conf:ro
     networks: [mesh, modules]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
@@ -68,6 +73,7 @@ services:
       GROWN_DIR: /workspace/grown
       SDK_DIR: /workspace/sdk
       STACK: ${STACK:-mycelium}
+      MODULE_NATS_URL: nats://module:${NATS_MODULE_PASSWORD:-module}@nats:4222   # what modules get: no rpc.*
       MODULE_NETWORK: ${STACK:-mycelium}-modules   # internal: bus only, no internet
       INTERNET_NETWORK: ${STACK:-mycelium}-mesh    # attached only for permissions.network
       RECONCILE_ON_START: ${RECONCILE_ON_START:-true}
@@ -118,7 +124,7 @@ services:
     build: { context: ., dockerfile: services/gateway/Dockerfile }
     image: ${REGISTRY:-mycelium}/gateway:${IMAGE_TAG:-dev}
     environment:
-      NATS_URL: nats://nats:4222
+      NATS_URL: nats://core:${NATS_CORE_PASSWORD:?set NATS_CORE_PASSWORD in .env}@nats:4222
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       GATEWAY_CONFIG: /srv/gateway/providers.yaml
       # ${VAR:-default} placeholders in providers.yaml: which provider is active, where a LAN vLLM lives
@@ -152,7 +158,7 @@ services:
     build: { context: ., dockerfile: services/main/Dockerfile }
     image: ${REGISTRY:-mycelium}/main:${IMAGE_TAG:-dev}
     environment:
-      NATS_URL: nats://nats:4222
+      NATS_URL: nats://core:${NATS_CORE_PASSWORD:?set NATS_CORE_PASSWORD in .env}@nats:4222
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       MAIN_TZ: ${MAIN_TZ:-${MEMORY_TZ:-Asia/Taipei}}   # one TZ for memory and Main unless MAIN_TZ is set
       MAIN_LLM_TIMEOUT: ${MAIN_LLM_TIMEOUT:-90}        # raise for a cold local model (ollama first load)
@@ -165,7 +171,7 @@ services:
     build: { context: ., dockerfile: services/web/Dockerfile }
     image: ${REGISTRY:-mycelium}/web:${IMAGE_TAG:-dev}
     environment:
-      NATS_URL: nats://nats:4222
+      NATS_URL: nats://core:${NATS_CORE_PASSWORD:?set NATS_CORE_PASSWORD in .env}@nats:4222
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       WEB_TOKEN: ${WEB_TOKEN:-}                        # the one login; empty leaves it open, so only on a trusted LAN
       WEB_USER_NAME: ${WEB_USER_NAME:-Hansen}
@@ -295,7 +301,7 @@ services:
     image: ${REGISTRY:-mycelium}/builder:${IMAGE_TAG:-dev}
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"   # the grown modules and their git repo are yours
     environment:                                   # no DATABASE_URL, no model keys: models through the gateway, agents through the supervisor
-      NATS_URL: nats://nats:4222
+      NATS_URL: nats://core:${NATS_CORE_PASSWORD:?set NATS_CORE_PASSWORD in .env}@nats:4222
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       GROWN_DIR: /workspace/grown
       TEMPLATE_DIR: /workspace/template

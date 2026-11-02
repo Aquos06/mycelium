@@ -25,6 +25,13 @@ EVENT_STREAM_SUBJECTS = [p + ">" for p in EVENT_PREFIXES]
 STREAM_PREFIX = "stream."  # live frames: forwarded to whoever is watching, never recorded
 OBSERVE = "brain.observe"
 
+# What the `module` login may do on the bus (services/nats/nats.conf), which is what Module does and no more:
+# publish its events, observations and the started notice; answer its own requests; listen to events. Never a
+# request of its own (rpc.*), the traces (they carry the planner's memory) or the live model text.
+MODULE_PUBLISHES = ("mod.>", OBSERVE, "sys.module.started")
+MODULE_LISTENS = ("sense.>", "brain.>", "mod.>", "sys.>", "build.>", "out.>")  # what a manifest may subscribe to
+MODULE_ANSWERS = "rpc.mod.>"
+
 
 def mod_event(module: str, event: str) -> str:
     return f"mod.{module}.{event}"

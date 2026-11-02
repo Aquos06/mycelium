@@ -54,7 +54,7 @@ data and event hooks — and plugs it into the same bus as everything else.
 ## Quick start
 
 ```bash
-cp .env.example .env            # set POSTGRES_PASSWORD; ANTHROPIC_API_KEY for the planner and builder
+cp .env.example .env            # set POSTGRES_PASSWORD, NATS_CORE_PASSWORD (openssl rand -hex 24); ANTHROPIC_API_KEY for the planner and builder
 make venv                       # local tools: sdk, pytest, ruff
 make up                         # nats, postgres, tracer, supervisor, memory, gateway, main, web gateway, frontend
 open http://localhost:3000      # the app: chat, the live bus, modules, settings (WEB_TOKEN in .env locks it)

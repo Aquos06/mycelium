@@ -81,7 +81,7 @@ class RealDockerOps:
         import docker  # lazy: unit tests use a fake
 
         self.client = docker.from_env()
-        self.nats_url = nats_url
+        self.nats_url = nats_url  # what modules connect with: the `module` login, never the services' one
         self.bus_network = bus_network  # internal network: bus only, no internet
         self.internet_network = internet_network  # attached only when permissions.network
         self.stack = stack
