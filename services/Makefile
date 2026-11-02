@@ -17,7 +17,7 @@ VENV ?= $(ROOT)/.venv
 BIN := $(VENV)/bin
 PY ?= python3
 COMPOSE ?= docker compose --project-directory $(ROOT)
-BACKEND := nats postgres tracer supervisor memory gateway main web
+BACKEND := nats postgres tracer supervisor memory gateway main builder web
 # the native gateway's port: 8080 is the compose one
 PORT ?= 8081
 SERVICE ?=
@@ -32,7 +32,7 @@ help: ## this list
 
 # ---------------------------------------------------------------------------------------------------- the stack
 
-dev: ## up the backend: nats, postgres, tracer, supervisor, memory, gateway, main, web gateway; waits until healthy
+dev: ## up the backend: nats, postgres, tracer, supervisor, memory, gateway, main, builder, web gateway; waits until healthy
 	@mkdir -p $(ROOT)/grown  # yours, before Docker would create the mount source as root
 	$(COMPOSE) up -d --build --wait --wait-timeout 300 $(BACKEND)
 	@$(MAKE) --no-print-directory urls

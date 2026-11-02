@@ -20,13 +20,13 @@ data and event hooks — and plugs it into the same bus as everything else.
             ▼                                           │
  ┌────────────────────── NATS + JetStream ────────────────────────────┐
  │ events: sense.> brain.> mod.> sys.> build.> out.> trace.>          │
- │ requests: rpc.sys.* rpc.mod.<name>.* rpc.memory.* rpc.llm.*       │
+ │ requests: rpc.sys.* rpc.mod.<name>.* rpc.memory.* rpc.llm.* rpc.build.* │
  └──┬──────────────┬──────────────┬──────────────┬──────────────┬────┘
     │              │              │              │              │
   main          memory        gateway       supervisor      modules (generated)
  (planner)    (pg + vault)   (model keys)   (owns Docker)    mod.<name>.*, brain.observe
     │                                           ▲
-    └── build.request ──► builder (Claude Agent SDK, sandboxed) ──► modules/<name>/
+    └── rpc.build.start ──► builder (a coder writes, the supervisor verifies) ──► grown/<name>/
 ```
 
 | Piece | Where | What it does |
@@ -41,7 +41,7 @@ data and event hooks — and plugs it into the same bus as everything else.
 | Web | `services/web/` + `frontend/` | the web gateway (FastAPI, `/api/v1`, the bus over one websocket, chat on channel `web`) on `:8080`, and the app (Next.js, ARCHITECTURE §10: home, chat, modules, settings) on `http://localhost:3000` |
 | Template | `template/` | what every new module starts from, incl. **`CONTRACT.md`** (the builder's rulebook) |
 | Example | `modules/hello/` | reference module: counts chat messages, answers `stats` |
-| Builder | `builder/` | spec → module via Claude Agent SDK, then independent test verification |
+| Builder | `services/builder/` | spec → module: a coder writes it (ours by default, through the gateway's `coder` slot), the supervisor verifies it in a sealed container, then a commit in `grown/` and a deploy; `rpc.build.*` |
 
 ### Subjects
 
@@ -82,11 +82,16 @@ in `services/gateway/providers.yaml`; on a GPU box `docker compose --profile gpu
 Any other vendor is a `kind` (`openai`, `openrouter`, `groq`, `deepseek`, `mistral`, `gemini`, `xai`,
 or `openai_compat` with an `endpoint`) plus its key in `.env`.
 
-Grow a module from a spec (needs `ANTHROPIC_API_KEY` in `.env`):
+Grow a module from a spec. Our coder uses the gateway's `coder` slot (`CODER_PROVIDER`, vLLM by default,
+which needs `--max-model-len 32768`); a coding agent can write it instead (`opencode`, `codex`, `aider` on
+`AGENT_ENDPOINT`, `claude_code` with `ANTHROPIC_API_KEY`). The build verifies, commits into `grown/` and
+deploys on its own:
 
 ```bash
-make build-module NAME=expenses SPEC=specs/expenses.md
-.venv/bin/python scripts/mctl.py deploy expenses
+make build-module NAME=expenses SPEC=specs/expenses.md      # follows the build round by round
+make build-module NAME=expenses SPEC=specs/expenses.md CODER=opencode
+.venv/bin/python scripts/mctl.py coders                     # who can write it now, and what each still needs
+.venv/bin/python scripts/mctl.py builds                     # the latest builds
 ```
 
 Phone: create a bot with @BotFather, put `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` in `.env`,
@@ -94,7 +99,9 @@ then `docker compose --profile telegram up -d`.
 
 ## Safety rails (enforced in code, not just docs)
 
-- Only the supervisor mounts the Docker socket. The builder only sees `modules/`, `template/`, `specs/`.
+- Only the supervisor mounts the Docker socket. The builder only sees `grown/`, `template/` and hello, never
+  runs what it builds, and holds no model keys: the supervisor runs a build's tests in a sealed container
+  (no network, no environment, read-only).
 - Modules run on an **internal** network (bus only, no internet) unless `permissions.network: true`.
 - `permissions.actuation: true` modules refuse to deploy until listed in `APPROVED_ACTUATORS`.
 - The SDK raises `ContractViolation` for any subscribe / emit / request / interval not declared in the manifest.
@@ -147,8 +154,9 @@ services/memory/     vault (markdown notes) + index + recall + nightly consolida
 services/gateway/    model gateway; rpc.llm.*: schemas/ (config, wire shapes, usage, traces), providers/ (claude, openai_compat), service.py
 services/main/       the planner: thread (KV) + recall pack -> tools/ (pydantic args + handler each) -> out.say / out.ask, trace.plan
 template/            new-module template + CONTRACT.md
-modules/             deployed modules (hello is hand-written, the rest get generated)
-builder/             spec -> module via Claude Agent SDK
+modules/             hand-written modules (hello, the example every coder is shown)
+grown/               grown modules, their own git repo (gitignored; GROWN_DIR)
+services/builder/    spec -> module: rounds of coder, checks, sealed verify; then commit and deploy
 specs/               needs written as specs (the builder's input)
 sdk/mycelium_sdk/db/ SQLAlchemy async engine + Alembic runner; the core tables (events, modules, traces) and their migrations
 tests/               unit, integration, e2e

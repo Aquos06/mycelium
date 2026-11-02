@@ -90,5 +90,5 @@ def test_scaffold_renders_template(tmp_path):
 
 
 def test_scaffold_rejects_bad_name(tmp_path):
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError):
         scaffold("Bad_Name", tmp_path)

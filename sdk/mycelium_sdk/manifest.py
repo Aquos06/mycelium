@@ -12,8 +12,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
-TOKEN_RE = re.compile(r"^[a-z0-9_*>-]+(\.[a-z0-9_*>-]+)*$")
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}\Z")  # \Z: `$` would also take a trailing newline
+TOKEN_RE = re.compile(r"^[a-z0-9_*>-]+(\.[a-z0-9_*>-]+)*\Z")
 RESERVED = {"sys", "brain", "build", "memory", "out", "trace", "sense", "rpc", "supervisor", "main"}
 
 

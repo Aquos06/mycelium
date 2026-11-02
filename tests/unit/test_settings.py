@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from builder.settings import BuilderSettings
 from gateway.settings import GatewaySettings
 from main.settings import MainSettings
 from memory.settings import MemorySettings
@@ -94,14 +95,20 @@ def test_supervisor_settings_derive_networks_from_the_stack():
     assert SupervisorSettings.model_validate({"DATABASE_URL": PG}).approved == set()
     with pytest.raises(ValidationError, match="STACK"):
         SupervisorSettings.model_validate({"DATABASE_URL": PG, "STACK": "Prod Stack"})
-    assert s.grown_dir is None and s.module_tz == "UTC" and s.verify_timeout == 300
-    grown = SupervisorSettings.model_validate(
-        {"DATABASE_URL": PG, "GROWN_DIR": "/workspace/grown", "MODULE_TZ": "Asia/Taipei", "VERIFY_TIMEOUT": "120"}
+
+
+def test_builder_settings():
+    s = BuilderSettings.model_validate({})
+    assert s.grown_dir == Path("/workspace/grown") and s.coder == "mycelium" and s.coder_slot == "coder"
+    assert s.max_rounds == 6 and s.verify_timeout == 900 and s.coder_max_calls == 40
+    custom = BuilderSettings.model_validate(
+        {"BUILDER_CODER": "opencode", "BUILD_MAX_ROUNDS": "3", "CODER_MAX_USD": "0"}
     )
-    assert grown.grown_dir == Path("/workspace/grown") and grown.module_tz == "Asia/Taipei"
-    assert grown.verify_timeout == 120
-    with pytest.raises(ValidationError, match="unknown timezone"):
-        SupervisorSettings.model_validate({"DATABASE_URL": PG, "MODULE_TZ": "Mars/Olympus"})
+    assert custom.coder == "opencode" and custom.max_rounds == 3 and custom.coder_max_usd == 0
+    assert s.agent_names == ["opencode", "claude_code", "codex", "aider"] and s.agent_timeout == 1800
+    assert BuilderSettings.model_validate({"BUILDER_AGENTS": " aider, ,codex "}).agent_names == ["aider", "codex"]
+    with pytest.raises(ValidationError, match="BUILD_MAX_ROUNDS"):
+        BuilderSettings.model_validate({"BUILD_MAX_ROUNDS": "0"})
 
 
 def test_memory_today_is_the_local_date_not_the_containers_utc_clock():

@@ -42,8 +42,8 @@ ps: ## list modules via supervisor
 deploy-hello: ## deploy the example module
 	$(BIN)/python scripts/mctl.py deploy hello
 
-build-module: ## NAME=expenses SPEC=specs/expenses.md -> run the builder
-	docker compose run --rm builder --name $(NAME) --spec $(SPEC) --publish
+build-module: ## NAME=expenses SPEC=specs/expenses.md [CODER=mycelium] -> grow a module and follow the build
+	$(BIN)/python scripts/mctl.py build $(NAME) $(SPEC) $(if $(CODER),--coder $(CODER)) --wait
 
 backend-dev: ## up the backend only (no frontend) and wait until it answers; services/Makefile has down, logs, restart, dev-web, run
 	$(MAKE) -C services dev

@@ -1,0 +1,31 @@
+# The coding agents a build can use as its coder (`mctl build ... --coder opencode`; ours, `mycelium`, is the
+# default and lives in the builder). The supervisor runs each in its own container, built from agent_images/<name>/
+# FROM module-base (Python, the SDK, pytest), so the agent can run the module's tests itself:
+#
+#   /work/module      a copy of the staged build; what the agent leaves here goes back to the builder
+#   /work/PROMPT.md   the task: the contract, the SDK, the spec, what failed last round
+#
+# `env` maps the agent's variables to the supervisor's own (compose passes them in); nothing else goes in.
+# `needs` must be set for the agent to be ready. Values of *KEY* / *TOKEN* variables are redacted from what
+# comes back. The container is on Docker's default bridge network, so the model has to be reachable from there:
+# a vLLM or Ollama by address (http://192.168.0.107:8000/v1), not by a compose name (http://vllm:8000/v1).
+
+opencode:
+  description: OpenCode on your own model (AGENT_ENDPOINT, AGENT_MODEL)
+  env: {MODEL_ENDPOINT: AGENT_ENDPOINT, MODEL_NAME: AGENT_MODEL, MODEL_KEY: AGENT_KEY}
+  needs: [AGENT_ENDPOINT, AGENT_MODEL]
+
+codex:
+  description: OpenAI's Codex CLI on your own model (AGENT_ENDPOINT, AGENT_MODEL)
+  env: {MODEL_ENDPOINT: AGENT_ENDPOINT, MODEL_NAME: AGENT_MODEL, MODEL_KEY: AGENT_KEY}
+  needs: [AGENT_ENDPOINT, AGENT_MODEL]
+
+aider:
+  description: Aider on your own model (AGENT_ENDPOINT, AGENT_MODEL)
+  env: {MODEL_ENDPOINT: AGENT_ENDPOINT, MODEL_NAME: AGENT_MODEL, MODEL_KEY: AGENT_KEY}
+  needs: [AGENT_ENDPOINT, AGENT_MODEL]
+
+claude_code:
+  description: Claude Code on Anthropic's API (ANTHROPIC_API_KEY; CLAUDE_CODE_MODEL picks the model)
+  env: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY, MODEL_NAME: CLAUDE_CODE_MODEL}
+  needs: [ANTHROPIC_API_KEY]

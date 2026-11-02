@@ -13,7 +13,8 @@ Live (fire-and-forget, NOT an event: not in the stream, the tracer skips it, nob
     stream.llm                  a reply's text as the model writes it, a frame per few tokens, matched by `cause`
 
 Requests (request/reply, NOT stored in the stream so JetStream never answers them):
-    rpc.sys.<action>            supervisor: deploy, stop, logs, list, health
+    rpc.sys.<action>            supervisor: deploy, verify, agent, agents, stop, logs, list, health
+    rpc.build.<action>          builder: start, get, list, coders
     rpc.mod.<module>.<action>   ask a module something
     rpc.memory.<action>         memory service: remember, lookup, recall, reindex
     rpc.llm.<action>            model gateway: complete, usage

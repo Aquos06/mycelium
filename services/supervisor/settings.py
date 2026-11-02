@@ -38,6 +38,14 @@ class SupervisorSettings(ServiceSettings):
         default=300.0, gt=0, validation_alias="VERIFY_TIMEOUT", description="seconds a module's tests may run in verify"
     )
     sdk_dir: Path = Field(default=Path("/workspace/sdk"), validation_alias="SDK_DIR")
+    agents_dir: Path = Field(
+        default=Path(__file__).resolve().parent / "agent_images",
+        validation_alias="AGENTS_DIR",
+        description="the coding agents: agents.yaml and an image folder per agent",
+    )
+    agent_timeout: float = Field(
+        default=3600.0, gt=0, validation_alias="AGENT_TIMEOUT", description="seconds one agent run may take, at most"
+    )
     approved_actuators: str = Field(
         default="", validation_alias="APPROVED_ACTUATORS", description="comma-separated modules allowed to act"
     )

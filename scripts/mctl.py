@@ -4,6 +4,11 @@
     python scripts/mctl.py list
     python scripts/mctl.py deploy hello
     python scripts/mctl.py verify hello                           # its tests, locked down (--staging: a build)
+    python scripts/mctl.py build expenses specs/expenses.md --wait  # grow a module; --coder picks who writes it
+    python scripts/mctl.py builds                                 # the latest builds
+    python scripts/mctl.py build-get <build_id>                   # one build, round by round
+    python scripts/mctl.py coders                                 # who can write a module, and the default
+    python scripts/mctl.py agents                                 # the coding agents the supervisor can run
     python scripts/mctl.py stop hello
     python scripts/mctl.py logs hello --tail 50
     python scripts/mctl.py health
@@ -58,6 +63,42 @@ async def converse(bus: NatsBus, subject: str, payload: dict, thread: str, timeo
             f"\n[choices: {' / '.join(data.get('choices') or [])}]  answer with: mctl answer {data.get('ref')} <choice>"
         )
     return 0
+
+
+async def follow_build(bus: NatsBus, args) -> int:
+    """rpc.build.start, then each round as it ends until build.done or build.failed (--wait)."""
+    events: asyncio.Queue = asyncio.Queue()
+    if args.wait:
+
+        async def on_build(msg):
+            await events.put((msg.subject, msg.data))
+
+        await bus.subscribe("build.>", on_build)
+        await bus.flush()
+    payload = {"name": args.name, "spec": open(args.spec, encoding="utf-8").read()}
+    if args.coder:
+        payload["coder"] = args.coder
+    reply = await bus.request("rpc.build.start", payload, timeout=30)
+    print(json.dumps(reply, indent=2, ensure_ascii=False))
+    if not reply.get("ok") or not args.wait:
+        return 0 if reply.get("ok") else 1
+    build_id = reply["build_id"]
+    while True:
+        subject, data = await events.get()
+        if data.get("build_id") != build_id:
+            continue
+        if subject == "build.started":
+            print(f"started: {data['name']} with the {data['coder']} coder")
+        elif subject == "build.progress":
+            print(f"round {data['round']}: {data['stage']} {'passed' if data['passed'] else 'failed'}")
+        elif subject in ("build.done", "build.failed"):
+            record = await bus.request("rpc.build.get", {"build_id": build_id}, timeout=10)
+            last = (record.get("rounds") or [{}])[-1]
+            if subject == "build.failed" and (record.get("output") or last.get("output")):
+                print(record.get("output") or last.get("output"))
+            data.pop("output", None)
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            return 0 if subject == "build.done" else 1
 
 
 async def run(args) -> int:
@@ -121,6 +162,16 @@ async def run(args) -> int:
                 print(reply.pop("output"))
                 print(json.dumps(reply, indent=2))
                 return 0 if reply["passed"] else 1
+        elif args.cmd == "build":
+            return await follow_build(bus, args)
+        elif args.cmd == "builds":
+            reply = await bus.request("rpc.build.list", {"limit": args.limit}, timeout=args.timeout)
+        elif args.cmd == "build-get":
+            reply = await bus.request("rpc.build.get", {"build_id": args.build_id}, timeout=args.timeout)
+        elif args.cmd == "coders":
+            reply = await bus.request("rpc.build.coders", {}, timeout=args.timeout)
+        elif args.cmd == "agents":
+            reply = await bus.request("rpc.sys.agents", {}, timeout=args.timeout)
         elif args.cmd == "logs":
             reply = await bus.request("rpc.sys.logs", {"name": args.name, "tail": args.tail}, timeout=args.timeout)
             if reply.get("ok"):
@@ -147,6 +198,16 @@ def main() -> int:
     ve.add_argument(
         "--staging", action="store_true", help="the build staged in GROWN_DIR/.staging, not the deployed one"
     )
+    bu = sub.add_parser("build", help="grow a module from a spec (rpc.build.start)")
+    bu.add_argument("name")
+    bu.add_argument("spec", help="the spec, a markdown file (e.g. specs/expenses.md)")
+    bu.add_argument("--coder", help="who writes it (mctl coders); default BUILDER_CODER")
+    bu.add_argument("--wait", action="store_true", help="follow the build round by round until it ends")
+    bl = sub.add_parser("builds", help="the latest builds")
+    bl.add_argument("--limit", type=int, default=20)
+    sub.add_parser("build-get", help="one build, round by round").add_argument("build_id")
+    sub.add_parser("coders", help="who can write a module, and which is the default")
+    sub.add_parser("agents", help="the coding agents the supervisor can run, and what each still needs")
     lg = sub.add_parser("logs")
     lg.add_argument("name")
     lg.add_argument("--tail", type=int, default=100)
