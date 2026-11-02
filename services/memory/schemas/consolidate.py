@@ -1,9 +1,9 @@
-"""The nightly job's shapes (MEMORY.md §3): what the model returns, what memory sends, what it reports."""
+"""The nightly job's shapes (MEMORY.md §3): what the model returns and what the job reports. What it sends is
+the SDK's CompletionRequest."""
 
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -104,19 +104,6 @@ class PeriodDigest(BaseModel):
         if not v:
             raise ValueError("summary is required")
         return v
-
-
-class ModelRequest(BaseModel):
-    """rpc.llm.complete as consolidation fills it (the gateway validates it again as CompletionRequest)."""
-
-    slot: str
-    system: str
-    messages: list[dict[str, Any]]
-    tools: list[dict[str, Any]]
-    tool_choice: str
-    max_tokens: int | None = Field(default=None, gt=0)  # None: the provider's setting
-    cause: str | None = None
-    timeout: float = Field(gt=0)
 
 
 class RollupReport(BaseModel):

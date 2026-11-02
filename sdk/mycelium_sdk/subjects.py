@@ -13,7 +13,8 @@ Live (fire-and-forget, NOT an event: not in the stream, the tracer skips it, nob
     stream.llm                  a reply's text as the model writes it, a frame per few tokens, matched by `cause`
 
 Requests (request/reply, NOT stored in the stream so JetStream never answers them):
-    rpc.sys.<action>            supervisor: deploy, stop, logs, list, health
+    rpc.sys.<action>            supervisor: deploy, verify, agent, agents, stop, logs, list, health
+    rpc.build.<action>          builder: start, get, list, coders
     rpc.mod.<module>.<action>   ask a module something
     rpc.memory.<action>         memory service: remember, lookup, recall, reindex
     rpc.llm.<action>            model gateway: complete, usage
@@ -23,6 +24,13 @@ EVENT_PREFIXES = ("sense.", "brain.", "mod.", "sys.", "build.", "out.", "trace."
 EVENT_STREAM_SUBJECTS = [p + ">" for p in EVENT_PREFIXES]
 STREAM_PREFIX = "stream."  # live frames: forwarded to whoever is watching, never recorded
 OBSERVE = "brain.observe"
+
+# What the `module` login may do on the bus (services/nats/nats.conf), which is what Module does and no more:
+# publish its events, observations and the started notice; answer its own requests; listen to events. Never a
+# request of its own (rpc.*), the traces (they carry the planner's memory) or the live model text.
+MODULE_PUBLISHES = ("mod.>", OBSERVE, "sys.module.started")
+MODULE_LISTENS = ("sense.>", "brain.>", "mod.>", "sys.>", "build.>", "out.>")  # what a manifest may subscribe to
+MODULE_ANSWERS = "rpc.mod.>"
 
 
 def mod_event(module: str, event: str) -> str:

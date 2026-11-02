@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
@@ -10,9 +10,17 @@ from .decide import DecideUsed
 from .index import NoteRecord
 
 
+class MatchVia(StrEnum):
+    """How a name in the query found its note."""
+
+    EXACT = "exact"  # the note's own name
+    ALIAS = "alias"
+    FUZZY = "fuzzy"  # a capitalised word that looks like a name
+
+
 class Match(BaseModel):
     record: NoteRecord
-    via: Literal["exact", "alias", "fuzzy"]
+    via: MatchVia
     score: float
 
 

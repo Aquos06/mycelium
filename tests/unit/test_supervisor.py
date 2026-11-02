@@ -50,6 +50,10 @@ class FakeDocker:
     def list_modules(self):
         return list(self.running.values())
 
+    def sweep(self):
+        self.calls.append("sweep")
+        return 0
+
 
 def write_module(root: Path, name: str, **over) -> Path:
     d = root / name
@@ -70,9 +74,9 @@ async def sup(tmp_path):
     return s, bus, docker, reg
 
 
-async def test_start_builds_base_image(sup):
+async def test_start_builds_base_image_and_sweeps_leftovers(sup):
     _, _, docker, _ = sup
-    assert docker.calls == ["base"]
+    assert docker.calls == ["base", "sweep"]
 
 
 async def test_deploy_happy_path(sup, tmp_path):
@@ -81,7 +85,7 @@ async def test_deploy_happy_path(sup, tmp_path):
     reply = await bus.request("rpc.sys.deploy", {"name": "alpha"})
     assert reply["ok"] is True and reply["status"] == "running"
     assert docker.calls[-2:] == ["build:alpha", "run:alpha"]
-    assert reg.rows["alpha"]["status"] == "running"
+    assert reg.rows["alpha"].status == "running"
     assert bus.events("sys.module.deployed")[0][1]["name"] == "alpha"
 
 
@@ -90,7 +94,7 @@ async def test_deploy_rejects_bad_names(sup, name):
     _, bus, docker, _ = sup
     reply = await bus.request("rpc.sys.deploy", {"name": name})
     assert reply["ok"] is False
-    assert docker.calls == ["base"]
+    assert docker.calls == ["base", "sweep"]  # nothing built, nothing run
 
 
 async def test_deploy_missing_folder(sup):
@@ -132,7 +136,7 @@ async def test_build_failure_marks_failed(tmp_path):
     write_module(tmp_path, "omega")
     reply = await bus.request("rpc.sys.deploy", {"name": "omega"})
     assert reply["ok"] is False and "build exploded" in reply["error"]
-    assert reg.rows["omega"]["status"] == "failed"
+    assert reg.rows["omega"].status == "failed"
     assert bus.events("sys.module.failed")
 
 
@@ -147,6 +151,23 @@ async def test_stop_list_logs(sup, tmp_path):
     stopped = await bus.request("rpc.sys.stop", {"name": "alpha"})
     assert stopped["stopped"] is True
     assert (await bus.request("rpc.sys.list", {}))["modules"][0]["status"] == "stopped"
+
+
+@pytest.mark.parametrize(
+    "subject, payload, error",
+    [
+        ("rpc.sys.deploy", {}, "name: Field required"),
+        ("rpc.sys.stop", {"name": "../x"}, "name: Value error, invalid module name: '../x'"),
+        ("rpc.sys.verify", {"name": ".staging", "staging": True}, "invalid module name: '.staging'"),
+        ("rpc.sys.logs", {"name": "alpha", "tail": "lots"}, "tail: Input should be a valid integer"),
+        ("rpc.sys.agent", {"agent": "opencode", "name": "alpha"}, "prompt: Field required"),
+    ],
+)
+async def test_a_request_that_does_not_fit_its_schema_is_refused_by_field(sup, subject, payload, error):
+    _, bus, docker, reg = sup
+    reply = await bus.request(subject, payload)
+    assert reply["ok"] is False and error in reply["error"], reply
+    assert docker.calls == ["base", "sweep"] and reg.rows == {}  # refused before anything ran
 
 
 async def test_health_pings_modules(sup, tmp_path):
@@ -183,8 +204,8 @@ async def test_reconcile_redeploys_running_and_retires_missing(tmp_path):
 
     results = await s.reconcile()
     assert results == {"alpha": "retired (folder gone)", "gamma": "redeployed"}
-    assert reg.rows["alpha"]["status"] == "retired"
-    assert reg.rows["beta"]["status"] == "stopped"  # stopped modules stay stopped
+    assert reg.rows["alpha"].status == "retired"
+    assert reg.rows["beta"].status == "stopped"  # stopped modules stay stopped
     assert docker.calls == ["build:gamma", "run:gamma"]
     assert bus.events("sys.reconciled")
 
@@ -283,7 +304,7 @@ async def test_reconcile_keeps_modules_when_the_grown_root_is_not_mounted(tmp_pa
     s, _, _, reg, _, _ = await two_roots(tmp_path, repo=False)  # the empty folder Docker makes for a missing mount
     await reg.upsert(validate_manifest({"name": "expenses", "purpose": "Tracks what Hansen spends."}), "running", "x")
     assert await s.reconcile() == {"expenses": "kept (a modules root is not mounted)"}
-    assert reg.rows["expenses"]["status"] == "running"  # it comes back when the root does
+    assert reg.rows["expenses"].status == "running"  # it comes back when the root does
 
 
 async def test_reconcile_retires_a_grown_module_whose_folder_is_gone_from_the_repo(tmp_path):
@@ -357,6 +378,7 @@ def test_real_docker_runs_tests_locked_down(monkeypatch):
     assert kw["network_mode"] == "none" and "network" not in kw
     assert kw["environment"] == {"TZ": "Asia/Taipei", "PYTHONDONTWRITEBYTECODE": "1"}  # no NATS_URL, no keys
     assert kw["read_only"] is True and kw["cap_drop"] == ["ALL"] and kw["security_opt"] == ["no-new-privileges"]
+    assert kw["labels"] == {"mycelium.verify": "mycelium-dev"}  # the stack, so only this stack sweeps it
     assert kw["pids_limit"] == 256 and kw["mem_limit"] == "512m" and "/tmp" in kw["tmpfs"]
     assert "mycelium.stack" not in kw["labels"]  # never listed as a module
     assert client.container.removed is True
@@ -372,3 +394,21 @@ def test_real_docker_gives_every_module_the_users_time_zone(monkeypatch):
     ops, client = real_ops(monkeypatch, RecordingContainer())
     ops.run_module("mycelium-dev/mod-hello:0.1.0", validate_manifest({"name": "hello", "purpose": "Counts chats."}))
     assert client.runs[0]["environment"]["TZ"] == "Asia/Taipei"
+
+
+async def test_list_names_every_module_folder_in_both_roots(tmp_path):
+    grown = tmp_path / "grown"
+    (grown / ".git").mkdir(parents=True)
+    write_module(tmp_path / "modules", "hello")
+    write_module(grown, "expenses")
+    (grown / ".staging" / "wip").mkdir(parents=True)
+    s = Supervisor(
+        bus=InMemoryBus(),
+        docker=FakeDocker(),
+        registry=MemoryRegistry(),
+        modules_dir=tmp_path / "modules",
+        sdk_dir=tmp_path,
+        grown_dir=grown,
+    )
+    reply = await s.list({})
+    assert reply.modules == [] and reply.folders == ["expenses", "hello"]

@@ -28,6 +28,9 @@ from .schemas import CHANNEL
 log = logging.getLogger("mycelium.web")
 
 RPC_RE = re.compile(r"^rpc(?:\.[A-Za-z0-9_-]+){2,}$")  # rpc.sys.list, rpc.mod.hello.stats, rpc.memory.recall
+# never forwarded: only the builder asks for an agent run, and the agent holds a key and reaches the internet,
+# so whoever writes its prompt can send the key anywhere
+NOT_FORWARDED = {"rpc.sys.agent"}
 CLIENT_QUEUE = 1000  # frames a slow socket may fall behind before it is dropped
 
 Outgoing = BusEvent | StreamEvent
@@ -108,4 +111,6 @@ class WebGateway:
     async def rpc(self, subject: str, req: RpcIn) -> dict[str, Any]:
         if not RPC_RE.match(subject):
             raise ValueError(f"not an rpc subject: {subject!r}")
+        if subject in NOT_FORWARDED:
+            raise ValueError(f"{subject} is not open to the web app")
         return await self.bus.request(subject, req.payload, timeout=req.timeout or self.rpc_timeout)

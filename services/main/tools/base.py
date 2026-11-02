@@ -1,4 +1,4 @@
-"""A tool is a pydantic model for its arguments plus a handler.
+"""A tool is a pydantic model for its arguments plus a handler: the SDK's Tool, with the handler added.
 
 The schema the planner sees is generated from the model, and every call is validated against the
 same model before anything touches the bus. A rejected call goes back to the planner as a tool
@@ -13,9 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation, ValidationError
 
-from mycelium_sdk import Bus, input_schema, validation_message
-
-NAME_PATTERN = r"^[a-z][a-z0-9_]{0,40}$"
+from mycelium_sdk import Bus, ToolResult, ToolSpec, input_schema, llm, validation_message
 
 __all__ = ["Tool", "ToolContext", "ToolOutcome", "ToolRegistry", "ToolSpec", "input_schema", "validation_message"]
 
@@ -33,27 +31,10 @@ class ToolContext(BaseModel):
 Handler = Callable[[Any, ToolContext], Awaitable[dict[str, Any]]]
 
 
-class ToolSpec(BaseModel):
-    """One entry of the `tools` array sent to the model (Anthropic shape)."""
-
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-
-
-class Tool(BaseModel):
+class Tool(llm.Tool):
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
-    name: str = Field(pattern=NAME_PATTERN)
-    description: str = Field(min_length=1)
-    args: type[BaseModel]
     handler: Handler = Field(exclude=True, repr=False)
-
-    def spec(self) -> ToolSpec:
-        return ToolSpec(name=self.name, description=self.description, input_schema=input_schema(self.args))
-
-    def parse(self, raw: Mapping[str, Any]) -> BaseModel:
-        return self.args.model_validate(dict(raw))
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> dict[str, Any]:
         return await self.handler(args, ctx)
@@ -73,10 +54,10 @@ class ToolOutcome(BaseModel):
     def ok(self) -> bool:
         return bool(self.result.get("ok"))
 
-    def tool_result(self, tool_use_id: str, limit: int) -> dict[str, Any]:
+    def tool_result(self, tool_use_id: str, limit: int) -> ToolResult:
         """The tool_result block for the next planner round."""
         content = json.dumps(self.result, ensure_ascii=False, default=str)[:limit]
-        return {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+        return ToolResult(tool_use_id=tool_use_id, content=content)
 
 
 class ToolRegistry(BaseModel):

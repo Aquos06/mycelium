@@ -17,12 +17,12 @@ VENV ?= $(ROOT)/.venv
 BIN := $(VENV)/bin
 PY ?= python3
 COMPOSE ?= docker compose --project-directory $(ROOT)
-BACKEND := nats postgres tracer supervisor memory gateway main web
+BACKEND := nats postgres tracer supervisor memory gateway main builder web
 # the native gateway's port: 8080 is the compose one
 PORT ?= 8081
 SERVICE ?=
 RELOAD_DIRS := --reload-dir $(ROOT)/services/web --reload-dir $(ROOT)/sdk/mycelium_sdk
-ENV = set -a; . $(ROOT)/.env; set +a; export NATS_URL=$${NATS_URL:-nats://localhost:$${NATS_PORT:-4222}}; export DATABASE_URL=$${DATABASE_URL:-postgresql://mycelium:$$POSTGRES_PASSWORD@localhost:$${PG_PORT:-5432}/mycelium}; export PYTHONPATH=$(ROOT)/services
+ENV = set -a; . $(ROOT)/.env; set +a; export NATS_URL=$${NATS_URL:-nats://core:$$NATS_CORE_PASSWORD@localhost:$${NATS_PORT:-4222}}; export DATABASE_URL=$${DATABASE_URL:-postgresql://mycelium:$$POSTGRES_PASSWORD@localhost:$${PG_PORT:-5432}/mycelium}; export PYTHONPATH=$(ROOT)/services
 
 .DEFAULT_GOAL := help
 .PHONY: help dev up down restart build logs ps urls dev-web run install test test-unit test-integration test-e2e lint fmt migrate migration shell env clean
@@ -32,7 +32,7 @@ help: ## this list
 
 # ---------------------------------------------------------------------------------------------------- the stack
 
-dev: ## up the backend: nats, postgres, tracer, supervisor, memory, gateway, main, web gateway; waits until healthy
+dev: ## up the backend: nats, postgres, tracer, supervisor, memory, gateway, main, builder, web gateway; waits until healthy
 	@mkdir -p $(ROOT)/grown  # yours, before Docker would create the mount source as root
 	$(COMPOSE) up -d --build --wait --wait-timeout 300 $(BACKEND)
 	@$(MAKE) --no-print-directory urls
@@ -58,7 +58,7 @@ ps: ## what is running, and the modules the supervisor knows
 
 urls: ## where the backend answers on this host
 	@$(ENV); echo "web gateway   http://localhost:$${WEB_PORT:-8080}/api/v1/system/health   (the app: http://localhost:$${FRONTEND_PORT:-3000}, make frontend-dev, or docker compose up -d frontend)"; \
-	echo "nats          $$NATS_URL   monitor http://localhost:$${NATS_MON_PORT:-8222}"; \
+	echo "nats          $$NATS_URL   monitor http://localhost:$${NATS_MON_PORT:-8222}" | sed -E 's#:[^:@/]+@#:…@#'; \
 	echo "postgres      $$DATABASE_URL" | sed -E 's#:[^:@/]+@#:…@#'; \
 	curl -sf "http://localhost:$${WEB_PORT:-8080}/api/v1/system/health" >/dev/null && echo "web gateway answers" || echo "web gateway not answering yet"
 
@@ -81,7 +81,7 @@ shell: ## a python with the env loaded and every service importable
 	$(ENV); cd $(ROOT)/services && $(BIN)/python
 
 env: ## the host-side URLs the native targets run with (password hidden)
-	@$(ENV); echo "NATS_URL=$$NATS_URL"; echo "DATABASE_URL=$$DATABASE_URL" | sed -E 's#:[^:@/]+@#:…@#'
+	@$(ENV); { echo "NATS_URL=$$NATS_URL"; echo "DATABASE_URL=$$DATABASE_URL"; } | sed -E 's#:[^:@/]+@#:…@#'
 
 # ------------------------------------------------------------------------------------------------------- checks
 

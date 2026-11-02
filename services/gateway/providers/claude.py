@@ -65,12 +65,12 @@ class ClaudeProvider:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": req.max_tokens or self.max_tokens,
-            "messages": req.messages,
+            "messages": [m.model_dump(mode="json") for m in req.messages],
         }
         if req.system:
             kwargs["system"] = req.system
         if req.tools:
-            kwargs["tools"] = req.tools
+            kwargs["tools"] = [t.model_dump(mode="json") for t in req.tools]
         if req.tool_choice:
             kwargs["tool_choice"] = {"type": "tool", "name": req.tool_choice}
         if req.temperature is not None:

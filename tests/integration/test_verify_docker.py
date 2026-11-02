@@ -79,10 +79,10 @@ async def test_hello_passes_locked_down_and_a_broken_copy_fails(tmp_path, ops):
     )
 
     ok = await s.verify({"name": "hello", "staging": True})
-    assert ok["passed"], ok["output"]
-    assert "9 passed" in ok["output"]  # hello's six and the three probes
+    assert ok.passed, ok.output
+    assert "9 passed" in ok.output  # hello's six and the three probes
 
     (staged / "tests" / "test_broken.py").write_text("def test_total():\n    assert 0 == 350\n")
     bad = await s.verify({"name": "hello", "staging": True})
-    assert not bad["passed"] and bad["exit_code"] == 1 and "assert 0 == 350" in bad["output"]
+    assert not bad.passed and bad.exit_code == 1 and "assert 0 == 350" in bad.output
     assert not ops.client.images.list(name=f"{STACK}/mod-hello")  # the verify image is gone each time

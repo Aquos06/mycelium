@@ -38,7 +38,7 @@ jobs:
           - { image: telegram, context: ., dockerfile: services/telegram/Dockerfile }
           - { image: web, context: ., dockerfile: services/web/Dockerfile }
           - { image: frontend, context: frontend, dockerfile: frontend/Dockerfile }   # no NEXT_PUBLIC_API_BASE: same origin, Caddy in front
-          - { image: builder, context: ., dockerfile: builder/Dockerfile }
+          - { image: builder, context: ., dockerfile: services/builder/Dockerfile }
           - { image: module-base, context: sdk, dockerfile: sdk/Dockerfile }
     steps:
       - uses: actions/checkout@v4
@@ -82,10 +82,18 @@ jobs:
       NATS_MON_PORT: ${{ vars.NATS_MON_PORT }}
       PG_PORT: ${{ vars.PG_PORT }}
       POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      NATS_CORE_PASSWORD: ${{ secrets.NATS_CORE_PASSWORD }}   # the services' bus login; modules get `module`
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       APPROVED_ACTUATORS: ${{ vars.APPROVED_ACTUATORS }}
+      # who grows modules and on which model (the builder's coder slot; the coding agents)
+      BUILDER_CODER: ${{ vars.BUILDER_CODER }}
+      CODER_PROVIDER: ${{ vars.CODER_PROVIDER }}
+      VLLM_ENDPOINT: ${{ vars.VLLM_ENDPOINT }}
+      VLLM_MODEL: ${{ vars.VLLM_MODEL }}
+      AGENT_ENDPOINT: ${{ vars.AGENT_ENDPOINT }}
+      AGENT_MODEL: ${{ vars.AGENT_MODEL }}
     steps:
       - uses: actions/checkout@v4
       # each stack gets its own folder: the supervisor bind-mounts ./modules and ./sdk, so a later
@@ -98,6 +106,9 @@ jobs:
           rm -rf "$DEPLOY_DIR"/{sdk,services,modules,template,builder,scripts,db,specs}
           git archive HEAD | tar -x -C "$DEPLOY_DIR"
           echo "path=$DEPLOY_DIR" >> "$GITHUB_OUTPUT"
+          # grown modules live outside the release folder, which every deploy wipes: their own
+          # git repo per stack, written by the builder, read by the supervisor
+          mkdir -p "$HOME/mycelium-grown/$STACK"
       - name: write .env
         working-directory: ${{ steps.dir.outputs.path }}
         run: |
@@ -109,6 +120,7 @@ jobs:
             echo "NATS_MON_PORT=${NATS_MON_PORT:-8222}"
             echo "PG_PORT=${PG_PORT:-5432}"
             echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD secret}"
+            echo "NATS_CORE_PASSWORD=${NATS_CORE_PASSWORD:?set NATS_CORE_PASSWORD secret}"
             echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
             echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
             echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
@@ -117,6 +129,13 @@ jobs:
             echo "IMAGE_TAG=${SHA_TAG}"
             echo "HOST_UID=$(id -u)"
             echo "HOST_GID=$(id -g)"
+            echo "GROWN_DIR=$HOME/mycelium-grown/${STACK}"
+            echo "BUILDER_CODER=${BUILDER_CODER}"
+            echo "CODER_PROVIDER=${CODER_PROVIDER}"
+            echo "VLLM_ENDPOINT=${VLLM_ENDPOINT}"
+            echo "VLLM_MODEL=${VLLM_MODEL}"
+            echo "AGENT_ENDPOINT=${AGENT_ENDPOINT}"
+            echo "AGENT_MODEL=${AGENT_MODEL}"
           } > .env
           chmod 600 .env
       - uses: docker/login-action@v3
@@ -126,7 +145,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: pull images
         working-directory: ${{ steps.dir.outputs.path }}
-        run: docker compose pull tracer supervisor web frontend
+        run: docker compose pull tracer supervisor builder web frontend
       - name: roll out
         working-directory: ${{ steps.dir.outputs.path }}
         # supervisor restarts with RECONCILE_ON_START=true and rebuilds every running module from this commit
@@ -139,6 +158,6 @@ jobs:
         run: |
           python3 -m venv .deploy-venv
           .deploy-venv/bin/pip install -q ./sdk
-          export NATS_URL="nats://localhost:${NATS_PORT:-4222}"
+          export NATS_URL="nats://core:${NATS_CORE_PASSWORD}@localhost:${NATS_PORT:-4222}"
           .deploy-venv/bin/python scripts/mctl.py --timeout 60 list
           .deploy-venv/bin/python scripts/mctl.py --timeout 60 health

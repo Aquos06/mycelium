@@ -8,6 +8,7 @@ import signal
 
 from mycelium_sdk import NatsBus
 
+from .agents import load_recipes
 from .docker_ops import RealDockerOps
 from .registry import PostgresRegistry
 from .service import Supervisor
@@ -22,7 +23,7 @@ async def main() -> None:
     registry = PostgresRegistry(s.database_url)
     await registry.connect()
     docker = RealDockerOps(
-        nats_url=s.nats_url,
+        nats_url=s.module_nats_url,  # modules get the `module` login, never the supervisor's own
         bus_network=s.module_network or "",
         internet_network=s.internet_network or "",
         stack=s.stack,
@@ -37,6 +38,9 @@ async def main() -> None:
         sdk_dir=s.sdk_dir,
         approved_actuators=s.approved,
         verify_timeout=s.verify_timeout,
+        agents=load_recipes(s.agents_dir / "agents.yaml"),
+        agents_dir=s.agents_dir,
+        agent_timeout=s.agent_timeout,
     )
     await sup.start(reconcile=s.reconcile_on_start)
     stop = asyncio.Event()

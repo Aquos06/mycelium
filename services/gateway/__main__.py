@@ -13,7 +13,7 @@ import signal
 
 from mycelium_sdk import NatsBus, NatsKV
 
-from .schemas import GatewayConfig
+from .schemas import GatewayConfig, KeyState
 from .service import GatewayService
 from .settings import GatewaySettings
 
@@ -32,7 +32,7 @@ async def main() -> None:
     for slot_name, slot in config.slots.items():
         providers = {n: f"{p.kind}/{p.model} key={p.key_state(os.environ)}" for n, p in slot.providers.items()}
         log.info("slot %s: active=%s shadow=%s providers=%s", slot_name, slot.active, slot.shadow, providers)
-        if slot.providers[slot.active].key_state(os.environ) == "missing":
+        if slot.providers[slot.active].key_state(os.environ) == KeyState.MISSING:
             log.warning(
                 "slot %s: active provider %r has no key; calls will fail until it is set", slot_name, slot.active
             )

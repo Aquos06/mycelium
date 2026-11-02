@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
-from ..schemas import ProviderConfig
+from ..schemas import Protocol, ProviderConfig, ProviderKind, SlotTask
 from .base import DecideProvider, EmbeddingProvider, Provider, ProviderError
 from .claude import ClaudeProvider
 from .decide import TeiRerankProvider, ToolDecideProvider
@@ -47,24 +47,24 @@ __all__ = [
 ]
 
 # kinds with a class of their own; every other openai-protocol kind is the generic client
-PROVIDER_CLASSES: dict[str, type[OpenAICompatProvider]] = {
-    "openai": OpenAIProvider,
-    "ollama": OllamaProvider,
-    "vllm": VLLMProvider,
+PROVIDER_CLASSES: dict[ProviderKind, type[OpenAICompatProvider]] = {
+    ProviderKind.OPENAI: OpenAIProvider,
+    ProviderKind.OLLAMA: OllamaProvider,
+    ProviderKind.VLLM: VLLMProvider,
 }
 
 
 def build_provider(
-    name: str, cfg: ProviderConfig, env: Mapping[str, str] | None = None, task: str = "complete"
+    name: str, cfg: ProviderConfig, env: Mapping[str, str] | None = None, task: SlotTask = SlotTask.COMPLETE
 ) -> Provider | EmbeddingProvider | DecideProvider:
     env = os.environ if env is None else env
     key = env.get(cfg.key_env) if cfg.key_env else None
-    if task == "decide":
-        if cfg.kind == "tei":
+    if task == SlotTask.DECIDE:
+        if cfg.kind == ProviderKind.TEI:
             return TeiRerankProvider(name, cfg.model, endpoint=cfg.endpoint or "", api_key=key, headers=cfg.headers)
-        return ToolDecideProvider(name, build_provider(name, cfg, env, "complete"), cfg.model)  # type: ignore[arg-type]
-    if task == "embed":
-        if cfg.protocol != "openai":
+        return ToolDecideProvider(name, build_provider(name, cfg, env, SlotTask.COMPLETE), cfg.model)  # type: ignore[arg-type]
+    if task == SlotTask.EMBED:
+        if cfg.protocol != Protocol.OPENAI:
             raise ValueError(f"{cfg.kind} cannot embed")
         return OpenAIEmbeddingsProvider(
             name,
@@ -74,9 +74,9 @@ def build_provider(
             require_key=cfg.info.needs_key,
             headers=cfg.headers,
             extra_body=cfg.extra_body,
-            request_dimensions=cfg.dimensions if cfg.kind == "openai" else None,  # only OpenAI honours it
+            request_dimensions=cfg.dimensions if cfg.kind == ProviderKind.OPENAI else None,  # only OpenAI honours it
         )
-    if cfg.protocol == "anthropic":
+    if cfg.protocol == Protocol.ANTHROPIC:
         return ClaudeProvider(name, cfg.model, api_key=key, max_tokens=cfg.max_tokens, base_url=cfg.endpoint)
     cls = PROVIDER_CLASSES.get(cfg.kind, OpenAICompatProvider)
     return cls(

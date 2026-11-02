@@ -28,7 +28,8 @@ Do not create files outside this folder. Do not edit CONTRACT.md.
    - `emits`: relative event names -> published as `mod.<name>.<event>`
    - `requests`: relative action names -> answered on `rpc.mod.<name>.<action>`
    - `hooks.interval_seconds`: list of intervals (>= 10s)
-3. **Never subscribe to your own events** (loops) or to `rpc.*`, `>`, `_INBOX`.
+3. **Never subscribe to your own events** (loops). Subscribe only to events: `sense.*`, `brain.*`, `mod.*`, `sys.*`,
+   `build.*`, `out.*`. A module's bus login cannot send requests, read `rpc.*`, `trace.*` or `stream.*`.
 4. **Data lives only in `mod.data_dir`** (mounted at `/data`, persists across restarts).
    Prefer SQLite (`sqlite3` stdlib). Create tables on startup if missing.
 5. **No network access** unless `permissions.network: true` (and then justify it in `purpose`).

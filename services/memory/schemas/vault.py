@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-NoteType = Literal["self", "person", "place", "project", "thing", "routine", "module"]
+from mycelium_sdk import NoteType  # shared with Main's remember tool
+
+__all__ = ["NAME_RE", "Fact", "Note", "NoteType", "Summary"]
 
 # note names are file stems: lowercase slug or CJK, no separators that could leave the folder
 NAME_RE = re.compile(r"^[a-z0-9぀-ヿ一-鿿][a-z0-9぀-ヿ一-鿿_-]{0,63}$")
@@ -35,7 +36,7 @@ class Fact(BaseModel):
 class Note(BaseModel):
     name: str
     path: str
-    type: str
+    type: str  # a NoteType, but read from a file Hansen may have edited by hand
     aliases: list[str] = Field(default_factory=list)
     summary: str = ""
     links: list[str] = Field(default_factory=list)  # derived from [[links]] in summary and facts

@@ -20,9 +20,23 @@ from collections.abc import Callable, Coroutine
 from datetime import date
 from typing import Any
 
-from mycelium_sdk import Bus, Envelope, Message, kv_key
+from mycelium_sdk import (
+    Bus,
+    ChatMessage,
+    CompletionReply,
+    CompletionRequest,
+    Envelope,
+    Message,
+    NoAnswer,
+    Refused,
+    Role,
+    TextBlock,
+    ToolUse,
+    ask,
+    kv_key,
+)
 
-from .prompt import system_prompt
+from .prompt import planner_prompt
 from .schemas import (
     Ask,
     AskOutput,
@@ -30,7 +44,6 @@ from .schemas import (
     LlmCall,
     ModuleInfo,
     PackSummary,
-    PlannerRequest,
     PlanTrace,
     Say,
     SayOutput,
@@ -66,7 +79,7 @@ class MainService:
         self.llm_timeout = llm_timeout
         self.tools = tools or default_tools()
         self.ctx = ToolContext(bus=bus, recall_budget=recall_budget)
-        self._tool_specs = [s.model_dump() for s in self.tools.specs()]
+        self._tool_specs = self.tools.specs()
         self._tasks: set[asyncio.Task] = set()
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -140,8 +153,8 @@ class MainService:
 
         thread = await self.store.load(channel, thread_id)
         (pack, recall_error), modules = await asyncio.gather(self._recall(text), self._modules())
-        system = system_prompt(self.today(), self.tz, channel, pack, modules, recall_error)
-        messages: list[dict[str, Any]] = [*thread.messages(), {"role": "user", "content": text}]
+        prompt = planner_prompt(self.today(), self.tz, channel, text, pack, modules, recall_error)
+        messages = [*thread.messages(), ChatMessage(role=Role.USER, content=prompt.user)]
 
         tool_log: list[ToolOutcome] = []
         llm_calls: list[LlmCall] = []
@@ -150,45 +163,43 @@ class MainService:
         error: str | None = None
 
         for _round in range(self.max_rounds):
-            request = PlannerRequest(
-                system=system,
+            request = CompletionRequest(
+                slot="planner",
+                system=prompt.system,
                 messages=messages,
                 tools=self._tool_specs,
                 cause=cause,
                 hops=int(data.get("hops") or 0),
                 timeout=self.llm_timeout,
+                stream=True,  # the gateway publishes the text on stream.llm as it is written; the web app shows it
             )
             try:
-                r = await self.bus.request("rpc.llm.complete", request, timeout=self.llm_timeout + BUS_MARGIN_S)
-            except Exception as e:
-                r = {"ok": False, "error": f"gateway unreachable: {type(e).__name__}: {e}"}
-            if not r.get("ok"):
-                error = str(r.get("error") or "gateway error")
+                r = await ask(self.bus, "rpc.llm.complete", request, CompletionReply, self.llm_timeout + BUS_MARGIN_S)
+            except NoAnswer as e:
+                error = f"gateway unreachable: {e}"
                 break
-            llm_calls.append(LlmCall.model_validate(r))
-            calls = r.get("tool_calls") or []
-            if not calls:
-                reply_text = str(r.get("text") or "").strip()  # reasoning models lead with blank lines
+            except Refused as e:
+                error = str(e)
+                break
+            llm_calls.append(LlmCall(model=r.model, usage=r.usage, cost_usd=r.cost_usd))
+            if not r.tool_calls:
+                reply_text = r.text.strip()  # reasoning models lead with blank lines
                 break
 
-            content: list[dict[str, Any]] = []
-            if r.get("text"):
-                content.append({"type": "text", "text": r["text"]})
-            content += [
-                {"type": "tool_use", "id": c["id"], "name": c["name"], "input": c.get("input") or {}} for c in calls
-            ]
-            messages.append({"role": "assistant", "content": content})
+            content: list[TextBlock | ToolUse] = [TextBlock(text=r.text)] if r.text else []
+            content += [ToolUse(id=c.id, name=c.name, input=c.input) for c in r.tool_calls]
+            messages.append(ChatMessage(role=Role.ASSISTANT, content=content))
 
-            results: list[dict[str, Any]] = []
-            for c in calls:
-                outcome = await self.tools.call(c["name"], c.get("input"), self.ctx)
+            results = []
+            for c in r.tool_calls:
+                outcome = await self.tools.call(c.name, c.input, self.ctx)
                 if isinstance(outcome.args, AskArgs):  # a valid `ask` ends the turn
                     asked = outcome.args
                 tool_log.append(outcome)
-                results.append(outcome.tool_result(c["id"], MAX_TOOL_RESULT_CHARS))
-            messages.append({"role": "user", "content": results})
+                results.append(outcome.tool_result(c.id, MAX_TOOL_RESULT_CHARS))
+            messages.append(ChatMessage(role=Role.USER, content=results))
             if asked:
-                reply_text = str(r.get("text") or "").strip()  # reasoning models lead with blank lines
+                reply_text = r.text.strip()  # reasoning models lead with blank lines
                 break
         else:
             error = f"planner did not finish in {self.max_rounds} rounds"
@@ -212,8 +223,8 @@ class MainService:
 
         await self.store.append(
             thread,
-            Turn(role="user", text=text, ts=str(data.get("ts") or out.ts), id=cause),
-            Turn(role="assistant", text=saved, ts=out.ts, id=out.id),
+            Turn(role=Role.USER, text=text, ts=str(data.get("ts") or out.ts), id=cause),
+            Turn(role=Role.ASSISTANT, text=saved, ts=out.ts, id=out.id),
         )
         await self.bus.publish(
             "trace.plan",

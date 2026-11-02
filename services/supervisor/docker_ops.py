@@ -18,7 +18,11 @@ log = logging.getLogger("mycelium.supervisor.docker")
 
 LABEL = "mycelium.module"
 STACK_LABEL = "mycelium.stack"
-VERIFY_LABEL = "mycelium.verify"  # never STACK_LABEL: a verify run is not a module and stays out of list_modules
+# a verify run and a coding agent are not modules: their images and containers never carry LABEL or STACK_LABEL
+# (a container inherits its image's labels), so list_modules and health never see them. Their containers carry
+# the stack as the label's value: dev, staging and production share one Docker host, and each sweeps its own.
+VERIFY_LABEL = "mycelium.verify"
+AGENT_LABEL = "mycelium.agent"
 VERIFY_COMMAND = ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
 OUTPUT_TAIL = 4000
 
@@ -45,11 +49,25 @@ class TestRun(BaseModel):
         return self.exit_code == 0 and not self.timed_out
 
 
+class AgentResult(BaseModel):
+    """One coding agent run (DockerOps.run_agent): how it ended, what it printed, the folder it left (a tar)."""
+
+    exit_code: int
+    output: str
+    timed_out: bool = False
+    archive: bytes = b""
+
+
 class DockerOps(Protocol):
     def ensure_base_image(self, sdk_dir: Path) -> None: ...
     def build_module(self, module_dir: Path, manifest: Manifest, verify: bool = False) -> str: ...
     def run_tests(self, image: str, timeout: float) -> TestRun: ...
     def remove_image(self, image: str) -> None: ...
+    def build_agent_image(self, name: str, context: Path) -> str: ...
+    def sweep(self) -> int: ...
+    def run_agent(
+        self, image: str, work: bytes, env: dict[str, str], timeout: float, memory_mb: int, cpus: float
+    ) -> AgentResult: ...
     def run_module(self, image: str, manifest: Manifest) -> ContainerInfo: ...
     def stop_module(self, name: str) -> bool: ...
     def logs(self, name: str, tail: int = 100) -> str: ...
@@ -63,7 +81,7 @@ class RealDockerOps:
         import docker  # lazy: unit tests use a fake
 
         self.client = docker.from_env()
-        self.nats_url = nats_url
+        self.nats_url = nats_url  # what modules connect with: the `module` login, never the services' one
         self.bus_network = bus_network  # internal network: bus only, no internet
         self.internet_network = internet_network  # attached only when permissions.network
         self.stack = stack
@@ -76,21 +94,21 @@ class RealDockerOps:
 
     def build_module(self, module_dir: Path, manifest: Manifest, verify: bool = False) -> str:
         """The module's image. `verify` tags it apart (`:verify`), so testing never replaces a running version."""
+        tag = f"{self.stack}/mod-{manifest.name}:{'verify' if verify else manifest.version}"
+        labels = {VERIFY_LABEL: manifest.name} if verify else {LABEL: manifest.name, STACK_LABEL: self.stack}
+        self._build(module_dir, tag, labels)
+        return tag
+
+    def _build(self, context: Path, tag: str, labels: dict[str, str]) -> None:
         import docker
 
-        tag = f"{self.stack}/mod-{manifest.name}:{'verify' if verify else manifest.version}"
         try:
             self.client.images.build(
-                path=str(module_dir),
-                tag=tag,
-                rm=True,
-                buildargs={"BASE_IMAGE": self.base_image},
-                labels={LABEL: manifest.name, STACK_LABEL: self.stack},
+                path=str(context), tag=tag, rm=True, buildargs={"BASE_IMAGE": self.base_image}, labels=labels
             )
         except docker.errors.BuildError as e:  # the log says why (a requirement that does not install)
             lines = "".join(str(c.get("stream") or c.get("error") or "") for c in e.build_log or [])
             raise RuntimeError(f"{e.msg}\n{lines[-OUTPUT_TAIL:]}") from e
-        return tag
 
     def run_tests(self, image: str, timeout: float) -> TestRun:
         """The module's own tests in the image that would ship, with nothing to reach and nothing to read: no
@@ -109,17 +127,9 @@ class RealDockerOps:
             security_opt=["no-new-privileges"],
             read_only=True,
             tmpfs={"/tmp": "rw,size=64m"},
-            labels={VERIFY_LABEL: image},
+            labels={VERIFY_LABEL: self.stack},
         )
-        timed_out = False
-        try:
-            code = int(c.wait(timeout=timeout).get("StatusCode", 1))
-        except Exception:  # the client's read timeout: the tests ran too long
-            timed_out, code = True, -1
-            try:
-                c.kill()
-            except Exception:  # it ended just now; remove() below still cleans up
-                pass
+        code, timed_out = self._wait(c, timeout)
         try:
             output = c.logs().decode(errors="replace")
         finally:
@@ -133,6 +143,73 @@ class RealDockerOps:
             self.client.images.remove(image, force=True)
         except docker.errors.ImageNotFound:
             pass
+
+    def build_agent_image(self, name: str, context: Path) -> str:
+        """A coding agent's image, FROM module-base: Python, the SDK and pytest, so it can run the tests itself."""
+        tag = f"{self.stack}/coder-{name.replace('_', '-')}:latest"
+        self._build(context, tag, {AGENT_LABEL: name})
+        return tag
+
+    def sweep(self) -> int:
+        """This stack's verify and agent containers a restart left behind (an agent's holds its key), removed on
+        start. Never another stack's: theirs may be running now. Best effort: a container Docker cannot remove
+        (dead, already going) is logged and left, so the supervisor still starts."""
+        gone = 0
+        for label in (VERIFY_LABEL, AGENT_LABEL):
+            for c in self.client.containers.list(all=True, filters={"label": label}):
+                if not self._ours(c.labels.get(label, "")):
+                    continue
+                try:
+                    c.remove(force=True)
+                    gone += 1
+                except Exception as e:
+                    log.warning("could not remove leftover container %s: %s", c.name, e)
+        return gone
+
+    def _ours(self, value: str) -> bool:
+        """The label's value is the stack; before it was, it was the image tag, which starts with the stack."""
+        return value == self.stack or value.startswith(f"{self.stack}/")
+
+    def run_agent(
+        self, image: str, work: bytes, env: dict[str, str], timeout: float, memory_mb: int, cpus: float
+    ) -> AgentResult:
+        """A coding agent on a copy of the staged module: `work` (a tar) goes in at /work, the folder comes back
+        out as a tar. The default bridge network reaches its model and the internet, never the mesh: no NATS,
+        no Postgres. Not root, no capabilities, bounded memory, CPU and processes; removed afterwards."""
+        c = self.client.containers.create(
+            image,
+            detach=True,
+            environment=env,
+            working_dir="/work/module",
+            network_mode="bridge",
+            mem_limit=f"{memory_mb}m",
+            nano_cpus=int(cpus * 1e9),
+            pids_limit=512,
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges"],
+            labels={AGENT_LABEL: self.stack},
+        )
+        try:
+            c.put_archive("/work", work)
+            c.start()
+            code, timed_out = self._wait(c, timeout)
+            output = c.logs().decode(errors="replace")
+            chunks, _ = c.get_archive("/work/module")
+            archive = b"".join(chunks)
+        finally:
+            c.remove(force=True)
+        return AgentResult(exit_code=code, output=output[-OUTPUT_TAIL:], timed_out=timed_out, archive=archive)
+
+    @staticmethod
+    def _wait(c, timeout: float) -> tuple[int, bool]:
+        try:
+            return int(c.wait(timeout=timeout).get("StatusCode", 1)), False
+        except Exception:  # the client's read timeout: it ran too long
+            try:
+                c.kill()
+            except Exception:  # it ended just now; remove() still cleans up
+                pass
+            return -1, True
 
     def _container_name(self, name: str) -> str:
         return f"{self.stack}-mod-{name}"

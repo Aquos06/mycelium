@@ -145,15 +145,15 @@ flowchart TB
     BUS -.->|"rpc.connect.*"| BR
 
     BUS -->|"sense.* · brain.observe · sys.* · build.*"| MAIN
-    MAIN -->|"out.* · build.request · trace.*"| BUS
-    MAIN -.->|"rpc.mod.* · rpc.memory.* · rpc.sys.catalog · rpc.llm.*"| BUS
+    MAIN -->|"out.* · trace.*"| BUS
+    MAIN -.->|"rpc.mod.* · rpc.memory.* · rpc.sys.catalog · rpc.llm.* · rpc.build.start"| BUS
 
     BUS -.->|"rpc.memory.*"| MEM
     MEM -.->|"rpc.llm.embed"| BUS
 
-    BUS -->|"build.request"| BLD
-    BLD -->|"build.started / done / failed"| BUS
-    BLD -.->|"rpc.sys.catalog · rpc.sys.deploy"| BUS
+    BUS -.->|"rpc.build.*"| BLD
+    BLD -->|"build.started / progress / done / failed"| BUS
+    BLD -.->|"rpc.sys.verify · rpc.sys.deploy · rpc.llm.complete"| BUS
 
     BUS -.->|"rpc.sys.*"| SUP
     SUP -->|"sys.module.*"| BUS
@@ -206,8 +206,11 @@ flowchart TB
 | Main / module | module | `rpc.mod.<name>.<action>` | request | declared params → declared returns |
 | Main | memory | `rpc.memory.recall / remember / lookup` | request | notes, summaries, fuzzy matches |
 | Main, memory, bridges, modules | gateway | `rpc.llm.complete / embed / decide / transcribe` | request | prompt → completion; keys never leave the gateway |
-| Main | builder | `build.request` | event | `{name, spec, mode}` after Hansen approved the spec |
-| Builder | bus | `build.started / done / failed` | event | trace path, test output |
+| Main | builder | `rpc.build.start` | request | `{name, spec, coder?}` after Hansen approved the spec; answers `{build_id, position}` or why not |
+| Builder | bus | `build.started / progress / done / failed` | event | each round, then the commit or where it stopped and the output |
+| Builder | gateway | `rpc.llm.complete` (slot `coder`) | request | our coder: one forced tool call per file, `cause` = the build id |
+| Builder | supervisor | `rpc.sys.verify` | request | the staged build's tests in the sealed container |
+| Builder | supervisor | `rpc.sys.agent` | request | a coding agent's round on a copy of the staged build; the folder comes back |
 | Builder | supervisor | `rpc.sys.catalog` | request | what already exists, so the new module can subscribe to other modules' events and reuse their requests |
 | Builder | supervisor | `rpc.sys.deploy` | request | deploy the verified module |
 | Anyone | supervisor | `rpc.sys.list / health / logs / stop / catalog / rollback` | request | registry, catalog of all declared events and requests |
@@ -216,7 +219,7 @@ flowchart TB
 | Tracer | Postgres | — | thick | every stored event → `events`, every trace → `traces` |
 | Memory | Postgres | — | thick | own db; `events` read-only |
 | Supervisor | Docker | socket | thick | build images, run containers, networks, volumes, provision databases |
-| Builder | filesystem | `modules/<name>/` | thick | generated code, then independent verify |
+| Builder | filesystem | `GROWN_DIR/.staging/<name>/`, then `GROWN_DIR/<name>/` | thick | generated code, never run by the builder; one git commit per build |
 | Gateway | providers | HTTPS / local HTTP | thick | the only path text takes off the box |
 
 ---
@@ -274,6 +277,7 @@ The only way anything talks to anything.
 | Events (stored) | `sense.*`, `brain.*`, `mod.*`, `sys.*`, `build.*`, `out.*`, `trace.*` |
 | Requests (not stored) | `rpc.sys.*`, `rpc.mod.<module>.*`, `rpc.memory.*` |
 | Rule | Events by default. A request only when the caller needs an answer back. `rpc.*` is never in the stream. |
+| Logins | Two (`services/nats/nats.conf`). `core`: the services and mctl, everything. `module`: the only login a module gets (the supervisor's `MODULE_NATS_URL`), exactly what the SDK's `Module` does: publish `mod.>`, `brain.observe`, `sys.module.started`; answer its own requests; listen to `sense.*`, `brain.*`, `mod.*`, `sys.*`, `build.*`, `out.*`. No `rpc.*` request of any kind, no `trace.*`, no `stream.*`, no JetStream. So a module, generated or not, cannot deploy, start a build, run a coding agent, call a model or read memory. The supervisor refuses to start if `MODULE_NATS_URL` has the core login. Not yet: one login per module (a module can still emit another's events or answer another's requests). |
 | MQTT | NATS can serve as an MQTT broker. Frigate, Home Assistant and most devices can publish straight onto the bus; a bridge renames their subjects to `sense.*`. |
 
 ---
@@ -316,6 +320,18 @@ is deployed. A build is staged in `GROWN_DIR/.staging/<name>` (never a valid mod
 until verify passes. Every module gets `TZ` from `MODULE_TZ`, so `mod.today()` is Hansen's day. Reconcile
 never retires modules because a whole root is missing (a `GROWN_DIR` without `.git` counts as missing).
 
+**Coding agents** run here too, because only the supervisor holds Docker (`rpc.sys.agent`, `rpc.sys.agents`;
+recipes in `services/supervisor/agent_images/agents.yaml`, an image per agent FROM module-base so the agent can run
+the module's tests). Each run is a container on a copy of the staged build: the folder at `/work/module`, the
+task at `/work/PROMPT.md`, only the variables its recipe maps (its model's address, its key), not root, no
+capabilities, bounded memory and processes, on Docker's default bridge network (its model and the internet,
+never the mesh). What comes back is the folder as the agent left it, small text files only (512 KB in all, so
+the reply fits one NATS message; what is left out is named, never taken for deleted), with key values
+redacted; the builder takes from it only what a coder may write. Each agent's image is built once per
+supervisor start, and verify or agent containers a restart left behind are removed on start. Neither kind
+carries a module's labels, so `rpc.sys.list` and `health` never show them. Agent spend is outside the
+gateway's budget.
+
 ---
 
 ## 4. Modules — the generated part
@@ -332,12 +348,12 @@ Everything the system grows. One container each, one job each, contract in `temp
 
 **Where modules live.** Nothing is pre-built; a module exists only after Hansen asked for it. Once
 built it is real code that has to persist and have history (change builds, rollback), so generated
-modules go in their **own git repo**, private or local to the box, mounted at `modules/` by the
-supervisor and the builder. The builder makes one commit per build (`expenses v0.1.0`); that commit
-is the rollback point. This host repo keeps only `template/` and the hand-written reference module
-`hello` (the smoke test and the example the builder copies), so the public repo never holds
-Hansen's grown software and `make test` does not depend on what the system has built. Today `hello`
-still sits in `modules/`; the split happens before the first real build.
+modules go in their **own git repo**, `GROWN_DIR` (`./grown` locally, `~/mycelium-grown/<stack>` on a
+deployed box), mounted by the supervisor (read-only) and the builder. The builder makes one commit per
+build (`expenses v0.1.0`, tagged `expenses-v0.1.0`); that commit is the rollback point. This host repo
+keeps only `template/` and the hand-written reference module `hello` in `modules/` (the smoke test and
+the example every coder is shown), so the public repo never holds Hansen's grown software and
+`make test` does not depend on what the system has built.
 
 **Manifest change needed first:** `emits` and `requests` become described, not just named, so the
 catalog and Main know what the fields mean:
@@ -388,8 +404,8 @@ No agent framework sits in this loop: the gateway, budget, trace and shadow hook
 | | |
 |---|---|
 | Listens | `sense.*`, `brain.observe`, `sys.*`, `build.*`, `sense.feedback` from channels |
-| Publishes | `out.notify`, `out.say`, `build.request`, `trace.gate / plan / notify` |
-| Calls | `rpc.mod.*` (ask a module), `rpc.memory.*` (recall, remember), `rpc.sys.catalog` |
+| Publishes | `out.notify`, `out.say`, `trace.gate / plan / notify` |
+| Calls | `rpc.mod.*` (ask a module), `rpc.memory.*` (recall, remember), `rpc.sys.catalog`, `rpc.build.start` |
 | Owns | `<stack>_main` (§12): policy and trust levels. The snapshot is a projection it can rebuild from `events`, cached in NATS KV |
 
 Inside Main:
@@ -406,8 +422,7 @@ Inside Main:
 - **Policy.** Goals, quiet hours, attention budget, and the trust level per action kind
   (ask → ask with default → do and report → do silently). Read on every decision, updated from
   approvals.
-- **Spec drafting.** "Track my expenses" → a spec in `specs/`, confirmed by Hansen, then
-  `build.request`.
+- **Spec drafting.** "Track my expenses" → a spec, confirmed by Hansen, then `rpc.build.start`.
 
 ---
 
@@ -429,18 +444,53 @@ The **profile** lives here as ordinary notes (who Hansen is, people, preferences
 
 ---
 
-## 7. Builder — extend (script → service)
+## 7. Builder — v0 built (new modules)
 
-The software maker. Today a CLI; becomes a service that listens on the bus.
+The software maker (`services/builder/`): a spec Hansen approved in, a running module out. It never runs
+the code it builds: the supervisor verifies every round in its sealed container.
 
 | | |
 |---|---|
-| Listens | `build.request {name, spec, mode}` |
-| Publishes | `build.started / done / failed` with the trace path and test output |
-| Modes | **new** (scaffold from template), **change** (edit an existing module; snapshot `/data` first; migration-aware prompt), **wrap** (module + pinned backend) |
-| Worker | the `coder` slot (§11): Claude Code through the Agent SDK today; Aider or OpenHands with a local model later. `run_agent()` is the only place that knows which, so it stays swappable. |
-| Factory (ours) | spec → **catalog** (`rpc.sys.catalog`, so the prompt lists the events and requests that already exist) → template → contract → sandbox → **independent verify**: tests in a fresh process, manifest validation, dependency allowlist, static checks on generated code |
+| Answers | `rpc.build.start {name, spec, coder?}` → `{build_id, position}` or the reason it will not (the name exists, the queue is full, the coder cannot work, the supervisor is down); `rpc.build.get`, `rpc.build.list`, `rpc.build.coders` |
+| Publishes | `build.started`, `build.progress` (each round), `build.done` (version, commit, image), `build.failed` (stage, error, output) |
+| Keeps | one record per build in the `builder` KV bucket; one build runs at a time, the rest wait in line; a restart fails the running build and puts the waiting ones back |
+| Modes | **new** today; **change** (edit an existing module; snapshot `/data` first; migration-aware prompt) and **wrap** (module + pinned backend) later |
+| Coders | who writes the files, chosen per build (`--coder`; `BUILDER_CODER` is the default): **`mycelium`**, ours, through the gateway's `coder` slot (§11), so any model there, local by default; or a coding agent, **`opencode`**, **`codex`**, **`aider`** (on `AGENT_ENDPOINT` / `AGENT_MODEL`, your vLLM by default) or **`claude_code`** (`ANTHROPIC_API_KEY`), each run by the supervisor in a container of its own (§3) on a copy of the build. |
 | Rule | When a build fails, fix the contract, the template or the prompt. Never hand-edit the module. |
+
+**One build.** Every coder is judged the same way; none grades its own work.
+
+```
+scaffold   GROWN_DIR/.staging/<name> from template/, with SPEC.md
+round n    coder writes -> tidy -> pin the manifest -> checks -> rpc.sys.verify
+           (a failure is the next round's feedback; up to BUILD_MAX_ROUNDS, 6)
+promote    .staging/<name> -> <name>, one commit + tag in GROWN_DIR
+deploy     rpc.sys.deploy
+```
+
+- **Tidy** puts the builder's files back after every round (Dockerfile, requirements.txt, CONTRACT.md,
+  pytest.ini, conftest, SPEC.md) and removes whatever a coder left outside the paths it owns: `manifest.yaml`,
+  `app/<x>.py`, `tests/test_<x>.py`. Standard library only, so requirements.txt is the builder's.
+- **The manifest is pinned**: name, version, permissions and resources are the builder's, from what Hansen
+  approved (no network, no actuation this round), so a coder cannot grant its module either.
+- **Checks** before anything runs: relative `emits`/`requests`, file sizes, and an AST
+  pass that bans processes, sockets and HTTP, raw NATS, the module's `.bus`, eval/exec and dynamic imports.
+  Guards against mistakes; the sandbox is the container.
+- **The contract test** (`tests/test_contract.py`, the builder's, rewritten every round) checks that the
+  module starts, answers health, answers every declared request instead of hanging, and survives a message
+  that is not for it.
+
+**Our coder** is a fixed pipeline of short calls, not an agent session, because a local model gets lost in a
+long one: `write_manifest` → `write_files` (app/) → `write_files` (tests/) on the first round, then one
+`write_files` per round with the spec, the files as they are on disk and the failure's output. Each call
+forces its tool; an invalid call goes back once as a tool_result with the error. Prompts are rebuilt from
+disk, about 12k tokens whatever the round, so a local vLLM needs `--max-model-len 32768`. Gateway errors are
+retried; a spent budget, `CODER_MAX_CALLS` (40) or `CODER_MAX_USD` (2.0) stops the build.
+
+**A coding agent** gets one prompt per round (the same brief, the spec, how to work, what failed last round)
+and loops on its own, running the tests as often as it likes. The builder mirrors back only the paths a coder
+owns (and removes the coder files the agent deleted), then judges the round like any other. An agent that
+changed nothing has failed the round; one that cannot run (no address, no key) stops the build.
 
 ---
 
@@ -579,7 +629,7 @@ local, or one coding agent for another, is a config change, not a code change.
 | `embed` | Memory | local model on GPU 1, or an API | local |
 | `stt` / `tts` | Voice channel | faster-whisper / Piper (local) | local |
 | `vision` | Bridges | small local VLM on GPU 1 | local |
-| `coder` | Builder worker | Claude Code (Agent SDK); Aider or OpenHands, which can run a local model | Claude Code |
+| `coder` | Builder, our coder | vLLM or Ollama on the GPU box; Claude or OpenAI | local |
 
 Two mechanisms:
 
@@ -588,9 +638,9 @@ Two mechanisms:
   summarizes receipts asks the gateway instead of holding an API key. The gateway owns the keys,
   enforces the budget (cross-cutting rule 7), traces every call with its cost, and picks the provider
   by slot and policy (cheap local for routine work, cloud for hard questions).
-- **The builder's `coder` slot** is the exception. A coding agent is a loop with its own tools, not a
-  completion call, so the builder holds it directly behind `run_agent()`, the one function that knows
-  which agent is in use.
+- **Coding agents** are the exception. An agent (OpenCode, Claude Code, Codex, Aider) is a loop with its
+  own tools, not a completion call, so it runs as its own coder in a container next to ours; the
+  builder's own coder goes through the `coder` slot like any other caller.
 
 ```yaml
 # services/gateway/providers.yaml (v0: the planner slot; embed, rerank, stt come with their users)
@@ -621,8 +671,8 @@ embeddings shape; the slot's `dimensions` pins the size memory's index is built 
 (a question and candidates in, a score per candidate out, through a slot with `task: decide`: a TEI
 reranker or any chat model through a forced tool) and `rpc.llm.usage`. Every call publishes
 `trace.llm` with provider, tokens, cost and latency, never the content. The monthly budget is a
-counter in NATS KV; once spent, calls fail fast and Main goes log-only. The builder's `coder` slot
-stays outside this file (see below).
+counter in NATS KV; once spent, calls fail fast and Main goes log-only. The `coder` slot serves the
+builder's own coder; coding agents stay outside this file (see above).
 
 ```
 services/gateway/
@@ -768,7 +818,7 @@ Libraries, and the ones deliberately not used:
   keyword arguments. Each service's environment is one `Settings` model as well (`pydantic-settings`,
   `mycelium_sdk.settings.ServiceSettings`): every field names its env var, defaults and validation
   live on the field, and a bad value fails at start with the variable's name, not at 3 a.m.
-- **Type checking:** `pyright` in the host lint and in the builder's `verify()`. Type errors are the
+- **Type checking:** `pyright` in the host lint and, later, in the builder's checks. Type errors are the
   cheapest class of generated-code bug to catch, and the manifest's payload declarations give it
   something to check against.
 - **No Go or Rust in the host**, even though NATS is Go. A second language doubles the cost of every
@@ -816,7 +866,7 @@ real module exists.
 
 1. Manifest with described events/requests and `storage`, envelope, durable consumers, catalog.
    (SDK + supervisor)
-2. Prove the builder on `specs/expenses.md`, with allowlist and static checks in `verify()`.
+2. Prove the builder on `specs/expenses.md`, with allowlist and static checks before verify.
 3. Model gateway with the Claude API and one local (Ollama or vLLM) provider, shadow mode included.
    Main: snapshot, gate, planner, spec drafting; `out.ask` approvals on the Telegram channel.
    *Done: gateway (both providers, shadow, budget, traces), Main v0 planner with tools, threads in
@@ -826,6 +876,10 @@ real module exists.
    *Done: memory v1 (M1) and nightly consolidation (M3: `rpc.memory.consolidate`, a forced tool call
    on the `consolidate` slot, `trace.consolidate`). Open: per-owner databases and the `data` network.*
 5. Builder as a service, `change` mode with `/data` snapshots and rollback.
+   *Done: the builder service (`rpc.build.*`, queue, records, rounds judged by the supervisor's sealed
+   verify, GROWN_DIR as a git repo) with our coder on the gateway's `coder` slot, and coding agents (OpenCode,
+   Claude Code, Codex, Aider) as coders in containers the supervisor runs. Open: Main drafting and approving
+   specs, `change` mode.*
 6. Bridges and `wrap` mode. Connectors first (Google: Gmail, Calendar, Drive under one consent,
    CLI OAuth flow so the web app is not needed yet), then Home Assistant and Frigate; secrets and
    backend containers.

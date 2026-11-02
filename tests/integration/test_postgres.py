@@ -53,8 +53,8 @@ async def test_registry_upsert_and_status(engine):
         await reg.upsert(m, "building", None)
         await reg.upsert(m, "running", "img:1")
         await reg.set_status(name, "stopped")
-        row = next(r for r in await reg.all() if r["name"] == name)
-        assert row["status"] == "stopped" and row["image"] == "img:1" and row["manifest"]["name"] == name
+        row = next(r for r in await reg.all() if r.name == name)
+        assert row.status == "stopped" and row.image == "img:1" and row.manifest["name"] == name
     finally:
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM modules WHERE name = :n"), {"n": name})

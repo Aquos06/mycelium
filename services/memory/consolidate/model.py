@@ -8,16 +8,25 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Protocol, TypeVar
+from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from mycelium_sdk import Bus, validation_message
+from mycelium_sdk import (
+    Bus,
+    ChatMessage,
+    CompletionReply,
+    CompletionRequest,
+    Prompt,
+    Role,
+    Tool,
+    ToolResult,
+    ToolUse,
+    rpc,
+    validation_message,
+)
 
-from ..schemas import ModelRequest
 from .errors import ConsolidationError
-from .prompts import Prompt
-from .tools import StructuredTool
 
 log = logging.getLogger("mycelium.memory.consolidate")
 
@@ -47,11 +56,11 @@ class ModelCaller:
         self.max_tokens = max_tokens
         self.max_rounds = max_rounds
 
-    async def ask(self, prompt: Prompt, tool: StructuredTool, cause: str | None, report: Billable) -> BaseModel:
-        messages: list[dict[str, Any]] = [{"role": "user", "content": prompt.user}]
+    async def ask(self, prompt: Prompt, tool: Tool, cause: str | None, report: Billable) -> BaseModel:
+        messages = [ChatMessage(role=Role.USER, content=prompt.user)]
         error = ""
         for _round in range(self.max_rounds):
-            request = ModelRequest(
+            request = CompletionRequest(
                 slot=self.slot,
                 system=prompt.system,
                 messages=messages,
@@ -62,41 +71,26 @@ class ModelCaller:
                 timeout=self.timeout,
             )
             try:
-                reply = await self.bus.request("rpc.llm.complete", request, timeout=self.timeout + 5)
-            except Exception as e:
-                raise ConsolidationError(f"gateway unreachable: {type(e).__name__}: {e}") from e
-            if not reply.get("ok"):
-                raise ConsolidationError(str(reply.get("error") or "gateway error"))
+                reply = await rpc.ask(self.bus, "rpc.llm.complete", request, CompletionReply, self.timeout + 5)
+            except rpc.NoAnswer as e:
+                raise ConsolidationError(f"gateway unreachable: {e}") from e
+            except rpc.Refused as e:
+                raise ConsolidationError(str(e)) from e
             report.rounds += 1
-            report.model = reply.get("model")
-            report.cost_usd = round(report.cost_usd + float(reply.get("cost_usd") or 0), 6)
-            calls = [c for c in reply.get("tool_calls") or [] if c.get("name") == tool.name]
+            report.model = reply.model
+            report.cost_usd = round(report.cost_usd + reply.cost_usd, 6)
+            calls = [c for c in reply.tool_calls if c.name == tool.name]
             if not calls:
                 raise ConsolidationError(f"model did not call {tool.name}")
             call = calls[0]
             try:
-                return tool.parse(call.get("input"))
+                return tool.parse(call.input)
             except ValidationError as e:
                 error = validation_message(e, "digest")
                 log.warning("%s rejected (round %d): %s", tool.name, report.rounds, error)
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": [
-                            {"type": "tool_use", "id": call["id"], "name": tool.name, "input": call.get("input") or {}}
-                        ],
-                    }
-                )
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": call["id"],
-                                "content": json.dumps({"ok": False, "error": error}, ensure_ascii=False),
-                            }
-                        ],
-                    }
-                )
+                result = json.dumps({"ok": False, "error": error}, ensure_ascii=False)
+                messages += [
+                    ChatMessage(role=Role.ASSISTANT, content=[ToolUse(id=call.id, name=tool.name, input=call.input)]),
+                    ChatMessage(role=Role.USER, content=[ToolResult(tool_use_id=call.id, content=result)]),
+                ]
         raise ConsolidationError(f"no valid digest after {self.max_rounds} rounds: {error}")

@@ -1,4 +1,5 @@
-"""What the planner sees: the system prompt. The tools it may call live in `tools/`.
+"""What the planner reads: a Prompt (the SDK's), the system part and Hansen's message. The tools it may call
+live in `tools/`.
 
 Planner context = policy + state snapshot + recall pack + the last N turns (docs/MEMORY.md §5).
 v0 has no snapshot and a fixed policy; both are plain text here until Main owns a database.
@@ -8,6 +9,8 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Any
+
+from mycelium_sdk import Prompt
 
 from .schemas import ModuleInfo
 
@@ -31,13 +34,26 @@ def render_modules(modules: list[ModuleInfo]) -> str:
     return "\n".join(lines)
 
 
-def system_prompt(
+def planner_prompt(
+    today: date,
+    tz: str,
+    channel: str,
+    text: str,
+    pack: dict[str, Any] | None,
+    modules: list[ModuleInfo],
+    recall_error: str | None = None,
+) -> Prompt:
+    """One turn: the policy, today, the memory opened for this message and the modules; then the message."""
+    return Prompt(system=_system(today, tz, channel, pack, modules, recall_error), user=text)
+
+
+def _system(
     today: date,
     tz: str,
     channel: str,
     pack: dict[str, Any] | None,
     modules: list[ModuleInfo],
-    recall_error: str | None = None,
+    recall_error: str | None,
 ) -> str:
     return f"""You are Main, Hansen's personal assistant (the project is called mycelium). You are talking with Hansen over {channel}.
 Today is {today.strftime("%A")} {today.isoformat()} ({tz}).

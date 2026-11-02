@@ -27,7 +27,9 @@ def test_purpose_required():
         validate_manifest({"name": "expenses", "purpose": "x"})
 
 
-@pytest.mark.parametrize("sub", [">", "*", "rpc.sys.deploy", "_INBOX.abc", "bad subject"])
+@pytest.mark.parametrize(
+    "sub", [">", "*", "rpc.sys.deploy", "_INBOX.abc", "bad subject", "trace.plan", "stream.llm", "*.chat"]
+)
 def test_forbidden_subscriptions(sub):
     with pytest.raises(ManifestError):
         validate_manifest(m(subscribes=[sub]))
@@ -65,3 +67,9 @@ def test_load_manifest_errors(tmp_path):
     lst.write_text("- a\n- b\n")
     with pytest.raises(ManifestError, match="mapping"):
         load_manifest(lst)
+
+
+@pytest.mark.parametrize("name", ["expenses\n", "expenses\nx"])
+def test_a_name_with_a_newline_is_refused(name):
+    with pytest.raises(ManifestError):
+        validate_manifest({"name": name, "purpose": "Tracks what Hansen spends in chat."})

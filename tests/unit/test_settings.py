@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from builder.settings import BuilderSettings
 from gateway.settings import GatewaySettings
 from main.settings import MainSettings
 from memory.settings import MemorySettings
@@ -94,14 +95,41 @@ def test_supervisor_settings_derive_networks_from_the_stack():
     assert SupervisorSettings.model_validate({"DATABASE_URL": PG}).approved == set()
     with pytest.raises(ValidationError, match="STACK"):
         SupervisorSettings.model_validate({"DATABASE_URL": PG, "STACK": "Prod Stack"})
+
+
+def test_modules_never_get_the_services_nats_login():
+    core = "nats://core:s3cret@nats:4222"
+    s = SupervisorSettings.model_validate({"DATABASE_URL": PG, "NATS_URL": core})
+    assert s.module_nats_url == "nats://module:module@nats:4222"
+    with pytest.raises(ValidationError, match="same login as NATS_URL"):
+        SupervisorSettings.model_validate({"DATABASE_URL": PG, "NATS_URL": core, "MODULE_NATS_URL": core})
+    with pytest.raises(ValidationError, match="same login as NATS_URL"):  # no login at all is the same login
+        SupervisorSettings.model_validate(
+            {"DATABASE_URL": PG, "NATS_URL": "nats://nats:4222", "MODULE_NATS_URL": "nats://nats:4222"}
+        )
     assert s.grown_dir is None and s.module_tz == "UTC" and s.verify_timeout == 300
     grown = SupervisorSettings.model_validate(
         {"DATABASE_URL": PG, "GROWN_DIR": "/workspace/grown", "MODULE_TZ": "Asia/Taipei", "VERIFY_TIMEOUT": "120"}
     )
     assert grown.grown_dir == Path("/workspace/grown") and grown.module_tz == "Asia/Taipei"
     assert grown.verify_timeout == 120
+    assert (s.agents_dir / "agents.yaml").exists() and s.agent_timeout == 3600
     with pytest.raises(ValidationError, match="unknown timezone"):
         SupervisorSettings.model_validate({"DATABASE_URL": PG, "MODULE_TZ": "Mars/Olympus"})
+
+
+def test_builder_settings():
+    s = BuilderSettings.model_validate({})
+    assert s.grown_dir == Path("/workspace/grown") and s.coder == "mycelium" and s.coder_slot == "coder"
+    assert s.max_rounds == 6 and s.verify_timeout == 900 and s.coder_max_calls == 40
+    custom = BuilderSettings.model_validate(
+        {"BUILDER_CODER": "opencode", "BUILD_MAX_ROUNDS": "3", "CODER_MAX_USD": "0"}
+    )
+    assert custom.coder == "opencode" and custom.max_rounds == 3 and custom.coder_max_usd == 0
+    assert s.agent_names == ["opencode", "claude_code", "codex", "aider"] and s.agent_timeout == 1800
+    assert BuilderSettings.model_validate({"BUILDER_AGENTS": " aider, ,codex "}).agent_names == ["aider", "codex"]
+    with pytest.raises(ValidationError, match="BUILD_MAX_ROUNDS"):
+        BuilderSettings.model_validate({"BUILD_MAX_ROUNDS": "0"})
 
 
 def test_memory_today_is_the_local_date_not_the_containers_utc_clock():

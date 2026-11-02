@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from .decide import Decider
 from .embedder import Embedder
 from .index import FUZZY_THRESHOLD, Index
-from .schemas import DecideUsed, Match, NoteRecord, RecallBudget, RecallItem, RecallPack, RecallUsed
+from .schemas import DecideUsed, Match, MatchVia, NoteRecord, RecallBudget, RecallItem, RecallPack, RecallUsed
 from .vault import Vault, month_key, period_days, week_key
 
 WEEKDAYS = {
@@ -149,7 +149,7 @@ async def find_names(query: str, index: Index) -> list[tuple[str, str, str]]:
     for term, name in await index.vocabulary():
         pos = _term_positions(term, q)
         if pos >= 0:
-            hits.append((pos, -len(term), term, name, "exact" if term == name else "alias"))
+            hits.append((pos, -len(term), term, name, MatchVia.EXACT if term == name else MatchVia.ALIAS))
     hits.sort()
 
     found: list[tuple[str, str, str]] = []
@@ -176,10 +176,10 @@ async def find_names(query: str, index: Index) -> list[tuple[str, str, str]]:
 async def lookup(index: Index, name: str) -> list[Match]:
     """The lookup ladder for one name: exact -> alias -> fuzzy. Stops at the first rung that matches."""
     if r := await index.get(name):
-        return [Match(record=r, via="exact", score=1.0)]
+        return [Match(record=r, via=MatchVia.EXACT, score=1.0)]
     if rs := await index.by_alias(name):
-        return [Match(record=r, via="alias", score=1.0) for r in rs]
-    return [Match(record=r, via="fuzzy", score=round(score, 3)) for r, score in await index.fuzzy(name, limit=3)]
+        return [Match(record=r, via=MatchVia.ALIAS, score=1.0) for r in rs]
+    return [Match(record=r, via=MatchVia.FUZZY, score=round(score, 3)) for r, score in await index.fuzzy(name, limit=3)]
 
 
 def _clip(text: str) -> str:
@@ -263,9 +263,9 @@ async def recall(
         if record is None:
             continue
         why = {
-            "exact": f"{name} named in the query",
-            "alias": f"{term} is an alias of {name}",
-            "fuzzy": f"{term} looks like {name}",
+            MatchVia.EXACT: f"{name} named in the query",
+            MatchVia.ALIAS: f"{term} is an alias of {name}",
+            MatchVia.FUZZY: f"{term} looks like {name}",
         }[via]
         await add_note(record, why)
         await hop(record.path, record.links)

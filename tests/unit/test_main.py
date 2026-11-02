@@ -8,7 +8,7 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from main.prompt import render_pack, system_prompt
+from main.prompt import planner_prompt, render_pack
 from main.schemas import ModuleInfo, PlanTrace
 from main.service import MODEL_DOWN_REPLY, MainService
 from main.thread import ThreadStore
@@ -139,14 +139,17 @@ async def world():
 # ---- prompt ------------------------------------------------------------------------------------
 
 
-def test_system_prompt_has_date_pack_and_modules():
-    s = system_prompt(
+def test_planner_prompt_has_date_pack_and_modules_and_the_message():
+    prompt = planner_prompt(
         TODAY,
         "Asia/Taipei",
         "telegram",
+        "what did 小美 recommend?",
         PACK,
         [ModuleInfo(name="expenses", purpose="Tracks spending.", requests=["expenses.summary"])],
     )
+    s = prompt.system
+    assert prompt.user == "what did 小美 recommend?"
     assert "Friday 2026-10-23 (Asia/Taipei)" in s and "over telegram" in s
     assert "- people/mei.md (小美 is an alias of mei): 2026-09-02 recommended" in s
     assert "- expenses: Tracks spending. Requests: expenses.summary" in s
@@ -188,7 +191,7 @@ async def test_registry_never_raises_and_dumps_as_the_trace_entry():
     assert not down.ok and down.result["error"].startswith("TimeoutError") and down.args is not None
     assert down.model_dump() == {"name": "recall", "input": {"query": "mei"}, "result": down.result}
     block = down.tool_result("t1", limit=20)
-    assert block["type"] == "tool_result" and block["tool_use_id"] == "t1" and len(block["content"]) == 20
+    assert block.type == "tool_result" and block.tool_use_id == "t1" and len(block.content) == 20
 
 
 # ---- one message, end to end -----------------------------------------------------------------------

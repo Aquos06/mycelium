@@ -16,7 +16,6 @@ from .consolidate import (
     ConsolidationReport,
     DayDigest,
     DigestFact,
-    ModelRequest,
     PeriodDigest,
     RollupReport,
     RollupTrace,
@@ -27,7 +26,7 @@ from .embed import EmbedCall, EmbedSweepReport, EmbedTarget, EmbedTrace, Neighbo
 from .events import Event
 from .index import FactRecord, IndexStats, NoteRecord, SummaryRecord
 from .periods import Period, month_key, parse_period_key, period_days, period_path, periods_closed_by, week_key
-from .recall import Match, RecallBudget, RecallItem, RecallPack, RecallUsed
+from .recall import Match, MatchVia, RecallBudget, RecallItem, RecallPack, RecallUsed
 from .rpc import (
     ConsolidateRequest,
     FactIn,
@@ -80,6 +79,7 @@ __all__ = [
     "RememberReply",
     "RememberRequest",
     "Match",
+    "MatchVia",
     "RecallBudget",
     "RecallItem",
     "RecallPack",
@@ -88,7 +88,6 @@ __all__ = [
     "ConsolidationReport",
     "DayDigest",
     "DigestFact",
-    "ModelRequest",
     "PeriodDigest",
     "RollupReport",
     "RollupTrace",

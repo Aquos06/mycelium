@@ -7,7 +7,6 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import get_args
 
 import httpx
 import pytest
@@ -90,7 +89,7 @@ def test_config_rejects_bad_slots(slot, msg):
 
 
 def test_every_kind_has_defaults_and_they_fill_the_config():
-    assert set(get_args(ProviderKind)) == set(KINDS)
+    assert set(ProviderKind) == set(KINDS)
     ollama = ProviderConfig(kind="ollama", model="qwen2.5:14b")
     assert ollama.endpoint == "http://ollama:11434/v1" and ollama.key_env is None and ollama.protocol == "openai"
     assert ollama.key_state({}) == "not-needed" and ollama.info.local
@@ -749,10 +748,8 @@ async def test_tool_decide_provider_scores_through_the_forced_tool_and_retries_u
     p = ToolDecideProvider("vllm", inner, "/model")
     r = await p.decide(DecideRequest(query="the friend who is moving south", candidates=CANDIDATES, cause="m1", hops=1))
     req = inner.requests[0]
-    assert (
-        req.tool_choice == "score_candidates" and req.tools[0]["name"] == "score_candidates" and req.temperature == 0.0
-    )
-    assert "- id: people/mei.md\n  mei (小美)" in req.messages[0]["content"] and req.cause == "m1" and req.hops == 1
+    assert req.tool_choice == "score_candidates" and req.tools[0].name == "score_candidates" and req.temperature == 0.0
+    assert "- id: people/mei.md\n  mei (小美)" in req.messages[0].content and req.cause == "m1" and req.hops == 1
     assert [(s.id, s.score) for s in r.ranked()] == [
         ("people/mei.md", 0.95),
         ("places/ramen-place-xinyi.md", 0.1),

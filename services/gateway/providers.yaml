@@ -7,8 +7,8 @@
 #
 # ${VAR:-default} is filled from the gateway's environment (.env via compose), so this file stays the same
 # on every box: PLANNER_PROVIDER / CONSOLIDATE_PROVIDER pick the active provider, VLLM_ENDPOINT / VLLM_MODEL
-# point at a vLLM that is not the compose one; EMBED_PROVIDER / TEI_ENDPOINT do the same for embeddings and
-# DECIDE_PROVIDER / TEI_RERANK_ENDPOINT for the decide step.
+# point at a vLLM that is not the compose one; EMBED_PROVIDER / TEI_ENDPOINT do the same for embeddings,
+# DECIDE_PROVIDER / TEI_RERANK_ENDPOINT for the decide step and CODER_PROVIDER for the builder's coder.
 
 budget_usd_month: 30
 
@@ -51,6 +51,30 @@ consolidate:                # memory's nightly job: one structured call per day,
     endpoint: ${VLLM_ENDPOINT:-http://vllm:8000/v1}
     model: ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}
     max_tokens: 8192
+
+coder:                      # the builder's own coder (BUILDER_CODER=mycelium): a module file by file, through forced
+  active: ${CODER_PROVIDER:-vllm}   # tools. Local by default. A prompt is about 12k tokens and a reply up to 12k,
+  vllm:                     # so vLLM needs --max-model-len 32768 (VLLM_MAX_MODEL_LEN) or more
+    kind: vllm
+    endpoint: ${VLLM_ENDPOINT:-http://vllm:8000/v1}
+    model: ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct}
+    max_tokens: 12288       # a reasoning model thinks before it writes the file
+  ollama:
+    kind: ollama            # OLLAMA_CONTEXT_LENGTH=32768 for the same reason
+    model: qwen2.5-coder:14b
+    max_tokens: 12288
+  claude:
+    kind: claude
+    model: claude-sonnet-5-5
+    max_tokens: 12288
+    price_in_per_m: 3.0
+    price_out_per_m: 15.0
+  openai:
+    kind: openai
+    model: gpt-5-mini
+    max_tokens: 12288
+    price_in_per_m: 0.25
+    price_out_per_m: 2.0
 
 embed:                      # memory's vectors (rpc.llm.embed): one size for the whole index, 1024
   task: embed
