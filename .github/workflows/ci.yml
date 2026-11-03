@@ -155,7 +155,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      NATS_URL: nats://localhost:4222
+      # the bus refuses a client without a login (services/nats/nats.conf), and the SDK retries a refused
+      # connect forever: a URL without core:<password> hangs the job until timeout-minutes, it never fails
+      NATS_URL: nats://core:e2e-core@localhost:4222
       DATABASE_URL: postgresql://mycelium:mycelium@localhost:5432/mycelium
       STACK: mycelium-e2e
     steps:
@@ -164,6 +166,7 @@ jobs:
         run: |
           cp .env.example .env
           sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=mycelium/' .env
+          sed -i 's/^NATS_CORE_PASSWORD=.*/NATS_CORE_PASSWORD=e2e-core/' .env
           sed -i 's/^STACK=.*/STACK=mycelium-e2e/' .env
       - name: start the stack
         run: docker compose up -d --build --wait --wait-timeout 300

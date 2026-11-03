@@ -2,7 +2,7 @@
 supervisor builds + starts the hello container, events flow, tracer records them.
 
     docker compose up -d --build
-    NATS_URL=nats://localhost:4222 DATABASE_URL=postgresql://mycelium:mycelium@localhost:5432/mycelium \
+    NATS_URL=nats://core:$NATS_CORE_PASSWORD@localhost:4222 DATABASE_URL=postgresql://mycelium:mycelium@localhost:5432/mycelium \
       pytest -m e2e tests/e2e
 """
 
