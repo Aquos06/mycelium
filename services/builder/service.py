@@ -4,6 +4,7 @@
     rpc.build.get     BuildRef           -> BuildRecord
     rpc.build.list    BuildListRequest   -> BuildList (newest first)
     rpc.build.coders  {}                 -> CoderList
+    rpc.build.default CoderChoice        -> CoderList
 The handler adds ok=true; errors are {"ok": false, "error"}.
 Events:
     build.started / build.progress (one per round) / build.done / build.failed
@@ -40,8 +41,10 @@ from .schemas import (
     BuildStarted,
     BuildStatus,
     BuildSummary,
+    CoderChoice,
     CoderInfo,
     CoderList,
+    CoderSetting,
     ModulesReply,
     Round,
     Stage,
@@ -52,6 +55,7 @@ from .workspace import Workspace
 log = logging.getLogger("mycelium.builder")
 
 PREFIX = "builds"
+CODER_KEY = kv_key("settings", "coder")  # the chosen default; BUILDER_CODER until there is one
 KEEP = 200  # records kept in KV; older finished ones go on start
 
 
@@ -74,6 +78,7 @@ class BuilderService:
         self.pipeline = pipeline
         self.workspace = workspace
         self.coders = coders
+        self.seed = default_coder  # BUILDER_CODER
         self.default_coder = default_coder
         self.max_queue = max_queue
         self.build_timeout = build_timeout
@@ -84,7 +89,14 @@ class BuilderService:
 
     async def start(self) -> None:
         await self.recover()  # before the first request: a build started now must not be recovered twice
-        handlers = {"start": self.start_build, "get": self.get, "list": self.list, "coders": self.list_coders}
+        await self._load_choice()
+        handlers = {
+            "start": self.start_build,
+            "get": self.get,
+            "list": self.list,
+            "coders": self.list_coders,
+            "default": self.choose_coder,
+        }
         for action, fn in handlers.items():
             await self.bus.subscribe(f"rpc.build.{action}", self._wrap(fn), queue="builder")
         self._worker = asyncio.create_task(self._work())
@@ -168,9 +180,40 @@ class BuilderService:
         return BuildList(builds=[s for r in records if r and (s := _summary(r))])
 
     async def list_coders(self, _data: dict[str, Any]) -> CoderList:
-        reasons = await asyncio.gather(*(coder.ready() for coder in self.coders.values()))
-        coders = [CoderInfo(name=n, ready=r is None, reason=r) for n, r in zip(self.coders, reasons, strict=True)]
-        return CoderList(default=self.default_coder, coders=coders)
+        coders = await asyncio.gather(*(self._info(name, coder) for name, coder in self.coders.items()))
+        return CoderList(default=self.default_coder, seed=self.seed, coders=list(coders))
+
+    async def choose_coder(self, data: dict[str, Any]) -> CoderList:
+        req = CoderChoice.model_validate(data)
+        if req.coder not in self.coders:
+            raise ValueError(f"no coder {req.coder!r}; one of {', '.join(self.coders)}")
+        await self.kv.put(CODER_KEY, CoderSetting(coder=req.coder).model_dump())
+        if req.coder != self.default_coder:
+            log.info("default coder: %s (was %s)", req.coder, self.default_coder)
+        self.default_coder = req.coder
+        return await self.list_coders({})
+
+    @staticmethod
+    async def _info(name: str, coder: Coder) -> CoderInfo:
+        reason, description = await asyncio.gather(coder.ready(), coder.describe())
+        return CoderInfo(name=name, description=description, ready=reason is None, reason=reason)
+
+    async def _load_choice(self) -> None:
+        """The default chosen before a restart, unless that coder is no longer configured (BUILDER_AGENTS)."""
+        raw = await self.kv.get(CODER_KEY)
+        if not raw:
+            return
+        try:
+            choice = CoderSetting.model_validate(raw)
+        except ValidationError as e:
+            log.warning("the chosen coder is unreadable, keeping BUILDER_CODER: %s", validation_message(e))
+            return
+        if choice.coder in self.coders:
+            self.default_coder = choice.coder
+        else:
+            log.warning(
+                "the chosen coder %r is not configured any more, keeping BUILDER_CODER=%s", choice.coder, self.seed
+            )
 
     async def _known_modules(self) -> set[str]:
         """Every module name in use: deployed (the registry) or with a folder in either root, hand-written ones

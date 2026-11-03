@@ -11,3 +11,4 @@ export * from "./chat";
 export * from "./rpc";
 export * from "./modules";
 export * from "./gateway";
+export * from "./builder";

@@ -6,6 +6,7 @@ import type { SettingsTab } from "@/lib/nav";
 export const TABS: { id: SettingsTab; label: string; svc: string }[] = [
   { id: "models", label: "Models", svc: "gateway" },
   { id: "keys", label: "API keys", svc: ".env secrets" },
+  { id: "builder", label: "Builder", svc: "builder" },
   { id: "memory", label: "Memory", svc: "memory" },
   { id: "assistant", label: "Assistant", svc: "main" },
   { id: "system", label: "System", svc: "all services" },
@@ -32,6 +33,7 @@ export const SLOT_WORDS: Record<string, [string, string]> = {
   consolidate: ["Consolidation", "Memory's nightly job: one structured call per day, so a cheap model."],
   embed: ["Embeddings", "Turns notes and summaries into vectors for memory's fuzzy recall."],
   decide: ["Rerank", "Scores recall candidates in the decide step."],
+  coder: ["Coder", "The builder's own coder writes modules through this slot, when it is the one chosen in Settings → Builder."],
 };
 
 export interface EnvRow {
@@ -43,6 +45,19 @@ export interface EnvRow {
 }
 
 export const ENV: Partial<Record<SettingsTab, { title: string; desc: string; rows: EnvRow[] }>> = {
+  builder: {
+    title: "Set at start",
+    desc: "The rest of the builder and its agents, read by services/builder and the supervisor when they start.",
+    rows: [
+      { label: "First default", desc: "The coder until one is chosen above.", env: "BUILDER_CODER" },
+      { label: "Coding agents", desc: "Which agents the builder offers.", env: "BUILDER_AGENTS" },
+      { label: "Our coder's model", desc: "The provider of the gateway's coder slot (Models).", env: "CODER_PROVIDER" },
+      { label: "Agents' model", desc: "An OpenAI-compatible address the agents' containers reach: the GPU box by IP, not a compose name.", env: "AGENT_ENDPOINT" },
+      { label: "Agents' model name", desc: "The model the agents ask for there.", env: "AGENT_MODEL" },
+      { label: "Rounds", desc: "Coder, checks and the sealed tests, at most this many times.", env: "BUILD_MAX_ROUNDS", unit: "rounds" },
+      { label: "Whole build", desc: "A build that takes longer fails where it was.", env: "BUILD_TIMEOUT", unit: "sec" },
+    ],
+  },
   memory: {
     title: "Memory",
     desc: "Where memory keeps its vault and when it consolidates the day into notes. Read by services/memory at start.",

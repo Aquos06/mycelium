@@ -203,7 +203,12 @@ async def test_get_and_list_read_their_requests(tmp_path):
     assert unknown == {"ok": False, "error": "no build 'nope'"}
     assert bad_limit["ok"] is False and bad_limit["error"].startswith("limit: ")
     assert empty == {"ok": True, "builds": []}  # a limit past 100 is kept to 100, not refused
-    assert coders == {"ok": True, "default": "fake", "coders": [{"name": "fake", "ready": True, "reason": None}]}
+    assert coders == {
+        "ok": True,
+        "default": "fake",
+        "seed": "fake",
+        "coders": [{"name": "fake", "description": "writes what the test tells it", "ready": True, "reason": None}],
+    }
 
 
 @pytest.mark.parametrize(
@@ -251,7 +256,12 @@ async def test_start_refuses_when_the_coder_cannot_work_or_the_supervisor_is_dow
     assert "the fake coder cannot build now: the gateway is not answering" in reply["error"]
     coders = await bus.request("rpc.build.coders", {})
     assert coders["default"] == "fake" and coders["coders"] == [
-        {"name": "fake", "ready": False, "reason": "the gateway is not answering"}
+        {
+            "name": "fake",
+            "description": "writes what the test tells it",
+            "ready": False,
+            "reason": "the gateway is not answering",
+        }
     ]
     await svc.stop()
 
@@ -440,3 +450,48 @@ async def test_growing_a_name_again_moves_its_tag_and_a_failed_tag_keeps_the_com
     (tmp_path / "notes" / "a.txt").write_text("three")
     third = await repo.commit("notes", "0.1.0", "notes once more")
     assert third == git(tmp_path, "rev-parse", "--short=12", "HEAD").strip()  # committed, though untagged
+
+
+async def two_coders(tmp_path, kv=None):
+    bus, kv = InMemoryBus(), kv or InMemoryKV()
+    grown = tmp_path / "grown"
+    sup = FakeSupervisor(bus, grown)
+    await sup.start()
+    coders = {"fake": FakeCoder([GOOD]), "other": FakeCoder([GOOD], reason="its model is down")}
+    svc = BuilderService(bus, kv, make_pipeline(bus, grown), Workspace(grown, TEMPLATE), coders, "fake")
+    await svc.start()
+    return svc, bus, kv
+
+
+async def test_the_default_coder_is_chosen_and_kept_across_a_restart(tmp_path):
+    svc, bus, kv = await two_coders(tmp_path)
+    chosen = await bus.request("rpc.build.default", {"coder": "other"})
+    await svc.stop()
+    assert chosen["ok"] and chosen["default"] == "other" and chosen["seed"] == "fake"
+    assert [(c["name"], c["ready"], c["reason"]) for c in chosen["coders"]] == [
+        ("fake", True, None),
+        ("other", False, "its model is down"),  # chosen all the same: the build is what waits for its model
+    ]
+
+    again, bus, _ = await two_coders(tmp_path, kv)  # a restart: the same KV, BUILDER_CODER still "fake"
+    listed = await bus.request("rpc.build.coders", {})
+    await again.stop()
+    assert listed["default"] == "other" and listed["seed"] == "fake"
+
+
+async def test_choosing_a_coder_that_does_not_exist_is_refused(tmp_path):
+    svc, bus, _ = await two_coders(tmp_path)
+    unknown = await bus.request("rpc.build.default", {"coder": "goose"})
+    empty = await bus.request("rpc.build.default", {})
+    await svc.stop()
+    assert unknown == {"ok": False, "error": "no coder 'goose'; one of fake, other"}
+    assert empty["ok"] is False and empty["error"].startswith("coder: ")
+
+
+async def test_a_chosen_coder_no_longer_configured_falls_back_to_builder_coder(tmp_path):
+    kv = InMemoryKV()
+    await kv.put(kv_key("settings", "coder"), {"coder": "aider", "chosen": "2026-11-01T00:00:00+00:00"})
+    svc, bus, _ = await two_coders(tmp_path, kv)
+    listed = await bus.request("rpc.build.coders", {})
+    await svc.stop()
+    assert listed["default"] == "fake"

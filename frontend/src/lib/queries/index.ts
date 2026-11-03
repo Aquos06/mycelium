@@ -4,4 +4,5 @@ export * from "./keys";
 export * from "./system";
 export * from "./modules";
 export * from "./gateway";
+export * from "./builder";
 export * from "./chat";

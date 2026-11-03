@@ -12,6 +12,7 @@
 import { ApiError, getToken, mockLockedRequested, unauthorized } from "@/lib/api/client";
 import type {
   BusEvent,
+  CoderList,
   ConfigReply,
   EventsPage,
   Health,
@@ -311,6 +312,25 @@ export function mockUsage(): UsageReply {
   return { ok: true, month: "2026-10", usd: 4.37, calls: 212, input_tokens: 812_400, output_tokens: 96_300, budget_usd_month: 20 };
 }
 
+// The builder's coders as a local stack without a GPU box would list them; the default is chosen here.
+const MOCK_CODERS = [
+  { name: "mycelium", description: "Ours: writes the module file by file through the gateway's coder slot, on whichever model it has", ready: true, reason: null },
+  { name: "opencode", description: "OpenCode on your own model (AGENT_ENDPOINT, AGENT_MODEL)", ready: true, reason: null },
+  { name: "codex", description: "OpenAI's Codex CLI on your own model (AGENT_ENDPOINT, AGENT_MODEL)", ready: true, reason: null },
+  { name: "aider", description: "Aider on your own model (AGENT_ENDPOINT, AGENT_MODEL)", ready: true, reason: null },
+  {
+    name: "claude_code",
+    description: "Claude Code on Anthropic's API (ANTHROPIC_API_KEY; CLAUDE_CODE_MODEL picks the model)",
+    ready: false,
+    reason: "set ANTHROPIC_API_KEY for the supervisor",
+  },
+];
+let mockDefaultCoder = "mycelium";
+
+export function mockCoders(): CoderList {
+  return { ok: true, default: mockDefaultCoder, seed: "mycelium", coders: MOCK_CODERS };
+}
+
 /** Any rpc subject, answered the way its service would. */
 export function mockRpc(subject: string, payload: Json): Reply {
   switch (true) {
@@ -329,6 +349,14 @@ export function mockRpc(subject: string, payload: Json): Reply {
       return mockConfig();
     case subject === "rpc.llm.usage":
       return mockUsage();
+    case subject === "rpc.build.coders":
+      return mockCoders();
+    case subject === "rpc.build.default": {
+      const coder = String(payload.coder ?? "");
+      if (!MOCK_CODERS.some((c) => c.name === coder)) return { ok: false, error: `no coder '${coder}'; one of ${MOCK_CODERS.map((c) => c.name).join(", ")}` };
+      mockDefaultCoder = coder;
+      return mockCoders();
+    }
     case subject === "rpc.memory.lookup":
       return { ok: true, name: String(payload.name), notes: [] };
     case subject.startsWith("rpc.mod."): {

@@ -1,13 +1,15 @@
 "use client";
 
-// Settings: the model slots and their providers as the gateway loaded them, the keys' states, and the
-// environment every service reads. Read-only for now: the seed is providers.yaml and .env.
+// Settings: the model slots and their providers as the gateway loaded them, the keys' states, the builder's
+// coders, and the environment every service reads. The default coder is the one thing chosen here; the rest
+// is read-only, seeded by providers.yaml and .env.
 
 import Link from "next/link";
 import { ROUTES, type SettingsTab } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { Card, Mono, Note } from "@/components/ui/Primitives";
 import { Title, Topbar } from "@/components/ui/Topbar";
+import { Builder } from "./Builder";
 import { ENV, TABS, type EnvRow } from "./env";
 import { Keys } from "./Keys";
 import { Models } from "./Models";
@@ -19,7 +21,7 @@ export function Settings({ tab }: { tab: SettingsTab }) {
     <>
       <Topbar>
         <Title>Settings</Title>
-        <Mono className="pl-1 text-[11.5px] text-ink3">rpc.llm.config · rpc.llm.usage</Mono>
+        <Mono className="pl-1 text-[11.5px] text-ink3">{tab === "builder" ? "rpc.build.coders · rpc.build.default" : "rpc.llm.config · rpc.llm.usage"}</Mono>
       </Topbar>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <nav
@@ -42,6 +44,7 @@ export function Settings({ tab }: { tab: SettingsTab }) {
           <div className="flex max-w-[820px] flex-col gap-8 px-4 pt-5 pb-16 md:px-8 md:pt-8 md:pb-20">
             {tab === "models" && <Models />}
             {tab === "keys" && <Keys />}
+            {tab === "builder" && <Builder />}
             {env && (
               <>
                 <Heading title={env.title} lead={env.desc} />

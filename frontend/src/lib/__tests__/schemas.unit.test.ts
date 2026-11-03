@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   busEventSchema,
+  coderListSchema,
   configReplySchema,
   eventsPageSchema,
   frameSchema,
@@ -53,5 +54,16 @@ describe("the schemas mirror the gateway's pydantic models", () => {
     expect(t.tools).toEqual([]);
     expect(t.error).toBeNull();
     expect(t.rounds).toBe(0);
+  });
+
+  it("the builder's coder list: the default, BUILDER_CODER, and each coder's state", () => {
+    const list = coderListSchema.parse({
+      ok: true,
+      default: "opencode",
+      seed: "mycelium",
+      coders: [{ name: "claude_code", ready: false, reason: "set ANTHROPIC_API_KEY for the supervisor" }],
+    });
+    expect(list.coders[0].description).toBe(""); // a builder from before descriptions
+    expect(coderListSchema.safeParse({ ok: true, coders: [{ name: "x" }] }).success).toBe(false); // ready is required
   });
 });

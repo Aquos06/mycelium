@@ -109,6 +109,9 @@ class MyceliumCoder:
             return f"the {self.slot!r} slot's provider {slot.active!r} has no key"
         return None
 
+    async def describe(self) -> str:
+        return f"Ours: writes the module file by file through the gateway's {self.slot} slot, on whichever model it has"
+
     async def write(self, ctx: CoderContext) -> CoderResult:
         if self._spend.build_id != ctx.build_id:
             self._spend = Spend(build_id=ctx.build_id)

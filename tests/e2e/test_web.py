@@ -2,7 +2,7 @@
 serves the app, and a message typed in the app reaches Main and comes back as out.say on channel web.
 
     docker compose up -d --build
-    NATS_URL=nats://localhost:4222 WEB_URL=http://localhost:8080 FRONTEND_URL=http://localhost:3000 \\
+    NATS_URL=nats://core:$NATS_CORE_PASSWORD@localhost:4222 WEB_URL=http://localhost:8080 FRONTEND_URL=http://localhost:3000 \\
         pytest -m e2e tests/e2e/test_web.py
 """
 

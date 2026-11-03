@@ -28,6 +28,16 @@ test.describe("settings", () => {
     await expect(main.getByText("open", { exact: true })).toBeVisible();
   });
 
+  test("builder: choose the coder a build gets", async ({ page }) => {
+    await page.goto("/settings/builder");
+    const coders = page.getByRole("region", { name: "Coders" });
+    await expect(coders.locator("[data-coder=mycelium]")).toContainText("default");
+    await expect(coders.locator("[data-coder=claude_code]")).toContainText("set ANTHROPIC_API_KEY for the supervisor");
+    await coders.getByRole("button", { name: "Use aider" }).click();
+    await expect(coders.locator("[data-coder=aider]")).toContainText("default");
+    await expect(coders.locator("[data-coder=mycelium]").getByRole("button", { name: "Use mycelium" })).toBeVisible();
+  });
+
   test("an unknown tab is a 404", async ({ page }) => {
     const r = await page.goto("/settings/nope");
     expect(r?.status()).toBe(404);
