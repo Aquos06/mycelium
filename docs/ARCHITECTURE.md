@@ -387,12 +387,33 @@ undeclared events today.
 The judgment. Everything that decides, nothing that stores.
 
 **v0** (`services/main/`): `sense.chat` → recall pack from memory + the thread from NATS KV → planner
-through the gateway with four tools (`remember`, `recall`, `ask_module`, `ask`) → `out.say`, or
-`out.ask` when the planner needs Hansen's choice → one `trace.plan` with the pack, the tool calls,
-usage and cost, linked by `cause`. `sense.feedback` answers continue the thread; votes are traced.
-When the gateway fails or the budget is spent, Main still replies that it cannot reach its model and
-keeps the turn. Not yet: the gate, the state snapshot, the policy database, spec drafting;
-`brain.observe` is only logged.
+through the gateway with five tools (`remember`, `recall`, `ask_module`, `ask`, `propose_module`) →
+`out.say`, or `out.ask` when the planner needs Hansen's choice → one `trace.plan` with the pack, the
+tool calls, usage and cost, linked by `cause`. `sense.feedback` answers continue the thread; votes are
+traced. When the gateway fails or the budget is spent, Main still replies that it cannot reach its model
+and keeps the turn. The module list in the prompt says what each module listens to, so the planner knows
+a module on `sense.chat` already hears "dinner 350". Not yet: the gate, the state snapshot, the policy
+database; `brain.observe` is only logged.
+
+**Growing a module.** When Hansen wants something ongoing that no module does ("track my expenses"),
+the planner calls `propose_module` with the parts of a spec (name, purpose, need, behaviour, answers,
+example); code renders `SPEC.md` in the format of `specs/expenses.md` and checks the name against the
+SDK's rules, `rpc.sys.list` and the running builds. A valid proposal ends the turn like `ask`: Main
+stores it in its KV (`proposals.py`, keyed by the card's id) and only then sends the card, Build it /
+Not now. The tap is handled in code, never by the model: under the thread's lock Main re-reads the
+proposal (a second tap or an old card finds it decided), calls `rpc.build.start` with the channel and
+thread, and says what happened. A start that gets no answer in time is not taken as "nothing started":
+Main looks for a build of that name from that thread in `rpc.build.list` and follows it if it is there,
+and a `build.done/failed` that arrives for it later is still matched by name and thread. A builder that is
+down or refuses (busy, name taken, coder not ready) is said as it is, on a fresh card for the same
+proposal, since the apps take the buttons off a card once it is answered. `build.done` and
+`build.failed` carry the channel and thread back; Main tells that thread, once. On start it asks
+`rpc.build.get` about proposals still building, for builds that ended while it was down, and tries again
+every 30 s until the builder answers (compose starts them together). The `rpc.build.start / get` contract
+is the SDK's (`mycelium_sdk.build`), shared by Main and the builder.
+
+    proposed -> building -> done | failed
+             -> declined
 
 Tools (`services/main/tools/`) are pydantic: one argument model and one async handler per tool,
 held in a `ToolRegistry`. The `input_schema` the planner sees is generated from the argument model,
@@ -412,7 +433,7 @@ gets its 20 cases there before it ships, so a regression on the old ones shows.
 |---|---|
 | Listens | `sense.*`, `brain.observe`, `sys.*`, `build.*`, `sense.feedback` from channels |
 | Publishes | `out.notify`, `out.say`, `trace.gate / plan / notify` |
-| Calls | `rpc.mod.*` (ask a module), `rpc.memory.*` (recall, remember), `rpc.sys.catalog`, `rpc.build.start` |
+| Calls | `rpc.mod.*` (ask a module), `rpc.memory.*` (recall, remember), `rpc.sys.list`, `rpc.build.start / get / list` |
 | Owns | `<stack>_main` (§12): policy and trust levels. The snapshot is a projection it can rebuild from `events`, cached in NATS KV |
 
 Inside Main:

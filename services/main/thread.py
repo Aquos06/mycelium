@@ -29,8 +29,18 @@ class Thread(BaseModel):
         return kv_key("thread", self.channel, self.thread)
 
     def messages(self) -> list[ChatMessage]:
-        """The turns as the planner's earlier messages."""
-        return [ChatMessage(role=t.role, content=t.text) for t in self.turns]
+        """The turns as the planner's earlier messages: from a user turn on, roles alternating. A build's result is
+        an assistant turn of its own, and chat templates (and Anthropic's API) refuse two in a row, so turns of the
+        same role in a row become one message; a thread trimmed to an assistant turn starts at the next user one."""
+        out: list[ChatMessage] = []
+        for t in self.turns:
+            if not out and t.role != Role.USER:
+                continue
+            if out and out[-1].role == t.role:
+                out[-1] = ChatMessage(role=t.role, content=f"{out[-1].content}\n\n{t.text}")
+            else:
+                out.append(ChatMessage(role=t.role, content=t.text))
+        return out
 
 
 class ThreadStore:
