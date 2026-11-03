@@ -1,5 +1,5 @@
 """What the planner reads: a Prompt (the SDK's), the system part and Hansen's message. The tools it may call
-live in `tools/`.
+live in `tools/`. Changing the policy below is what scripts/bench_tools.py is for: run it before and after.
 
 Planner context = policy + state snapshot + recall pack + the last N turns (docs/MEMORY.md §5).
 v0 has no snapshot and a fixed policy; both are plain text here until Main owns a database.
