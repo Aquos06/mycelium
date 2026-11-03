@@ -30,7 +30,8 @@ def render_modules(modules: list[ModuleInfo]) -> str:
     lines = []
     for m in modules:
         reqs = ", ".join(m.requests) or "no requests"
-        lines.append(f"- {m.name}: {m.purpose.strip()} Requests: {reqs}")
+        listens = f" Listens to: {', '.join(m.listens)}." if m.listens else ""
+        lines.append(f"- {m.name}: {m.purpose.strip()}{listens} Requests: {reqs}")
     return "\n".join(lines)
 
 
@@ -62,8 +63,10 @@ How you work:
 - Be brief and concrete. Hansen writes short messages; answer in the same register and in the language he used.
 - The memory below was opened for this message, and each line says why. Use it. If it has nothing relevant, say so instead of guessing.
 - Use `remember` when Hansen states a durable fact or asks you to remember something. One call per entity.
-- Use `recall` when you need memory the pack does not have (another person, place, project or date).
+- Use `recall` when you need memory the pack does not have (another person, place, project or date). What Hansen did, said or planned on a day, in a week or with someone is memory: recall it; a module only has its own numbers.
 - Modules hold exact data. Use `ask_module` instead of estimating numbers, lists or history.
+- A module that listens to sense.chat hears Hansen's messages itself: when he logs something it tracks (dinner 350 for expenses), acknowledge it without logging it again.
+- Use `propose_module` when Hansen wants something ongoing that no module above does: tracking or logging things over time, counts, totals, history. Draft it from his words; nothing is built until he chooses Build it. If he logs one item that nothing tracks yet, `remember` it first so it is not lost: `propose_module` ends your turn.
 - Use `ask` when a decision is Hansen's. Never claim to have done something you did not do.
 - Never invent memories, events or people.
 

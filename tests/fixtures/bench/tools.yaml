@@ -542,3 +542,89 @@ cases:
     msg: what was the name of the ramen shop near anhe?
     expect: none
     pack: [ramen]
+
+  # ---- propose_module: something ongoing that no module does -------------------------------------------
+  - id: prop-expenses
+    msg: I want to track my expenses
+    expect: propose_module
+    modules: []
+    args: {name: {has: [expense, spend]}}
+  - id: prop-zh-expenses
+    msg: 幫我記帳，每天的花費都記下來
+    expect: propose_module
+    modules: []
+    args: {name: {has: [expense, spend, ledger, account]}}
+  - id: prop-climbing
+    msg: can you keep track of my climbing sessions?
+    expect: propose_module
+    modules: [hello, expenses]
+    pack: [hansen]
+    args: {name: {has: [climb]}}
+  - id: prop-water
+    msg: build me something to log how much water I drink
+    expect: propose_module
+    args: {name: {has: [water, hydrat]}}
+  - id: prop-sleep
+    msg: I want to track my sleep. I'll tell you when I go to bed and when I wake up
+    expect: propose_module
+    args: {name: {has: [sleep]}}
+  - id: prop-weight
+    msg: keep a log of my weight, I'll send it every morning
+    expect: propose_module
+    args: {name: {has: [weight]}}
+  - id: prop-reading
+    msg: track my reading, which book and how many pages a day
+    expect: propose_module
+    args: {name: {has: [read, book]}}
+  - id: prop-meditation
+    msg: I need a habit tracker for meditation, did I do it each day or not
+    expect: propose_module
+    args: {name: {has: [medita, habit]}}
+  - id: prop-plants
+    msg: I keep forgetting when I last watered the plants. can you track that?
+    expect: propose_module
+    args: {name: {has: [plant, water]}}
+  - id: prop-runs
+    msg: log my runs, distance and time, and tell me my weekly total
+    expect: propose_module
+    args: {name: {has: [run]}}
+  - id: prop-mood
+    msg: I'd like to track my mood every evening, 1 to 5
+    expect: propose_module
+    args: {name: {has: [mood]}}
+  - id: prop-bills
+    msg: track my monthly bills and when each one is due
+    expect: propose_module
+    args: {name: {has: [bill]}}
+  - id: prop-lending
+    msg: keep track of who I lend money to and how much they still owe me
+    expect: propose_module
+    args: {name: {has: [lend, loan, debt, owe, iou]}}
+  - id: prop-fuel
+    msg: track my scooter's fuel, liters and price each time I fill up
+    expect: propose_module
+    args: {name: {has: [fuel, gas, scooter, petrol]}}
+  - id: prop-blood-pressure
+    msg: can you make a module that logs my blood pressure readings?
+    expect: propose_module
+    args: {name: {has: [blood, pressure, bp]}}
+  - id: prop-steps
+    msg: track my daily steps, I'll paste the number from my phone
+    expect: propose_module
+    args: {name: {has: [step]}}
+  - id: prop-swimming
+    msg: count my swims per week, I'll tell you each time I go
+    expect: propose_module
+    args: {name: {has: [swim]}}
+  - id: prop-vitamins
+    msg: help me track whether I took my vitamins each day
+    expect: propose_module
+    args: {name: {has: [vitamin, med, pill, supplement]}}
+  - id: prop-japanese
+    msg: track how many hours I study japanese every day
+    expect: propose_module
+    args: {name: {has: [japan, study, language]}}
+  - id: prop-subscriptions
+    msg: keep a list of my subscriptions, what they cost and when they renew
+    expect: propose_module
+    args: {name: {has: [subscri]}}

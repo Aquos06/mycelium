@@ -11,6 +11,7 @@
 - prompt:    Prompt, the system text and the user message a model reads
 - llm:       rpc.llm.complete for every service: ChatMessage and its blocks, ToolSpec, Tool, the request, the reply
 - rpc:       ask(), one request to another service read into a model; NoAnswer, Refused
+- build:     rpc.build.start / get: BuildRequest, StartReply, BuildRef (import mycelium_sdk.build)
 - notes:     NoteType, the kinds of note in memory's vault (memory files them, Main's remember offers them)
 - settings:  ServiceSettings, the base for each service's environment (pydantic-settings)
 - db:        the async SQLAlchemy engine, Alembic migrate(), the core tables (import mycelium_sdk.db)

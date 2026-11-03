@@ -165,7 +165,7 @@ def test_render_pack_states_when_memory_is_empty_or_down():
 
 def test_tool_specs_are_generated_from_the_argument_models():
     specs = {s.name: s for s in default_tools().specs()}
-    assert set(specs) == {"remember", "recall", "ask_module", "ask"}
+    assert set(specs) == {"remember", "recall", "ask_module", "ask", "propose_module"}
     remember = specs["remember"].input_schema
     assert remember["type"] == "object" and remember["required"] == ["note"]
     assert remember["properties"]["type"]["enum"][:3] == ["self", "person", "place"]
