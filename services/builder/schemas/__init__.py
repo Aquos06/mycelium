@@ -14,7 +14,18 @@ from .build import BuildRecord, BuildStatus, BuildSummary, FeedbackStage, Round,
 from .coder import CoderContext, CoderResult, Feedback, FileArg, ManifestDraft, Spend, WriteFiles
 from .events import BuildDone, BuildEvent, BuildFailed, BuildProgress, BuildStarted
 from .gateway import ConfigReply, ProviderState, SlotState
-from .rpc import SPEC_MAX, BuildList, BuildListRequest, BuildRef, BuildRequest, CoderInfo, CoderList, StartReply
+from .rpc import (
+    SPEC_MAX,
+    BuildList,
+    BuildListRequest,
+    BuildRef,
+    BuildRequest,
+    CoderChoice,
+    CoderInfo,
+    CoderList,
+    CoderSetting,
+    StartReply,
+)
 from .supervisor import (
     AgentCall,
     AgentInfo,
@@ -55,8 +66,10 @@ __all__ = [
     "BuildListRequest",
     "BuildRef",
     "BuildRequest",
+    "CoderChoice",
     "CoderInfo",
     "CoderList",
+    "CoderSetting",
     "StartReply",
     "AgentCall",
     "AgentInfo",

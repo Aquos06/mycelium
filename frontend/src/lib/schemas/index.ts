@@ -8,3 +8,4 @@ export * from "./system";
 export * from "./chat";
 export * from "./modules";
 export * from "./gateway";
+export * from "./builder";

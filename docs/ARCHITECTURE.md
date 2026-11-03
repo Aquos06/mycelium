@@ -451,7 +451,7 @@ the code it builds: the supervisor verifies every round in its sealed container.
 
 | | |
 |---|---|
-| Answers | `rpc.build.start {name, spec, coder?}` → `{build_id, position}` or the reason it will not (the name exists, the queue is full, the coder cannot work, the supervisor is down); `rpc.build.get`, `rpc.build.list`, `rpc.build.coders` |
+| Answers | `rpc.build.start {name, spec, coder?}` → `{build_id, position}` or the reason it will not (the name exists, the queue is full, the coder cannot work, the supervisor is down); `rpc.build.get`, `rpc.build.list`, `rpc.build.coders`; `rpc.build.default {coder}` chooses the coder a build gets when it names none (the web app's Settings → Builder, `mctl coders --use`), kept in KV across restarts, `BUILDER_CODER` until then |
 | Publishes | `build.started`, `build.progress` (each round), `build.done` (version, commit, image), `build.failed` (stage, error, output) |
 | Keeps | one record per build in the `builder` KV bucket; one build runs at a time, the rest wait in line; a restart fails the running build and puts the waiting ones back |
 | Modes | **new** today; **change** (edit an existing module; snapshot `/data` first; migration-aware prompt) and **wrap** (module + pinned backend) later |
@@ -607,7 +607,8 @@ it is most of the wait before the first word, so the app shows it in place of "P
 away once the reply is being written. The app has Home (the live bus, what needs you, what is alive),
 Chat (a thread with Main, its plan under each reply, `out.ask` as a card), Modules and a module page
 (manifest wiring, ask it directly, logs, pause and rebuild), Settings (slots and providers from
-`rpc.llm.config`, key states, the environment, read-only), the Voice screen as a placeholder until a
+`rpc.llm.config`, key states, the builder's coders and the default one, chosen there, and the environment,
+read-only), the Voice screen as a placeholder until a
 `sense.voice` bridge exists, and Login. Tests: a unit test per helper and per gateway function, an
 integration test per endpoint and per screen, Playwright e2e at two viewports in mock mode, and a
 design-laws test that enforces the layout. Open: inbox of past asks, module panels from the manifest,

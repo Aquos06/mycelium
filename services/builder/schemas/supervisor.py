@@ -51,6 +51,7 @@ class DeployReply(BaseModel):
 
 class AgentInfo(BaseModel):
     name: str
+    description: str = ""  # from agents.yaml: what the agent is and which model it runs on
     ready: bool
     reason: str | None = None
 

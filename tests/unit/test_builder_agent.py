@@ -205,10 +205,18 @@ async def test_the_agents_share_one_question_to_the_supervisor():
     async def agents(msg):
         asked.append(1)
         await msg.respond(
-            {"ok": True, "agents": [{"name": "opencode", "ready": True}, {"name": "aider", "ready": True}]}
+            {
+                "ok": True,
+                "agents": [
+                    {"name": "opencode", "description": "OpenCode on your own model", "ready": True},
+                    {"name": "aider", "ready": True},
+                ],
+            }
         )
 
     await bus.subscribe("rpc.sys.agents", agents)
     roster = AgentRoster(bus)
     reasons = [await AgentCoder(bus, n, roster=roster).ready() for n in ("opencode", "aider", "codex")]
     assert reasons[:2] == [None, None] and "no agent 'codex'" in reasons[2] and len(asked) == 1
+    assert await AgentCoder(bus, "opencode", roster=roster).describe() == "OpenCode on your own model"
+    assert len(asked) == 1  # the description comes from the same answer

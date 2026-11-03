@@ -96,6 +96,9 @@ class FakeCoder:
     async def ready(self) -> str | None:
         return self.reason
 
+    async def describe(self) -> str:
+        return "writes what the test tells it"
+
     async def write(self, ctx: CoderContext) -> CoderResult:
         self.seen.append(ctx)
         if self.gate is not None:

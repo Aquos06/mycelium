@@ -70,6 +70,11 @@ class AgentCoder:
             return f"the supervisor has no agent {self.name!r} (services/supervisor/agent_images/agents.yaml)"
         return None if info.ready else info.reason or "not ready"
 
+    async def describe(self) -> str:
+        agents = await self.roster.get()
+        info = (agents or {}).get(self.name)
+        return info.description if info else "A coding agent the supervisor runs in a container of its own"
+
     async def write(self, ctx: CoderContext) -> CoderResult:
         prompt = agent_prompt(ctx)
         call = AgentCall(

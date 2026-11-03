@@ -4,6 +4,7 @@
     rpc.build.get     BuildRef           -> BuildRecord (build.py)
     rpc.build.list    BuildListRequest   -> BuildList, newest first
     rpc.build.coders  {}                 -> CoderList
+    rpc.build.default CoderChoice        -> CoderList (the web app's Settings → Builder, mctl coders --use)
 
 The handler adds ok=true; errors are {"ok": false, "error": "<field>: <message>"}.
 """
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from mycelium_sdk import now_iso
 from mycelium_sdk.manifest import NAME_RE, RESERVED
 
 from .build import BuildSummary
@@ -67,10 +69,25 @@ class BuildList(BaseModel):
 
 class CoderInfo(BaseModel):
     name: str
+    description: str = ""  # what it is and what it runs on
     ready: bool
     reason: str | None = None  # why it cannot build now
 
 
 class CoderList(BaseModel):
-    default: str  # BUILDER_CODER: the one a request without `coder` gets
+    default: str  # the one a request without `coder` gets: the last one chosen, else BUILDER_CODER
+    seed: str  # BUILDER_CODER: the default until one is chosen
     coders: list[CoderInfo]
+
+
+class CoderChoice(BaseModel):
+    """rpc.build.default: which coder a build gets when it names none. Builds already waiting keep theirs."""
+
+    coder: str = Field(min_length=1)
+
+
+class CoderSetting(BaseModel):
+    """The chosen default as the `builder` KV bucket keeps it, so a restart keeps the choice."""
+
+    coder: str
+    chosen: str = Field(default_factory=now_iso)

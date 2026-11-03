@@ -16,7 +16,7 @@ export const ROUTES = {
   login: "/login",
 } as const;
 
-export const SETTINGS_TABS = ["models", "keys", "memory", "assistant", "system", "web"] as const;
+export const SETTINGS_TABS = ["models", "keys", "builder", "memory", "assistant", "system", "web"] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export interface Tab {
