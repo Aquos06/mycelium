@@ -1,0 +1,544 @@
+# The tool-calling benchmark for Main (scripts/bench_tools.py): a message, the context Main would have had, and
+# what Main should do with it. `expect` is one of Main's tools (services/main/tools) or `none` (answer without
+# a tool). The case passes when the expected tool is called during the turn (`none`: no tool at all); `args`
+# checks the first valid call of that tool: a string or list means the value is one of them, `has:` means its
+# text contains one of them (case-insensitive). Names in `pack` and `modules` refer to `notes` and `modules`
+# below, built from the fixture vault (tests/fixtures/vault) plus a few people it does not have. A new tool gets
+# its 20 cases here before it ships, and the suite runs before and after, so the old classes show a regression.
+#
+#   set -a; source .env; set +a
+#   .venv/bin/python scripts/bench_tools.py --cases tests/fixtures/bench/tools.yaml                  # the planner slot
+#   .venv/bin/python scripts/bench_tools.py --cases ... --provider vllm --provider claude            # compare
+#
+# Nothing touches the stack: memory and the modules are stubs that answer from this file, only the planner
+# calls reach a model.
+
+today: 2026-11-03          # a Tuesday; "yesterday" is 2026-11-02
+tz: Asia/Taipei
+
+modules:
+  hello:
+    purpose: Counts chat messages per day so the system has a first working module to deploy and query.
+    requests: [stats]
+    subscribes: [sense.chat]
+    reply: {today: 14, days: {"2026-11-02": 31, "2026-11-01": 9}, total: 412}
+  expenses:
+    purpose: >-
+      Tracks spending from chat (an amount and a short description, TWD unless said otherwise) and answers
+      totals for a date range with the top descriptions.
+    requests: [summary]
+    subscribes: [sense.chat]
+    reply:
+      from: "2026-10-27"
+      to: "2026-11-02"
+      total: 3420
+      currency: TWD
+      top: [{description: dinner, amount: 1240}, {description: coffee, amount: 510}, {description: grab, amount: 380}]
+  climbing:
+    purpose: Logs climbing sessions from chat (the day, the gym, the hardest grade sent) and lists them.
+    requests: [sessions]
+    subscribes: [sense.chat]
+    reply:
+      count: 3
+      sessions:
+        - {day: "2026-10-25", gym: Passion Climbing Xinyi, hardest: V4}
+        - {day: "2026-10-29", gym: Passion Climbing Xinyi, hardest: V5}
+        - {day: "2026-11-01", gym: B-Plus, hardest: V4}
+default_modules: [hello, expenses, climbing]
+
+notes:
+  mei:
+    note: people/mei.md
+    why: Mei is an alias of mei
+    excerpt: |-
+      Friend from the climbing gym, lives in [[taipei]].
+      - 2026-10-14 dinner at [[ramen-place-xinyi]], she's moving to Tainan in Dec
+      - 2026-09-02 recommended the book "Project Hail Mary"
+  lin:
+    note: people/lin.md
+    why: scored 0.41 for the question
+    excerpt: |-
+      Hansen's sister, lives in [[taipei]], works as a nurse.
+      - 2026-10-20 interviewed for a job at a hospital in Taichung
+  jason:
+    note: people/jason.md
+    why: scored 0.38 for the question
+    excerpt: |-
+      Friend from university, works in Hsinchu.
+      - 2026-10-30 lunch at [[ramen-place-xinyi]]
+  kevin:
+    note: people/kevin.md
+    why: scored 0.35 for the question
+    excerpt: |-
+      Colleague, sits next to Hansen.
+      - 2026-10-21 getting married in January
+  ramen:
+    note: places/ramen-place-xinyi.md
+    why: ramen is an alias of ramen-place-xinyi
+    excerpt: |-
+      Ramen shop near Xinyi Anhe station (Menya Xinyi); usual order is the shoyu.
+      - 2026-10-14 dinner with [[mei]], 350 TWD
+  draft-land:
+    note: places/draft-land.md
+    why: scored 0.33 for the question
+    excerpt: |-
+      Cocktail bar on Zhongxiao East Road, [[mei]] recommended it.
+  hansen:
+    note: hansen.md
+    why: the message is about Hansen
+    excerpt: |-
+      Lives in [[taipei]], works on [[mycelium]], climbs twice a week.
+      - 2026-09-20 started climbing on Wednesdays and Saturdays
+  mycelium:
+    note: projects/mycelium.md
+    why: mycelium is a note
+    excerpt: |-
+      Hansen's personal assistant system: services on a NATS bus, modules grown from specs.
+      - 2026-11-02 the builder grows a module from a spec
+  expense-log:
+    note: things/expense-log.md
+    why: scored 0.48 for the question
+    excerpt: |-
+      - 2026-10-28 spent 112 on dinner and 25 on drinks
+
+cases:
+  # ---- remember: a durable fact, or an explicit "remember" -------------------------------------------
+  - id: rem-mei-birthday
+    msg: mei's birthday is march 3, remember that
+    expect: remember
+    pack: [mei]
+    args: {note: mei, fact: {has: [birthday, march]}}
+  - id: rem-landlord
+    msg: remember that my landlord is Mr. Chen and rent is due on the 5th
+    expect: remember
+    args: {fact: {has: [rent, chen, landlord]}}
+  - id: rem-dinner-152
+    msg: i just spend 152 for my dinner, pelase log that for my expense
+    expect: remember
+    modules: []
+    pack: [expense-log]
+    args: {fact: {has: ["152"]}}
+  - id: rem-mei-moved
+    msg: mei moved to tainan last week
+    expect: remember
+    pack: [mei]
+    args: {note: mei, fact: {has: [tainan]}}
+  - id: rem-allergy
+    msg: btw I'm allergic to shrimp
+    expect: remember
+    pack: [hansen]
+    args: {note: hansen, fact: {has: [shrimp]}}
+  - id: rem-ramen-mondays
+    msg: the ramen place in xinyi is closed on mondays now
+    expect: remember
+    pack: [ramen]
+    args: {note: ramen-place-xinyi, fact: {has: [monday]}}
+  - id: rem-jason-number
+    msg: remember jason's new number is 0912-345-678
+    expect: remember
+    pack: [jason]
+    args: {note: jason, fact: {has: ["0912"]}}
+  - id: rem-lin-job
+    msg: my sister lin got the job at the hospital in taichung!
+    expect: remember
+    pack: [lin]
+    args: {note: lin, fact: {has: [job, taichung]}}
+  - id: rem-zh-mei-moving
+    msg: 記住小美下個月搬去台南
+    expect: remember
+    pack: [mei]
+    args: {note: mei, fact: {has: [台南, tainan]}}
+  - id: rem-climbing-days
+    msg: I switched my climbing days to tuesdays and fridays
+    expect: remember
+    pack: [hansen]
+    args: {fact: {has: [tuesday, friday]}}
+  - id: rem-gpu-box
+    msg: note that the GPU box is at 192.168.0.107
+    expect: remember
+    pack: [mycelium]
+    args: {fact: {has: [192.168.0.107]}}
+  - id: rem-dentist
+    msg: my dentist is Dr. Wu at the clinic on Anhe road
+    expect: remember
+    args: {fact: {has: [anhe, wu, dentist]}}
+  - id: rem-draft-land
+    msg: mei says draft land has a new menu, we should go sometime
+    expect: remember
+    pack: [mei, draft-land]
+    args: {fact: {has: [menu]}}
+  - id: rem-book-finished
+    msg: finished project hail mary last night, loved it
+    expect: remember
+    pack: [mei]
+    args: {fact: {has: [hail mary]}}
+  - id: rem-lunch-yesterday
+    msg: yesterday I had lunch with jason at the ramen place
+    expect: remember
+    pack: [jason, ramen]
+    args: {day: "2026-11-02", fact: {has: [lunch]}}
+  - id: rem-gym-wifi
+    msg: "remember: the wifi password at the climbing gym is crimp2026"
+    expect: remember
+    args: {fact: {has: [crimp2026]}}
+  - id: rem-kevin-wedding-date
+    msg: kevin's wedding is on january 18, at the grand hotel
+    expect: remember
+    pack: [kevin]
+    args: {note: kevin, fact: {has: [january, grand hotel, "18"]}}
+  - id: rem-rent-up
+    msg: my rent goes up to 28000 from december
+    expect: remember
+    pack: [hansen]
+    args: {fact: {has: ["28000", "28,000"]}}
+  - id: rem-coffee-rule
+    msg: I've decided no more coffee after 2pm, keep that in mind
+    expect: remember
+    pack: [hansen]
+    args: {fact: {has: [coffee]}}
+  - id: rem-tainan-trip
+    msg: mei and I are driving to tainan on the 15th to help her move
+    expect: remember
+    pack: [mei]
+    args: {fact: {has: [tainan]}}
+
+  # ---- recall: the message is about memory the pack does not have --------------------------------------
+  - id: rec-jason
+    msg: what do you know about jason?
+    expect: recall
+    args: {query: {has: [jason]}}
+  - id: rec-last-saw-mei
+    msg: when did I last see mei?
+    expect: recall
+    args: {query: {has: [mei]}}
+  - id: rec-oct14-dinner
+    msg: who was I having dinner with on october 14?
+    expect: recall
+    args: {query: {has: ["10-14", oct]}}
+  - id: rec-mei-meets-jason
+    msg: has mei ever met jason?
+    expect: recall
+    pack: [mei]
+    args: {query: {has: [jason]}}
+  - id: rec-last-weekend
+    msg: what did I do last weekend?
+    expect: recall
+    args: {query: {has: ["2026-11-01", "2026-10-31", weekend, "2026-W44"]}}
+  - id: rec-mei-book
+    msg: what was the book mei recommended?
+    expect: recall
+    args: {query: {has: [mei, book]}}
+  - id: rec-landlord
+    msg: what did I tell you about my landlord?
+    expect: recall
+    args: {query: {has: [landlord]}}
+  - id: rec-dentist
+    msg: remind me what my dentist's name is
+    expect: recall
+    args: {query: {has: [dentist]}}
+  - id: rec-mycelium-notes
+    msg: what's in your notes about the mycelium project?
+    expect: recall
+    args: {query: {has: [mycelium]}}
+  - id: rec-oct14-day
+    msg: what happened on october 14?
+    expect: recall
+    args: {query: {has: ["10-14", oct]}}
+  - id: rec-mei-wrong-pack
+    msg: where is mei moving to again?
+    expect: recall
+    pack: [ramen]
+    args: {query: {has: [mei]}}
+  - id: rec-zh-mei
+    msg: 小美最近怎麼樣？
+    expect: recall
+    args: {query: {has: [小美, mei]}}
+  - id: rec-sister
+    msg: what do you know about my sister?
+    expect: recall
+    args: {query: {has: [sister, lin]}}
+  - id: rec-last-month
+    msg: what happened last month?
+    expect: recall
+    args: {query: {has: ["2026-10", october, month]}}
+  - id: rec-jason-lunch
+    msg: what did jason and I eat at lunch last thursday?
+    expect: recall
+    pack: [ramen]
+    args: {query: {has: [jason, "2026-10-30", thursday]}}
+  - id: rec-kevin-work
+    msg: where does kevin work again?
+    expect: recall
+    args: {query: {has: [kevin]}}
+  - id: rec-ramen-name
+    msg: what was the name of that ramen shop near anhe?
+    expect: recall
+    args: {query: {has: [ramen, anhe]}}
+  - id: rec-this-week
+    msg: summarize my week so far
+    expect: recall
+    args: {query: {has: [week, "2026-W45", "2026-11"]}}
+  - id: rec-gpu-box
+    msg: remind me what I told you about the GPU box
+    expect: recall
+    args: {query: {has: [gpu]}}
+  - id: rec-draft-land
+    msg: have I been to draft land before?
+    expect: recall
+    args: {query: {has: [draft]}}
+
+  # ---- ask_module: exact data a deployed module holds -----------------------------------------------
+  - id: mod-spend-week
+    msg: how much did I spend this week?
+    expect: ask_module
+    args: {module: expenses, action: summary}
+  - id: mod-food-october
+    msg: how much did i spend on food in october
+    expect: ask_module
+    args: {module: expenses, action: summary}
+  - id: mod-top-last-month
+    msg: what were my top expenses last month?
+    expect: ask_module
+    args: {module: expenses, action: summary}
+  - id: mod-since-nov1
+    msg: total spending since nov 1?
+    expect: ask_module
+    args: {module: expenses, action: summary}
+  - id: mod-messages-today
+    msg: how many messages did I send today?
+    expect: ask_module
+    args: {module: hello, action: stats}
+  - id: mod-hello-stats
+    msg: hello module stats please
+    expect: ask_module
+    args: {module: hello, action: stats}
+  - id: mod-climbs-last-month
+    msg: how many times did I climb last month?
+    expect: ask_module
+    args: {module: climbing, action: sessions}
+  - id: mod-hardest-grade
+    msg: what's the hardest grade I sent this year?
+    expect: ask_module
+    args: {module: climbing, action: sessions}
+  - id: mod-last-session
+    msg: when was my last climbing session?
+    expect: ask_module
+    args: {module: climbing, action: sessions}
+  - id: mod-over-5000
+    msg: did I spend more than 5000 this week?
+    expect: ask_module
+    args: {module: expenses, action: summary}
+  - id: mod-zh-month
+    msg: 這個月花了多少錢？
+    expect: ask_module
+    args: {module: expenses, action: summary}
+  - id: mod-yesterday
+    msg: what did I spend yesterday?
+    expect: ask_module
+    args: {module: expenses, action: summary}
+  - id: mod-30-days
+    msg: give me my spending summary for the last 30 days
+    expect: ask_module
+    args: {module: expenses, action: summary}
+  - id: mod-chatty-yesterday
+    msg: how chatty was I yesterday?
+    expect: ask_module
+    args: {module: hello, action: stats}
+  - id: mod-climb-trend
+    msg: am I climbing more this month than last month?
+    expect: ask_module
+    args: {module: climbing, action: sessions}
+  - id: mod-biggest-category
+    msg: what's my biggest expense this week
+    expect: ask_module
+    args: {module: expenses, action: summary}
+  - id: mod-hello-total
+    msg: how many messages has the hello module counted so far
+    expect: ask_module
+    args: {module: hello, action: stats}
+  - id: mod-coffee-month
+    msg: how much have I spent on coffee this month?
+    expect: ask_module
+    args: {module: expenses, action: summary}
+  - id: mod-climbing-october
+    msg: list my climbing sessions in october
+    expect: ask_module
+    args: {module: climbing, action: sessions}
+  - id: mod-week-vs-week
+    msg: spending this week vs last week?
+    expect: ask_module
+    args: {module: expenses, action: summary}
+
+  # ---- ask: a choice that is Hansen's before Main acts ----------------------------------------------
+  - id: ask-she-job
+    msg: she got the job! put it in her note
+    expect: ask
+    pack: [mei, lin]
+    args: {choices: {has: [mei, lin]}}
+  - id: ask-he-kaohsiung
+    msg: remember that he's moving to kaohsiung in spring
+    expect: ask
+    pack: [jason, kevin]
+    args: {choices: {has: [jason, kevin]}}
+  - id: ask-she-pregnant
+    msg: save that she's pregnant, due in may
+    expect: ask
+    pack: [mei, lin]
+    args: {choices: {has: [mei, lin]}}
+  - id: ask-split-dinner
+    msg: log 450 for dinner with mei. the whole bill or just my half?
+    expect: ask
+    modules: []
+    pack: [mei, expense-log]
+  - id: ask-climb-day
+    msg: ask me whether I want to climb on wednesday or thursday this week
+    expect: ask
+    args: {choices: {has: [wed, thu]}}
+  - id: ask-dinner-buttons
+    msg: give me three options for dinner tonight, as buttons
+    expect: ask
+  - id: ask-trip-date
+    msg: I can't decide if the tainan trip is the 15th or the 22nd. let me pick
+    expect: ask
+    pack: [mei]
+    args: {choices: {has: ["15", "22"]}}
+  - id: ask-his-birthday
+    msg: remember his birthday is june 2
+    expect: ask
+    pack: [jason, kevin]
+    args: {choices: {has: [jason, kevin]}}
+  - id: ask-history-promoted
+    msg: yeah, remember that he just got promoted
+    expect: ask
+    pack: [jason, kevin]
+    history:
+      - {role: user, text: "had lunch with jason and kevin today"}
+      - {role: assistant, text: "Nice! Want me to remember anything from it?"}
+    args: {choices: {has: [jason, kevin]}}
+  - id: ask-closed-for-good
+    msg: mark that place as closed for good
+    expect: ask
+    pack: [ramen, draft-land]
+    args: {choices: {has: [ramen, draft, menya]}}
+  - id: ask-rent-start
+    msg: should you save my new rent as starting in december or january? let me choose
+    expect: ask
+    pack: [hansen]
+    args: {choices: {has: [dec, jan]}}
+  - id: ask-tonight-poll
+    msg: "quick poll for me: gym tonight, a run, or rest?"
+    expect: ask
+    args: {choices: {has: [gym, run, rest]}}
+  - id: ask-which-dinner
+    msg: remember that the dinner was actually 600
+    expect: ask
+    modules: []
+    pack: [ramen, expense-log]
+  - id: ask-moving-date
+    msg: change her moving date to january
+    expect: ask
+    pack: [mei, lin]
+    args: {choices: {has: [mei, lin]}}
+  - id: ask-history-coming
+    msg: remember that she's coming to tainan with us
+    expect: ask
+    pack: [mei, lin]
+    history:
+      - {role: user, text: "I'm going to invite lin and mei to the tainan trip"}
+      - {role: assistant, text: "Sounds fun, hope they can make it."}
+    args: {choices: {has: [mei, lin]}}
+  - id: ask-split-karaoke
+    msg: karaoke was 900 with jason and kevin. split it three ways or log it all as mine?
+    expect: ask
+    modules: []
+    pack: [jason, kevin]
+  - id: ask-lunch-log
+    msg: ask me what I had for lunch, then log it
+    expect: ask
+    modules: []
+  - id: ask-new-number
+    msg: "remember the new number: 0933-222-111"
+    expect: ask
+    pack: [jason, kevin]
+    history:
+      - {role: user, text: "jason and kevin both changed their phone numbers this week"}
+      - {role: assistant, text: "Got it. Send me the new numbers whenever you have them."}
+    args: {choices: {has: [jason, kevin]}}
+  - id: ask-friday-place
+    msg: draft land or the ramen place with mei on friday? give me the choice
+    expect: ask
+    pack: [mei, ramen, draft-land]
+    args: {choices: {has: [draft, ramen]}}
+  - id: ask-boyfriend
+    msg: she's moving in with her boyfriend next month
+    expect: ask
+    pack: [mei, lin]
+    args: {choices: {has: [mei, lin]}}
+
+  # ---- none: answer without a tool --------------------------------------------------------------------
+  - id: none-thanks
+    msg: thanks!
+    expect: none
+  - id: none-morning
+    msg: good morning
+    expect: none
+  - id: none-tip
+    msg: what's 15% of 840?
+    expect: none
+  - id: none-receipt-zh
+    msg: how do you say receipt in chinese?
+    expect: none
+  - id: none-what-day
+    msg: what day is it today?
+    expect: none
+  - id: none-mei-moving
+    msg: where is mei moving?
+    expect: none
+    pack: [mei]
+  - id: none-mei-book
+    msg: what book did mei recommend?
+    expect: none
+    pack: [mei]
+  - id: none-usual-order
+    msg: what's my usual order at the ramen place?
+    expect: none
+    pack: [ramen]
+  - id: none-where-live
+    msg: where do I live?
+    expect: none
+    pack: [hansen]
+  - id: none-birthday-line
+    msg: write me a one-line birthday message for mei
+    expect: none
+    pack: [mei]
+  - id: none-cross-encoder
+    msg: explain what a cross-encoder is in one sentence
+    expect: none
+  - id: none-japanese
+    msg: translate 'see you tomorrow' to japanese
+    expect: none
+  - id: none-lol
+    msg: lol ok
+    expect: none
+  - id: none-summarize-text
+    msg: "can you shorten this: 'The meeting is moved to Friday 3pm, please bring the slides and the budget sheet.'"
+    expect: none
+  - id: none-never-mind
+    msg: ok cool, never mind
+    expect: none
+  - id: none-capital
+    msg: what's the capital of australia?
+    expect: none
+  - id: none-christmas
+    msg: how many days until christmas?
+    expect: none
+  - id: none-zh-morning
+    msg: 早安
+    expect: none
+  - id: none-twd-usd
+    msg: roughly how much is 350 TWD in USD?
+    expect: none
+  - id: none-ramen-name
+    msg: what was the name of the ramen shop near anhe?
+    expect: none
+    pack: [ramen]

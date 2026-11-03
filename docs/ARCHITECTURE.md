@@ -401,6 +401,13 @@ back to the planner as a tool error with the field path. Adding a tool is one mo
 one line in the registry, and later a module's manifest requests register themselves the same way.
 No agent framework sits in this loop: the gateway, budget, trace and shadow hooks are the loop.
 
+`scripts/bench_tools.py` measures the tool choice: Main's own turn on an in-memory bus, with memory and the
+modules as stubs and only the planner calls going to a model (`--provider vllm --provider claude` to compare).
+The suite, `tests/fixtures/bench/tools.yaml`, has 20 messages per tool and 20 that need none, each with the
+pack, modules and thread Main would have had. The report gives the right tool, the right first call, the
+argument checks, rejected calls and latency per class, and a confusion table of the first decision. A new tool
+gets its 20 cases there before it ships, so a regression on the old ones shows.
+
 | | |
 |---|---|
 | Listens | `sense.*`, `brain.observe`, `sys.*`, `build.*`, `sense.feedback` from channels |
