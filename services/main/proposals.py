@@ -95,12 +95,21 @@ class ProposalStore:
 
     async def building(self) -> list[Proposal]:
         """Every proposal whose build has not been reported yet (Main's catch-up on start). Proposals are a few
-        a week, so reading them all once at start is cheaper than keeping an index in step."""
+        a week, so reading them all is cheaper than keeping an index in step."""
+        return [p for p in await self._all() if p.status == ProposalStatus.BUILDING]
+
+    async def offered(self, limit: int = 8) -> list[Proposal]:
+        """The latest proposals that are not running modules yet (waiting, declined, building, failed): what the
+        planner reads so it does not offer the same module twice."""
+        open_ = [p for p in await self._all() if p.status != ProposalStatus.DONE]
+        return sorted(open_, key=lambda p: p.created, reverse=True)[:limit]
+
+    async def _all(self) -> list[Proposal]:
         out = []
         for key in await self.kv.keys(f"{PREFIX}/"):
             raw = await self.kv.get(key)
-            if raw is not None and (p := Proposal.model_validate(raw)).status == ProposalStatus.BUILDING:
-                out.append(p)
+            if raw is not None:
+                out.append(Proposal.model_validate(raw))
         return out
 
     async def _link(self, kind: str, key: str, proposal_id: str) -> None:

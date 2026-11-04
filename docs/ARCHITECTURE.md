@@ -395,8 +395,18 @@ and keeps the turn. The module list in the prompt says what each module listens 
 a module on `sense.chat` already hears "dinner 350". Not yet: the gate, the state snapshot, the policy
 database; `brain.observe` is only logged.
 
+**Saying only what it did.** The thread Main reads back is what happened, not only what was said: each
+assistant turn keeps the tool calls Main accepted in it (arguments and the start of each result), and the
+planner reads them again as tool_use / tool_result before that turn's reply. With replies alone ("Logged:
+152") a model learns to write the words without the call. Each of Hansen's earlier messages starts with its
+date in Main's time zone, so a "today" in an old message, or a date an old reply mentions, is read as that day.
+A reply that still says something was saved, logged or noted when no `remember` went through in the turn,
+and names no module that hears the chat (one may have logged it itself), is not sent: Main asks the planner
+once more, and it either calls `remember` or says it plainly. The trace marks such a turn (`claim_check`).
+
 **Growing a module.** When Hansen wants something ongoing that no module does ("track my expenses"),
-the planner calls `propose_module` with the parts of a spec (name, purpose, need, behaviour, answers,
+or logs something no module tracks ("spent 85 on breakfast": remembered first, since a proposal ends the
+turn), the planner calls `propose_module` with the parts of a spec (name, purpose, need, behaviour, answers,
 example); code renders `SPEC.md` in the format of `specs/expenses.md` and checks the name against the
 SDK's rules, `rpc.sys.list` and the running builds. A valid proposal ends the turn like `ask`: Main
 stores it in its KV (`proposals.py`, keyed by the card's id) and only then sends the card, Build it /
@@ -410,7 +420,9 @@ proposal, since the apps take the buttons off a card once it is answered. `build
 `build.failed` carry the channel and thread back; Main tells that thread, once. On start it asks
 `rpc.build.get` about proposals still building, for builds that ended while it was down, and tries again
 every 30 s until the builder answers (compose starts them together). The `rpc.build.start / get` contract
-is the SDK's (`mycelium_sdk.build`), shared by Main and the builder.
+is the SDK's (`mycelium_sdk.build`), shared by Main and the builder. The prompt lists the latest proposals
+that are not running modules (waiting, building, declined, failed), so the planner does not offer the same
+module again while one waits or after Hansen chose Not now.
 
     proposed -> building -> done | failed
              -> declined
@@ -425,8 +437,10 @@ No agent framework sits in this loop: the gateway, budget, trace and shadow hook
 `scripts/bench_tools.py` measures the tool choice: Main's own turn on an in-memory bus, with memory and the
 modules as stubs and only the planner calls going to a model (`--provider vllm --provider claude` to compare).
 The suite, `tests/fixtures/bench/tools.yaml`, has 20 messages per tool and 20 that need none, each with the
-pack, modules and thread Main would have had. The report gives the right tool, the right first call, the
-argument checks, rejected calls and latency per class, and a confusion table of the first decision. A new tool
+pack, modules, proposals and thread Main would have had (dated, with the calls each turn made); a case can
+also require tools (`also`) or forbid them (`avoid`). The report gives the right tool, the right first call,
+the argument checks, rejected calls, turns asked again after an unbacked claim and latency per class, and a
+confusion table of the first decision. A new tool
 gets its 20 cases there before it ships, so a regression on the old ones shows.
 
 | | |

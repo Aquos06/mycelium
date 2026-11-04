@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Callable, Coroutine
 from datetime import date
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from mycelium_sdk import (
     Bus,
@@ -57,7 +59,7 @@ from .schemas import (
     Say,
     SayOutput,
 )
-from .thread import ThreadStore, Turn
+from .thread import ThreadStore, Turn, TurnCall
 from .tools import AskArgs, ProposeArgs, RecallPayload, ToolContext, ToolOutcome, ToolRegistry, default_tools
 
 log = logging.getLogger("mycelium.main")
@@ -68,6 +70,24 @@ NOT_NOW = "Not now"
 ERROR_SHOWN = 300  # characters of a builder error told in the chat; the build record has all of it
 MAX_TOOL_RESULT_CHARS = 4000
 BUS_MARGIN_S = 5.0  # the gateway enforces the timeout; Main waits a little longer for its clean error
+
+# A reply that says something was saved when no `remember` went through: the model wrote the words without the call
+# (the thread showed it "Logged: 152" often enough). Main asks once more before the reply goes out.
+CLAIM = re.compile(
+    r"\bI(?:'ve| have|'ll| will)? (?:also |just |now )?(?:saved|noted|remembered|logged|recorded|stored|written down"
+    r"|made a note|added (?:it|that|this|them) to)\b"  # "I've saved", "I logged": first person, done
+    r"|^(?:got it[,.!]? )?(?:saved|noted|logged|remembered|recorded)\b"  # "Saved: ...", "Noted." opening a line
+    r"|\b(?:it's|it is|that's|that is|all|everything's|everything is) (?:saved|noted|logged|recorded|stored)\b"
+    r"|\bI'll remember\b"
+    r"|已記住|已记住|記下了|记下了|記住了|记住了|已記錄|已记录|已儲存|已保存|存好了|幫你記|帮你记",
+    re.IGNORECASE | re.MULTILINE,
+)  # not "nothing was saved", "I can remember it for you", or a module's own "logged 12 sessions"
+RECHECK = (
+    "(A note from Main's code, not from Hansen.) Your reply says something was saved, but no `remember` went "
+    "through in this turn. If something from his message belongs in memory, call `remember` now. If a module that "
+    "listens to sense.chat logged it, say which one. Then write your reply to Hansen again from the start, as if "
+    "this note had not been sent, and do not mention it."
+)
 
 
 class MainService:
@@ -89,6 +109,11 @@ class MainService:
         self.proposals = proposals or ProposalStore(store.kv)  # the same bucket as the threads
         self.today = today
         self.tz = tz
+        try:
+            self.zone = ZoneInfo(tz)  # the dates on the thread's earlier messages
+        except (ZoneInfoNotFoundError, ValueError):
+            log.warning("unknown time zone %r: the thread's dates are in UTC", tz)
+            self.zone = ZoneInfo("UTC")
         self.max_rounds = max_rounds
         self.recall_budget = recall_budget
         self.llm_timeout = llm_timeout
@@ -340,9 +365,11 @@ class MainService:
         t0 = time.monotonic()
 
         thread = await self.store.load(channel, thread_id)
-        (pack, recall_error), modules = await asyncio.gather(self._recall(text), self._modules())
-        prompt = planner_prompt(self.today(), self.tz, channel, text, pack, modules, recall_error)
-        messages = [*thread.messages(), ChatMessage(role=Role.USER, content=prompt.user)]
+        (pack, recall_error), modules, offered = await asyncio.gather(
+            self._recall(text), self._modules(), self._offered()
+        )
+        prompt = planner_prompt(self.today(), self.tz, channel, text, pack, modules, recall_error, offered)
+        messages = [*thread.messages(self.zone), ChatMessage(role=Role.USER, content=prompt.user)]
 
         tool_log: list[ToolOutcome] = []
         llm_calls: list[LlmCall] = []
@@ -350,6 +377,7 @@ class MainService:
         asked: AskArgs | None = None
         proposed: ProposeArgs | None = None
         error: str | None = None
+        claim_check = False
 
         for _round in range(self.max_rounds):
             request = CompletionRequest(
@@ -373,6 +401,11 @@ class MainService:
             llm_calls.append(LlmCall(model=r.model, usage=r.usage, cost_usd=r.cost_usd))
             if not r.tool_calls:
                 reply_text = r.text.strip()  # reasoning models lead with blank lines
+                if not claim_check and _round + 1 < self.max_rounds and _unbacked_claim(reply_text, tool_log, modules):
+                    claim_check = True  # once: asked again, it either calls remember or says it plainly
+                    messages.append(ChatMessage(role=Role.ASSISTANT, content=reply_text))
+                    messages.append(ChatMessage(role=Role.USER, content=RECHECK))
+                    continue
                 break
 
             content: list[TextBlock | ToolUse] = [TextBlock(text=r.text)] if r.text else []
@@ -436,7 +469,7 @@ class MainService:
         await self.store.append(
             thread,
             Turn(role=Role.USER, text=text, ts=str(data.get("ts") or out.ts), id=cause),
-            Turn(role=Role.ASSISTANT, text=saved, ts=out.ts, id=out.id),
+            Turn(role=Role.ASSISTANT, text=saved, ts=out.ts, id=out.id, calls=_kept(tool_log)),
         )
         await self.bus.publish(
             "trace.plan",
@@ -455,6 +488,7 @@ class MainService:
                 output=output,
                 reply_id=out.id,
                 proposal=proposed.name if proposed and not error else None,
+                claim_check=claim_check,
                 error=error,
                 latency_ms=int((time.monotonic() - t0) * 1000),
             ),
@@ -471,6 +505,13 @@ class MainService:
         if not reply.get("ok"):
             return None, str(reply.get("error") or "recall failed")
         return reply, None
+
+    async def _offered(self) -> list[Proposal]:
+        try:
+            return await self.proposals.offered()
+        except Exception as e:  # the prompt goes without the list rather than the turn failing
+            log.info("could not read the proposals: %s", e)
+            return []
 
     async def _modules(self) -> list[ModuleInfo]:
         try:
@@ -494,6 +535,20 @@ class MainService:
                 )
             )
         return out
+
+
+def _unbacked_claim(text: str, tools: list[ToolOutcome], modules: list[ModuleInfo]) -> bool:
+    """The reply says something was saved, no `remember` went through, and it names no module that hears the chat
+    (one that logged the message itself, as the policy asks it to say)."""
+    if not CLAIM.search(text) or any(o.name == "remember" and o.ok for o in tools):
+        return False
+    lowered = text.lower()
+    return not any(m.name.lower() in lowered for m in modules if "sense.chat" in m.listens)
+
+
+def _kept(tools: list[ToolOutcome]) -> list[TurnCall]:
+    """The calls a turn keeps in its thread: those Main accepted (a rejected one taught nothing worth repeating)."""
+    return [TurnCall.of(o.name, o.input, o.result) for o in tools if o.args is not None]
 
 
 def _already(p: Proposal) -> str:

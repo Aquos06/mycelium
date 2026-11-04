@@ -19,8 +19,10 @@ the vault, no trace reaches the stack, and a case can run many times.
 ollama, claude, openai) and optionally overrides where it lives and which model; repeatable. Without it, the
 slot's active provider (PLANNER_PROVIDER) is measured. Cloud kinds read their key from the environment.
 
-Per case: the tools called in order, whether the expected one was among them (`none`: no tool at all), whether
-it came first, whether its arguments pass the case's checks, calls Main rejected as invalid, rounds, latency.
+Per case: the tools called in order, whether the expected one was among them (`none`: no tool at all) along with
+the case's `also` tools and none of its `avoid` ones, whether it came first, whether its arguments pass the case's
+checks, calls Main rejected as invalid, whether Main had to ask again after a reply claimed a save no tool made,
+rounds, latency.
 Per provider and expected class: those as counts, plus p50/p95 turn latency and a confusion table of the first
 decision.
 """
@@ -48,9 +50,10 @@ for p in (REPO / "services", REPO / "sdk"):
 
 from gateway.providers import Provider, ProviderError, build_provider  # noqa: E402
 from gateway.schemas import GatewayConfig, ProviderConfig  # noqa: E402
+from main.proposals import Proposal, ProposalStatus  # noqa: E402
 from main.schemas import PlanTrace  # noqa: E402
 from main.service import MainService  # noqa: E402
-from main.thread import Thread, ThreadStore, Turn  # noqa: E402
+from main.thread import Thread, ThreadStore, Turn, TurnCall  # noqa: E402
 from main.tools import ToolRegistry, default_tools  # noqa: E402
 from mycelium_sdk import (  # noqa: E402
     CompletionReply,
@@ -114,18 +117,40 @@ class ArgCheck(BaseModel):
         return not self.has or any(h.lower() in text for h in self.has)
 
 
+class HistoryCall(BaseModel):
+    """A tool call an earlier assistant turn made, as Main keeps it in the thread."""
+
+    name: str
+    input: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] = Field(default_factory=lambda: {"ok": True})
+
+
 class HistoryTurn(BaseModel):
     role: Role
     text: str
+    day: date | None = None  # when it was said; None: the suite's today
+    calls: list[HistoryCall] = Field(default_factory=list)
+
+
+class FixtureProposal(BaseModel):
+    """A module Main offered before this message (Main's proposal store)."""
+
+    name: str
+    purpose: str
+    status: ProposalStatus = ProposalStatus.PROPOSED
+    day: date | None = None  # when it was offered; None: the suite's today
 
 
 class Case(BaseModel):
     id: str = Field(min_length=1)
     msg: str = Field(min_length=1)
     expect: str  # a tool name, or "none"
+    also: list[str] = Field(default_factory=list)  # tools that must be called too
+    avoid: list[str] = Field(default_factory=list)  # tools that must not be called
     pack: list[str] = Field(default_factory=list)  # names under `notes`
     modules: list[str] | None = None  # names under `modules`; None: the suite's default_modules
     history: list[HistoryTurn] = Field(default_factory=list)
+    proposals: list[FixtureProposal] = Field(default_factory=list)
     args: dict[str, ArgCheck] = Field(default_factory=dict)
 
 
@@ -168,6 +193,8 @@ def check_suite(suite: Suite, tools: ToolRegistry) -> list[str]:
     """Problems that make a case unscorable: an unknown expected tool, or an args check on a field it lacks."""
     problems = []
     for c in suite.cases:
+        if unknown := sorted({*c.also, *c.avoid} - tools.names):
+            problems.append(f"{c.id}: also/avoid name tools Main does not have: {unknown}")
         if c.expect == NONE:
             if c.args:
                 problems.append(f"{c.id}: `none` takes no args checks")
@@ -280,10 +307,12 @@ class Row(BaseModel):
     got: str  # the first decision: the first tool called, `none`, or `error`
     tools: list[str] = Field(default_factory=list)  # every call in order
     calls: list[Call] = Field(default_factory=list)  # with their arguments, for the JSON
-    passed: bool = False  # the expected tool was called (`none`: nothing was, and the turn did not fail)
+    passed: bool = False  # the expected tool was called (`none`: nothing was, and the turn did not fail), with its
+    # `also` tools and none of its `avoid` ones
     first: bool = False  # ... and it was the first call
     args_ok: bool | None = None  # its first valid call passes the checks; None: no checks, or never called
     invalid: int = 0  # calls Main rejected (unknown tool, bad arguments)
+    claim_check: bool = False  # a reply claimed a save no `remember` made, and Main asked again
     rounds: int = 0
     latency_ms: int = 0
     tokens_in: int = 0
@@ -310,6 +339,7 @@ def score(case: Case, trace: PlanTrace, tools: ToolRegistry, provider: str, mode
         passed = not names and not trace.error
     else:
         passed = case.expect in names
+    passed = passed and all(t in names for t in case.also) and not any(t in names for t in case.avoid)
     args_ok = None
     if case.args and passed:
         hit = next((c for c in calls if c.name == case.expect and c.valid), None)
@@ -328,6 +358,7 @@ def score(case: Case, trace: PlanTrace, tools: ToolRegistry, provider: str, mode
         first=got == case.expect,
         args_ok=args_ok,
         invalid=sum(not c.valid for c in calls),
+        claim_check=trace.claim_check,
         rounds=trace.rounds,
         latency_ms=trace.latency_ms,
         tokens_in=sum(u.input_tokens for u in usage),
@@ -342,11 +373,35 @@ async def run_case(suite: Suite, case: Case, planner: Planner, tools: ToolRegist
     bus = InMemoryBus()
     store = ThreadStore(InMemoryKV())
     if case.history:
-        turns = [Turn(role=h.role, text=h.text, ts=f"{today.isoformat()}T12:00:00+08:00") for h in case.history]
+        turns = [
+            Turn(
+                role=h.role,
+                text=h.text,
+                ts=f"{(h.day or today).isoformat()}T12:00:00+08:00",
+                calls=[TurnCall.of(c.name, c.input, c.result) for c in h.calls],
+            )
+            for h in case.history
+        ]
         await store.append(Thread(channel=CHANNEL, thread=case.id), *turns)
     await StubStack(suite, case).attach(bus)
     await bus.subscribe("rpc.llm.complete", planner.handle)
     main = MainService(bus, store, today=lambda: today, tz=suite.tz, llm_timeout=planner.timeout)
+    for i, fp in enumerate(case.proposals):
+        offered = f"{(fp.day or today).isoformat()}T12:00:00+08:00"
+        spec = f"# Spec: {fp.name}\n\n{fp.purpose}\n"
+        await main.proposals.create(
+            Proposal(
+                id=f"offered-{i}",
+                name=fp.name,
+                purpose=fp.purpose,
+                spec=spec,
+                channel=CHANNEL,
+                thread=case.id,
+                status=fp.status,
+                created=offered,
+                decided=None if fp.status == ProposalStatus.PROPOSED else offered,
+            )
+        )
     await main.start()
     await bus.publish("sense.chat", {"id": f"bench-{case.id}", "channel": CHANNEL, "thread": case.id, "text": case.msg})
     await main.drain()
@@ -372,6 +427,7 @@ class Summary(BaseModel):
     args_checked: int  # passed cases with argument checks
     args_ok: int
     invalid: int
+    rechecked: int  # turns where Main asked again after a reply claimed a save no tool made
     errors: int
     rounds_mean: float
     p50_s: float
@@ -391,6 +447,7 @@ def summarise(provider: str, model: str, expect: str, rows: list[Row]) -> Summar
         args_checked=sum(r.args_ok is not None for r in rows),
         args_ok=sum(r.args_ok is True for r in rows),
         invalid=sum(r.invalid for r in rows),
+        rechecked=sum(r.claim_check for r in rows),
         errors=sum(r.error is not None for r in rows),
         rounds_mean=round(statistics.fmean(r.rounds for r in rows), 2) if rows else 0.0,
         p50_s=round(statistics.median(lat), 1),
@@ -426,14 +483,14 @@ def markdown(rows: list[Row], suite: Suite, today: date) -> str:
         classes = classes_of(mine)
         lines += [f"## {provider} ({mine[0].model})", ""]
         lines += [
-            "| expect | right tool | first call | args ok | invalid calls | errors | rounds | p50 | p95 | cost |",
-            "|---|---|---|---|---|---|---|---|---|---|",
+            "| expect | right tool | first call | args ok | invalid calls | asked again | errors | rounds | p50 | p95 | cost |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
         ]
         for s in summaries(mine):
             name = f"**{s.expect}**" if s.expect == "all" else s.expect
             lines.append(
                 f"| {name} | {pct(s.passed, s.n)} | {pct(s.first, s.n)} | {pct(s.args_ok, s.args_checked)} "
-                f"| {s.invalid} | {s.errors} | {s.rounds_mean} | {s.p50_s}s | {s.p95_s}s | ${s.cost_usd} |"
+                f"| {s.invalid} | {s.rechecked} | {s.errors} | {s.rounds_mean} | {s.p50_s}s | {s.p95_s}s | ${s.cost_usd} |"
             )
         cols = [*classes, ERROR]
         lines += ["", "First decision (rows: expected, columns: what Main did first):", ""]

@@ -3,7 +3,8 @@
 import asyncio
 import json
 import time
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -126,6 +127,12 @@ def chat(text, channel="telegram", thread="123"):
     return Message(subject="sense.chat", data=Envelope(source=channel).stamp(channel=channel, thread=thread, text=text))
 
 
+def dated(msg: Message) -> str:
+    """An earlier message as the planner reads it again: its day in Main's time zone, then the text."""
+    day = datetime.fromisoformat(msg.data["ts"]).astimezone(ZoneInfo("Asia/Taipei"))
+    return f"[{day:%a %Y-%m-%d}] {msg.data['text']}"
+
+
 @pytest.fixture
 async def world():
     bus = InMemoryBus()
@@ -233,11 +240,12 @@ async def test_chat_recalls_plans_replies_and_traces(world):
 
 async def test_thread_history_is_sent_back_per_channel_and_thread(world):
     world.llm_script = [say("A"), say("B"), say("C")]
-    await world.send("sense.chat", chat("one").data)
+    one = chat("one")
+    await world.send("sense.chat", one.data)
     await world.send("sense.chat", chat("two").data)
     await world.send("sense.chat", chat("other", channel="cli", thread="x").data)
     assert world.llm_requests[1]["messages"] == [
-        {"role": "user", "content": "one"},
+        {"role": "user", "content": dated(one)},  # an earlier message carries its date: "today" in it was that day
         {"role": "assistant", "content": "A"},
         {"role": "user", "content": "two"},
     ]
@@ -364,8 +372,15 @@ async def test_ask_tool_publishes_out_ask_and_the_answer_continues_the_thread(wo
         "sense.feedback",
         Envelope(source="telegram").stamp(channel="telegram", thread="123", ref=ask["id"], answer="9pm"),
     )
-    assert world.llm_requests[1]["messages"] == [
-        {"role": "user", "content": "book the ramen place tonight"},
+    sent = world.llm_requests[1]["messages"]
+    assert sent[0] == {"role": "user", "content": dated(incoming)}
+    # the turn's `ask` call is replayed before what it said, so the history shows what was done, not only said
+    (use,) = sent[1]["content"]
+    assert sent[1]["role"] == "assistant" and use["type"] == "tool_use" and use["name"] == "ask"
+    assert use["input"] == {"text": "Book the 7pm or the 9pm?", "choices": ["7pm", "9pm"]}
+    (result,) = sent[2]["content"]
+    assert sent[2]["role"] == "user" and result["type"] == "tool_result" and result["tool_use_id"] == use["id"]
+    assert sent[3:] == [
         {"role": "assistant", "content": "Two options.\n\nBook the 7pm or the 9pm?\n[choices: 7pm / 9pm]"},
         {"role": "user", "content": "9pm"},
     ]
@@ -438,7 +453,8 @@ async def test_turns_on_one_thread_are_serialized_and_threads_run_in_parallel(wo
     world.llm_script = []  # the fake gateway echoes, so replies are tied to the message and not to arrival order
     world.llm_delay = 0.05
     t0 = time.monotonic()
-    await world.bus.publish("sense.chat", chat("one").data)  # same thread, back to back, no draining between
+    one = chat("one")
+    await world.bus.publish("sense.chat", one.data)  # same thread, back to back, no draining between
     await world.bus.publish("sense.chat", chat("two").data)
     await world.bus.publish("sense.chat", chat("other", channel="cli", thread="x").data)
     await world.svc.drain()
@@ -446,7 +462,10 @@ async def test_turns_on_one_thread_are_serialized_and_threads_run_in_parallel(wo
     thread = await world.svc.store.load("telegram", "123")
     assert [t.text for t in thread.turns] == ["one", "re:one", "two", "re:two"]  # nothing overwritten, in order
     second = next(r for r in world.llm_requests if r["messages"][-1]["content"] == "two")
-    assert second["messages"][:2] == [{"role": "user", "content": "one"}, {"role": "assistant", "content": "re:one"}]
+    assert second["messages"][:2] == [
+        {"role": "user", "content": dated(one)},
+        {"role": "assistant", "content": "re:one"},
+    ]
     assert [t.text for t in (await world.svc.store.load("cli", "x")).turns] == ["other", "re:other"]
 
 
