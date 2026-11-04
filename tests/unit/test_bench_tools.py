@@ -6,12 +6,17 @@ The model is a script here; the turn around it is Main's own (MainService on the
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 import pytest
 from bench_tools import (
     NONE,
     ArgCheck,
+    Case,
+    FixtureProposal,
+    HistoryCall,
+    HistoryTurn,
     Planner,
     Suite,
     check_suite,
@@ -96,6 +101,45 @@ def test_an_args_check_on_a_field_the_tool_lacks_is_reported(suite):
     assert any("has no argument ['nonsense']" in p for p in check_suite(bad, default_tools()))
 
 
+def test_also_or_avoid_naming_a_tool_main_lacks_is_reported(suite):
+    bad = suite.model_copy(deep=True)
+    bad.cases[0].avoid = ["teleport"]
+    assert any("does not have: ['teleport']" in p for p in check_suite(bad, default_tools()))
+
+
+async def test_also_and_avoid_decide_a_pass(suite):
+    logged = Case(id="log", msg="spent 85 on breakfast", expect="remember", modules=["hello"])
+    script = (call("remember", note="expenses", fact="breakfast 85"), say("Saved: breakfast 85."))
+    wants_offer = logged.model_copy(update={"also": ["propose_module"]})
+    row = await run_case(suite, wants_offer, planner(*script), default_tools(), suite.today)
+    assert row.tools == ["remember"] and not row.passed  # remembered, but offered no module
+    no_offer = logged.model_copy(update={"avoid": ["propose_module"]})
+    row = await run_case(suite, no_offer, planner(*script), default_tools(), suite.today)
+    assert row.passed and not row.claim_check
+
+
+async def test_offered_proposals_and_a_dated_history_with_calls_reach_main(suite):
+    c = Case(
+        id="offered",
+        msg="lunch was 120",
+        expect="remember",
+        modules=["hello"],
+        proposals=[FixtureProposal(name="expenses", purpose="Tracks spending.")],
+        history=[
+            HistoryTurn(role="user", text="today i spent 112 on dinner", day=date(2026, 10, 27)),
+            HistoryTurn(
+                role="assistant", text="Logged: 112.", calls=[HistoryCall(name="remember", input={"note": "expenses"})]
+            ),
+        ],
+    )
+    p = planner(say("ok"))
+    await run_case(suite, c, p, default_tools(), suite.today)
+    sent = p.provider.requests[0]  # type: ignore[attr-defined]
+    assert "- expenses: Tracks spending. (offered 2026-11-03, waiting for his Build it" in sent.system
+    assert sent.messages[0].content == "[Tue 2026-10-27] today i spent 112 on dinner"
+    assert sent.messages[1].content[0].name == "remember" and sent.messages[3].content == "Logged: 112."
+
+
 def test_arg_checks():
     assert ArgCheck.model_validate("mei").check("MEI")
     assert ArgCheck.model_validate(["mei", "lin"]).check("lin")
@@ -160,7 +204,7 @@ async def test_history_reaches_the_model(suite):
     await run_case(suite, case(suite, "ask-history-promoted"), p, default_tools(), suite.today)
     sent = p.provider.requests[0].messages  # type: ignore[attr-defined]
     assert [m.content for m in sent[:2]] == [
-        "had lunch with jason and kevin today",
+        "[Tue 2026-11-03] had lunch with jason and kevin today",  # the suite's today: "today" in it is that day
         "Nice! Want me to remember anything from it?",
     ]
 

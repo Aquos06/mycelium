@@ -202,6 +202,75 @@ cases:
     pack: [mei]
     args: {fact: {has: [tainan]}}
 
+  # ---- logging: remember what nothing tracks, offer a module for it once, never claim a save not made ------
+  # Hansen's own thread (2026-11-04): Main replied "Got it all saved" and called nothing. The history is his,
+  # with the calls Main really made; *-old-history is the same thread as it was kept before calls were.
+  - id: rem-moto-history
+    msg: &moto >-
+      today i did not spend anything, but tomorrow i need to spend 12000 for the motorcycle. it brokedown last
+      saturdya, i need to change the gas pump and the gas lid, and also plus 500 for the chain cleaning
+    expect: remember
+    modules: [hello]
+    history: &moto-history
+      - {role: user, day: 2026-10-26, text: "hello from the web e2e a5a4007a"}
+      - role: assistant
+        text: "Hello from the other side! This is message 14 of today (2026-10-26), and the grand total is 34 messages across all time."
+        calls: [{name: ask_module, input: {module: hello, action: stats}, result: {ok: true, today: 14, total: 34}}]
+      - {role: user, day: 2026-10-27, text: "my name is hansen"}
+      - {role: assistant, text: "Nice to meet you, Hansen! How can I help you?"}
+      - {role: user, day: 2026-10-27, text: "today i spend 112 for dinner and 25 for drinks"}
+      - role: assistant
+        text: "Got it. I've logged your spending for today: 112 for dinner and 25 for drinks."
+        calls: [{name: remember, input: {note: hansen, fact: "spent 112 on dinner and 25 on drinks"}}]
+      - {role: user, day: 2026-11-02, text: "i just spend 152 for my dinner, pelase log that for my expense"}
+      - role: assistant
+        text: "Logged: 152 for dinner today."
+        calls: [{name: remember, input: {note: hansen, fact: "spent 152 on dinner"}}]
+  - id: rem-moto-old-history
+    msg: *moto
+    expect: remember
+    modules: [hello]
+    history:
+      - {role: user, day: 2026-10-26, text: "hello from the web e2e a5a4007a"}
+      - {role: assistant, text: "Hello from the other side! This is message 14 of today (2026-10-26), and the grand total is 34 messages across all time."}
+      - {role: user, day: 2026-10-27, text: "today i spend 112 for dinner and 25 for drinks"}
+      - {role: assistant, text: "Got it. I've logged your spending for today: 112 for dinner and 25 for drinks."}
+      - {role: user, day: 2026-11-02, text: "i just spend 152 for my dinner, pelase log that for my expense"}
+      - {role: assistant, text: "Logged: 152 for dinner today."}
+  - id: rem-moto-fresh
+    msg: *moto
+    expect: remember
+    modules: [hello]
+  - id: rem-moto-date
+    msg: my motorcycle broke down last saturday, remember that
+    expect: remember
+    modules: [hello]
+    history: *moto-history
+    args: {day: "2026-10-31"}  # last Saturday from Tuesday 2026-11-03, not the 2026-10-26 an old reply mentions
+  - id: rem-log-offer
+    msg: spent 85 on breakfast
+    expect: remember
+    also: [propose_module]  # nothing tracks spending: remember it, then offer a module
+    modules: [hello]
+  - id: rem-log-offer-zh
+    msg: 早餐花了85
+    expect: remember
+    also: [propose_module]
+    modules: [hello]
+  - id: rem-log-waiting
+    msg: lunch was 120
+    expect: remember
+    avoid: [propose_module]  # one is already offered and waiting for Build it
+    modules: [hello]
+    proposals: [{name: expenses, purpose: "Tracks spending from chat and answers totals for a date range."}]
+  - id: rem-log-declined
+    msg: taxi home was 240
+    expect: remember
+    avoid: [propose_module]  # he chose Not now two days ago
+    modules: [hello]
+    proposals:
+      - {name: expenses, purpose: "Tracks spending from chat and answers totals.", status: declined, day: 2026-11-01}
+
   # ---- recall: the message is about memory the pack does not have --------------------------------------
   - id: rec-jason
     msg: what do you know about jason?

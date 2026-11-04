@@ -111,6 +111,7 @@ class PlanTrace(Envelope):
     output: SayOutput | AskOutput
     reply_id: str  # the out.say / out.ask id; the tracer attaches votes by it
     proposal: str | None = None  # the module proposed, when the turn ended in a proposal (its card is the ask)
+    claim_check: bool = False  # a reply said something was saved that no `remember` did, so Main asked again
     error: str | None = None
     latency_ms: int = 0
 
