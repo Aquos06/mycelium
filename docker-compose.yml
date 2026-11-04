@@ -84,6 +84,8 @@ services:
       AGENT_ENDPOINT: ${AGENT_ENDPOINT:-${VLLM_ENDPOINT:-}}
       AGENT_MODEL: ${AGENT_MODEL:-${VLLM_MODEL:-}}
       AGENT_KEY: ${AGENT_KEY:-}
+      AGENT_CONTEXT: ${AGENT_CONTEXT:-}               # opencode: the model's window (else asked of the server)
+      AGENT_MAX_OUTPUT: ${AGENT_MAX_OUTPUT:-}         # opencode: tokens one answer may take (else a quarter)
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}       # claude_code only
       CLAUDE_CODE_MODEL: ${CLAUDE_CODE_MODEL:-}
     volumes:

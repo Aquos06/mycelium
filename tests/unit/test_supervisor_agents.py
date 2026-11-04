@@ -3,6 +3,8 @@ keys redacted, and the container's settings."""
 
 import io
 import json
+import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -111,6 +113,36 @@ def test_every_agent_has_an_image_folder_and_a_start_script():
         dockerfile = (AGENTS_DIR / name / "Dockerfile").read_text()
         assert "FROM ${BASE_IMAGE}" in dockerfile and "USER module" in dockerfile
         assert (AGENTS_DIR / name / "run.sh").read_text().startswith("#!/bin/sh")
+
+
+def opencode_config(tmp_path: Path, **env: str) -> dict:
+    """Run opencode's start script with a stand-in `opencode` on PATH; return the config it wrote."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "opencode").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "opencode").chmod(0o755)
+    home = tmp_path / "home"
+    base = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(home), "MODEL_NAME": "/model"}
+    base["PATH"] += ":" + str(Path(sys.executable).parent)  # python3 for the window lookup
+    done = subprocess.run(
+        ["sh", str(AGENTS_DIR / "opencode" / "run.sh")], env={**base, **env}, capture_output=True, text=True, timeout=30
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads((home / ".config" / "opencode" / "opencode.json").read_text())
+
+
+def test_opencode_gets_the_models_window_so_it_does_not_ask_for_32000_tokens(tmp_path):
+    """Without a limit OpenCode asks for 32000 output tokens, which a 32k vLLM refuses (the first grown build)."""
+    cfg = opencode_config(tmp_path, MODEL_ENDPOINT="http://127.0.0.1:9/v1")  # nothing answers: the default window
+    assert cfg["provider"]["local"]["models"]["/model"]["limit"] == {"context": 32768, "output": 8192}
+    assert cfg["permission"]["external_directory"] == "allow"  # a refused permission ends an `opencode run`
+
+
+def test_opencode_window_and_output_can_be_set(tmp_path):
+    cfg = opencode_config(
+        tmp_path, MODEL_ENDPOINT="http://127.0.0.1:9/v1", MODEL_CONTEXT="131072", MODEL_MAX_OUTPUT="16000"
+    )
+    assert cfg["provider"]["local"]["models"]["/model"]["limit"] == {"context": 131072, "output": 16000}
 
 
 async def test_an_agent_works_on_a_copy_with_only_its_own_variables(tmp_path):
