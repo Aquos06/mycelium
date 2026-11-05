@@ -33,10 +33,11 @@ def render_modules(modules: list[ModuleInfo]) -> str:
     lines = [] if running else ["(none running)"]
     for m in running:
         listens = f" Listens to: {', '.join(m.listens)}." if m.listens else ""
+        head = f"- {m.name}{_grown(m)}: {m.purpose.strip()}{listens}"
         if not m.specs:  # a module whose requests are only named
-            lines.append(f"- {m.name}: {m.purpose.strip()}{listens} Requests: {', '.join(m.requests) or 'no requests'}")
+            lines.append(f"{head} Requests: {', '.join(m.requests) or 'no requests'}")
             continue
-        lines.append(f"- {m.name}: {m.purpose.strip()}{listens} Requests (send the fields shown in `args`):")
+        lines.append(f"{head} Requests (send the fields shown in `args`):")
         for r in m.requests:
             spec = m.specs.get(r)
             if spec is None:
@@ -50,14 +51,26 @@ def render_modules(modules: list[ModuleInfo]) -> str:
     return "\n".join(lines)
 
 
+def _grown(m: ModuleInfo) -> str:
+    """A module the builder grew can be changed (`change_module`); a hand-written one cannot."""
+    if not m.grown:
+        return ""
+    return f" (grown, v{m.version})" if m.version else " (grown)"
+
+
 def render_proposals(
     proposals: list[Proposal], running: set[str] | None = None, here: tuple[str, str] | None = None
 ) -> str:
-    """Modules already offered and not running: so the planner does not offer one again, or offers it knowingly.
-    A card is "there" only in the chat it went to; a module built and since retired can be offered again."""
+    """Modules already offered and not running, and changes offered and not made: so the planner does not offer one
+    again, or offers it knowingly. A card is "there" only in the chat it went to; a module built and since retired
+    can be offered again."""
     lines = []
     for p in proposals:
         since = (p.decided or p.created)[:10]
+        if p.is_change:
+            if state := _change_state(p, since, here):
+                lines.append(f"- a change to {p.name}: {p.purpose.strip()} ({state})")
+            continue
         match p.status:
             case ProposalStatus.DONE if running is None or p.name in running:
                 continue  # under Modules
@@ -78,6 +91,23 @@ def render_proposals(
                 state = f"its build failed on {since}: call `propose_module` again only if he asks for it"
         lines.append(f"- {p.name}: {p.purpose.strip()} ({state})")
     return "\n".join(lines) or "(none)"
+
+
+def _change_state(p: Proposal, since: str, here: tuple[str, str] | None) -> str:
+    """A change's line, or "" once it is made (the module under Modules has it)."""
+    match p.status:
+        case ProposalStatus.DONE:
+            return ""
+        case ProposalStatus.PROPOSED if here is not None and (p.channel, p.thread) != here:
+            return f"offered {p.created[:10]} in another chat: if he asks here, call `change_module` here"
+        case ProposalStatus.PROPOSED:
+            return f"offered {p.created[:10]}, waiting for his Change it: do not offer it again, the card is there"
+        case ProposalStatus.DECLINED:
+            return f"he chose Not now on {since}: do not offer it again unless he asks for it"
+        case ProposalStatus.BUILDING:
+            return f"being made since {since}; {p.name} runs as it was until then"
+        case _:
+            return f"it failed on {since} and {p.name} runs as it was: call `change_module` again only if he asks"
 
 
 def planner_prompt(
@@ -121,6 +151,7 @@ How you work:
 - Modules hold exact data. Use `ask_module` instead of estimating numbers, lists or history. Send a request the fields its line shows, in `args`; for "how much" or "what did I" with no dates, ask for all of it, not only today.
 - When Hansen logs something a module takes through a request like `add` (money spent, for expenses), send it there with `ask_module`, one call per entry, with the day it happened: that is where it belongs, not in memory.
 - A module that listens to sense.chat hears Hansen's messages itself: when he logs something it tracks (dinner 350 for expenses), acknowledge it without logging it again.
+- Use `change_module` when a module marked grown does something wrong, should work differently, or cannot do what Hansen asks of it (take an entry out, keep one more field, a total it does not give): say what it should do after the change. Saying it cannot is not enough: send the card that makes it able to. It keeps its data, and nothing changes until he chooses Change it. Offer a change only by calling `change_module`, never in words: its card is the only way he can make it. Do not `propose_module` a second module for what a running one should do; a module not marked grown cannot be changed, so say so.
 - Use `propose_module` when Hansen wants something ongoing that no module above does: tracking or logging things over time, counts, totals, history. Draft it from his words; nothing is built until he chooses Build it. Offer a module only by calling `propose_module`: its card is the only way he can build it, so never offer to build or rebuild one in words.
 - When he logs money spent, a count or a reading that no module above tracks, `remember` it first, then `propose_module` to track it from now on (`propose_module` ends your turn, so what is not remembered by then is lost). If a module under "Offered" below covers it, only `remember` it and do what its line says.
 - Use `ask` when a decision is Hansen's.
@@ -133,5 +164,5 @@ Memory for this message:
 Modules:
 {render_modules(modules)}
 
-Offered (modules proposed to Hansen, not running):
+Offered (modules and changes proposed to Hansen, not made yet):
 {render_proposals(proposals, {m.name for m in modules if m.status == "running"}, here)}"""

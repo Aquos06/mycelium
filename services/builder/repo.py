@@ -48,6 +48,14 @@ class GrownRepo:
             log.warning("committed %s as %s but could not tag it: %s", name, sha, e)
         return sha
 
+    async def last_commit(self, name: str) -> str | None:
+        """The commit GROWN_DIR/<name> was last built in: where a change to it can go back to."""
+        try:
+            sha = (await self._git("log", "-1", "--format=%h", "--abbrev=12", "--", name)).strip()
+        except RuntimeError:
+            return None
+        return sha or None
+
     async def _git(self, *args: str) -> str:
         def run() -> str:
             p = subprocess.run(

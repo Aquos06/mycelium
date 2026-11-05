@@ -49,6 +49,8 @@ class ModuleInfo(BaseModel):
     listens: list[str] = Field(default_factory=list)  # its manifest's subscribes: sense.chat = it hears every message
     specs: dict[str, RequestSpec] = Field(default_factory=dict)  # "<module>.<action>" -> what it takes and returns
     status: str = "running"  # the supervisor's: a stopped or retired module is listed as not running, never called
+    version: str = ""
+    grown: bool = False  # the builder grew it (GROWN_DIR), so `change_module` can change it
 
 
 class PackItem(BaseModel):

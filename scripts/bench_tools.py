@@ -87,10 +87,18 @@ class FixtureModule(BaseModel):
     requests: list[str] | dict[str, Any] = Field(min_length=1)  # named, or described as a manifest would
     subscribes: list[str] = Field(default_factory=list)  # Main's prompt says what a module listens to
     reply: dict[str, Any] = Field(default_factory=dict)  # what every request of the module answers
+    grown: bool = False  # the builder grew it: listed under rpc.sys.list `grown`, so change_module can change it
+    version: str = "0.1.0"
 
     def manifest(self, name: str) -> dict[str, Any]:
         """What the supervisor would serve for it: the SDK's manifest, described requests in `request_specs`."""
-        data = {"name": name, "purpose": self.purpose, "requests": self.requests, "subscribes": self.subscribes}
+        data = {
+            "name": name,
+            "version": self.version,
+            "purpose": self.purpose,
+            "requests": self.requests,
+            "subscribes": self.subscribes,
+        }
         return Manifest.model_validate(data).model_dump()
 
     @property
@@ -239,7 +247,7 @@ class StubStack:
         await bus.subscribe("rpc.memory.recall", self._recall)
         await bus.subscribe("rpc.memory.remember", self._remember)
         await bus.subscribe("rpc.sys.list", self._list)
-        await bus.subscribe("rpc.build.list", self._builds)  # propose_module checks the name is free
+        await bus.subscribe("rpc.build.list", self._builds)  # propose_module and change_module check it is not building
         await bus.subscribe("rpc.mod.>", self._module)
 
     async def _recall(self, msg: Message) -> None:
@@ -256,11 +264,15 @@ class StubStack:
         await msg.respond({"ok": True, "path": path, "created": known is None})
 
     async def _list(self, msg: Message) -> None:
-        rows = [{"name": n, "status": "running", "manifest": m.manifest(n)} for n, m in self.modules.items()]
+        rows = [
+            {"name": n, "status": "running", "version": m.version, "manifest": m.manifest(n)}
+            for n, m in self.modules.items()
+        ]
         rows += [
             {"name": n, "status": "retired", "manifest": {"name": n, "purpose": f"{n}, retired"}} for n in self.retired
         ]
-        await msg.respond({"ok": True, "modules": rows})
+        grown = [n for n, m in self.modules.items() if m.grown]
+        await msg.respond({"ok": True, "modules": rows, "grown": grown, "folders": [*self.modules]})
 
     async def _builds(self, msg: Message) -> None:
         await msg.respond({"ok": True, "builds": []})

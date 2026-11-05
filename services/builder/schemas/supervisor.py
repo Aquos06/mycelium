@@ -3,6 +3,7 @@
     rpc.sys.list      {}           -> ModulesReply   (the supervisor's ModuleList)
     rpc.sys.verify    VerifyCall   -> VerifyReply    (its VerifyResult)
     rpc.sys.deploy    DeployCall   -> DeployReply    (its Deployed)
+    rpc.sys.snapshot  SnapshotCall -> SnapshotReply  (its Snapshot): a change build copies the module's data first
     rpc.sys.agents    {}           -> AgentsReply    (its AgentList)
     rpc.sys.agent     AgentCall    -> AgentReply     (its AgentRun)
 
@@ -47,6 +48,15 @@ class DeployCall(BaseModel):
 
 class DeployReply(BaseModel):
     image: str | None = None
+
+
+class SnapshotCall(BaseModel):
+    name: str
+    label: str  # in the copy's name: the version it was taken from and the build that took it
+
+
+class SnapshotReply(BaseModel):
+    volume: str | None = None  # the copy; None: the module had no data yet
 
 
 class AgentInfo(BaseModel):

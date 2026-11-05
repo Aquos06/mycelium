@@ -46,6 +46,7 @@ modules:
         - {day: "2026-11-01", gym: B-Plus, hardest: V4}
   ledger:  # the shape a grown tracker has now: described requests, entries through `add`, no chat parsing
     purpose: Tracks Hansen's spending, one entry per expense, and answers totals and the list of them.
+    grown: true  # change_module can change it
     requests:
       add:
         description: Store one expense.
@@ -60,6 +61,20 @@ modules:
         params: {limit: optional number}
         returns: {expenses: list}
     reply: {id: 7, total: 3420, count: 21}
+  books:  # a second grown module, for changes that are not about money
+    purpose: Keeps the books Hansen reads, one entry per book, and lists them.
+    grown: true
+    version: 0.2.0
+    requests:
+      add:
+        description: Store one book Hansen read.
+        params: {title: string, author: optional string, finished: optional date}
+        returns: {id: number}
+      list:
+        description: Every book, newest first.
+        params: {year: optional number}
+        returns: {books: list}
+    reply: {id: 3, books: [{title: Project Hail Mary, author: Andy Weir, finished: "2026-10-12"}]}
 default_modules: [hello, expenses, climbing]
 
 notes:
@@ -763,3 +778,151 @@ cases:
     msg: keep a list of my subscriptions, what they cost and when they renew
     expect: propose_module
     args: {name: {has: [subscri]}}
+
+  # ---- change_module: a module marked grown should do something else (20 cases), and messages that need another
+  # tool although a grown module is there. The modules here are the grown ones (ledger, books) and hello, which is
+  # hand-written.
+  - id: chg-category
+    msg: can my expense tracker also keep a category for each expense? like food or transport
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [categor]}}
+  - id: chg-currency
+    msg: the expenses module should handle USD too, not only TWD
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [usd, currenc]}}
+  - id: chg-yesterday-wrong
+    msg: the expense summary is wrong, it never counts what I logged with yesterday's date
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger}
+  - id: chg-delete
+    msg: I need to be able to delete an expense I logged by mistake
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [delet, remov]}}
+  - id: chg-edit-amount
+    msg: let me fix the amount of an expense after I've logged it
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [edit, updat, fix, correct, chang]}}
+  - id: chg-monthly
+    msg: make the expense module give me a breakdown by month
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [month]}}
+  - id: chg-budget
+    msg: add a monthly budget to my expense tracker and warn me when I go over it
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [budget]}}
+  - id: chg-search
+    msg: the expenses module should let me search my expenses by what I wrote in the description
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [search, descri, find, filter]}}
+  - id: chg-note
+    msg: add a note field to each expense in the module
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [note]}}
+  - id: chg-recurring
+    msg: my expense module should handle recurring things like rent every month
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [recur, rent, repeat]}}
+  - id: chg-zh-category
+    msg: 記帳模組可以加上分類嗎
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger}
+  - id: chg-lost-feature  # Hansen's own words for it: "one feature is lost"
+    msg: the expenses module lost the feature to show totals per day, bring it back
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [day, daily]}}
+  - id: chg-then-change-it
+    msg: then change it so it can
+    expect: change_module
+    modules: [hello, ledger]
+    history:
+      - {role: user, text: "how much did I spend on coffee this month?"}
+      - role: assistant
+        text: "The ledger only gives totals for a date range, not per description, so I can't split out coffee: 3420 TWD in all this month."
+        calls: [{name: ask_module, input: {module: ledger, action: summary, args: {from: "2026-11-01"}}, result: {ok: true, total: 3420, count: 21}}]
+    args: {module: ledger, change: {has: [descri, coffee, categor]}}
+  - id: chg-split-bill
+    msg: the expense module should know when I split a bill with someone, and only count my share
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [split, share]}}
+  - id: chg-payment-method
+    msg: I want the expense tracker to record whether I paid by card or cash
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [card, cash, pay]}}
+  - id: chg-weekly
+    msg: the expense tracker should tell me my weekly total too
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [week]}}
+  - id: chg-decimals
+    msg: fix the expenses module, it should accept amounts with decimals like 12.5
+    expect: change_module
+    modules: [hello, ledger]
+    args: {module: ledger, change: {has: [decimal, "12.5", fraction, float]}}
+  - id: chg-books-rating
+    msg: the reading log should also keep a rating out of 5 for each book
+    expect: change_module
+    modules: [hello, ledger, books]
+    args: {module: books, change: {has: [rating, rate, score]}}
+  - id: chg-books-started
+    msg: the books module marks books as finished when I only started them, it should keep a started date and a finished date
+    expect: change_module
+    modules: [hello, ledger, books]
+    args: {module: books, change: {has: [start]}}
+  - id: chg-books-pages
+    msg: can the reading log count pages too, so I know how many pages I read this month
+    expect: change_module
+    modules: [hello, ledger, books]
+    args: {module: books, change: {has: [page]}}
+  - id: chg-fix-its  # Hansen's thread, 2026-11-05: every `add` failed, he asked to fix it, Main grew expenses-v2
+    msg: pelase fix its
+    expect: change_module
+    avoid: [propose_module]
+    modules: [hello, ledger]
+    history:
+      - {role: user, text: "log all of my past expneses"}
+      - role: assistant
+        text: "The expenses module is running, but there's a mismatch: it expects a `day` field but the database column is `date`. I couldn't log any of them."
+        calls:
+          - {name: ask_module, input: {module: ledger, action: add, args: {amount: 112, description: dinner, day: "2026-10-28"}}, result: {ok: false, error: "table expenses has no column named day"}}
+          - {name: ask_module, input: {module: ledger, action: add, args: {amount: 25, description: drinks, day: "2026-10-28"}}, result: {ok: false, error: "table expenses has no column named day"}}
+    args: {module: ledger, change: {has: [day, date, column]}}
+  - id: chg-remove-entry  # the same thread: the module has no way to take an entry out
+    msg: wait remove the november 2 one, I logged it twice
+    expect: change_module
+    modules: [hello, ledger]
+    history:
+      - {role: user, text: "log 152 dinner on nov 2"}
+      - role: assistant
+        text: "Logged 152 for dinner on 2026-11-02."
+        calls: [{name: ask_module, input: {module: ledger, action: add, args: {amount: 152, description: dinner, day: "2026-11-02"}}, result: {ok: true, id: 7}}]
+    args: {module: ledger, change: {has: [delet, remov]}}
+  - id: chg-not-water  # something new, though grown modules are there: a new module, not a change
+    msg: I want to track how much water I drink every day
+    expect: propose_module
+    avoid: [change_module]
+    modules: [hello, ledger, books]
+    args: {name: {has: [water, hydrat, drink]}}
+  - id: chg-not-log  # an entry for a grown module is an `add`, not a change to it
+    msg: spent 240 on a haircut today
+    expect: ask_module
+    avoid: [change_module]
+    modules: [hello, ledger, books]
+    args: {module: ledger, action: add}
+  - id: chg-not-question  # what it can do is under Modules: answer it
+    msg: what can my expense module do?
+    expect: none
+    modules: [hello, ledger, books]

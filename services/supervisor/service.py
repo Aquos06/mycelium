@@ -53,6 +53,8 @@ from .schemas import (
     ModuleRef,
     ModuleRow,
     ModuleStatus,
+    Snapshot,
+    SnapshotRequest,
     Stopped,
     VerifyRequest,
     VerifyResult,
@@ -106,6 +108,7 @@ class Supervisor:
         handlers = {
             "deploy": self.deploy,
             "verify": self.verify,
+            "snapshot": self.snapshot,
             "agent": self.agent,
             "agents": self.list_agents,
             "stop": self.stop,
@@ -257,6 +260,16 @@ class Supervisor:
             seconds=_since(t0),
         )
 
+    async def snapshot(self, data: dict[str, Any]) -> Snapshot:
+        """A copy of a module's data volume, before a change build deploys its new version on that data: the way
+        back if the new version reads it wrong. Under the deploy lock, so no deploy swaps the container meanwhile."""
+        req = SnapshotRequest.model_validate(data)
+        async with self._lock:
+            volume = await asyncio.to_thread(self.docker.snapshot_data, req.name, req.label)
+        if volume:
+            log.info("copied %s's data to %s", req.name, volume)
+        return Snapshot(name=req.name, volume=volume)
+
     async def agent(self, data: dict[str, Any]) -> AgentRun:
         """A coding agent on a copy of a staged build (agents.py): the folder as it left it comes back, keys out."""
         req = AgentRequest.model_validate(data)
@@ -322,12 +335,14 @@ class Supervisor:
             ModuleRow(**r.model_dump(), container=c.status if (c := containers.get(r.name)) else None)
             for r in await self.registry.all()
         ]
-        return ModuleList(modules=rows, folders=self._folders())
+        grown = self._folders([self.grown_dir]) if self.grown_dir is not None else []
+        return ModuleList(modules=rows, folders=self._folders(self.roots), grown=grown)
 
-    def _folders(self) -> list[str]:
-        """Every module folder on disk in either root, deployed or not: names a build may not take."""
+    @staticmethod
+    def _folders(roots: list[Path]) -> list[str]:
+        """Every module folder on disk in these roots, deployed or not: names a build may not take."""
         names = set()
-        for root in self.roots:
+        for root in roots:
             if root.is_dir():
                 names |= {d.name for d in root.iterdir() if d.is_dir() and NAME_RE.fullmatch(d.name)}
         return sorted(names)

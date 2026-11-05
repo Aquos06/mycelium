@@ -99,7 +99,25 @@ def coder_test_file(name: str) -> str:
     return f"tests/test_{name.replace('-', '_')}.py"
 
 
-def spec_text(name: str, spec: str) -> str:
+KEEP_DATA = """\
+It is running now with Hansen's data in its data folder (`mod.data_dir`), and the new version starts on that same
+data: keep it readable. Keep the tables and files the module has and the meaning of their columns; add what the
+change needs (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN` when the column is missing, a default for
+the old rows), and never drop, rename or recreate a table or a file. Keep every request it answers unless the change
+says otherwise; a request may take new optional fields. Update its description in manifest.yaml when it changes."""
+
+UPGRADE_TEST = (
+    "Add tests for the change, and one that writes a data folder the way the old code did (its tables, a row or two), "
+    "starts the new module on it and checks the old entries still read."
+)
+
+
+def spec_text(name: str, spec: str, change: bool = False) -> str:
+    if change:
+        return (
+            f"## The module to change: `{name}`\n\nSPEC.md, what Hansen approved and each change since, oldest "
+            f"first; the last section is the change this build makes:\n\n{spec.strip()}"
+        )
     return f"## The module to write: `{name}`\n\nSPEC.md, what Hansen approved:\n\n{spec.strip()}"
 
 

@@ -1,7 +1,10 @@
 """A build's folder: scaffolded from template/, written by a coder, tidied after every round, promoted when it passes.
 
-    GROWN_DIR/.staging/<name>/   the build in progress (the supervisor verifies it there, never deploys it)
-    GROWN_DIR/<name>/            a module that passed, committed in GROWN_DIR's git repo
+    GROWN_DIR/.staging/<name>/            the build in progress (the supervisor verifies it there, never deploys it)
+    GROWN_DIR/<name>/                     a module that passed, committed in GROWN_DIR's git repo
+    GROWN_DIR/.staging/<name>.previous/   a change build's promote: the version it replaces, until it is committed
+
+A new module starts from template/; a change starts from a copy of the module as it is (start_change).
 
 A coder may write only manifest.yaml, app/<x>.py and tests/test_<x>.py. Everything else is
 the builder's: the template's protected files are put back after every round, SPEC.md and the contract test
@@ -19,6 +22,7 @@ from mycelium_sdk.manifest import NAME_RE
 from .contract import CONTRACT_TEST
 
 STAGING = ".staging"
+PREVIOUS = ".previous"  # no module name has a dot, so this never names a build
 TEXT_SUFFIXES = {".py", ".md", ".yaml", ".yml", ".txt", ".ini", ""}
 PROTECTED = (  # from template/, put back after every round
     "Dockerfile",
@@ -97,18 +101,41 @@ class Workspace:
     def module(self, name: str) -> Path:
         return self.grown / name
 
+    def previous(self, name: str) -> Path:
+        return self.grown / STAGING / f"{name}{PREVIOUS}"
+
     def exists(self, name: str) -> bool:
         return self.module(name).is_dir()
 
+    def spec(self, name: str) -> str:
+        """The module's SPEC.md as it was last built: what Hansen approved, and every change since."""
+        p = self.module(name) / SPEC
+        return p.read_text() if p.is_file() else ""
+
     def start(self, name: str, spec: str) -> Path:
         """A fresh staging folder: whatever an earlier build of this name left there goes."""
+        d = self._clear(name)
+        scaffold(name, d.parent, self.template)
+        (d / SPEC).write_text(spec)
+        (d / CONTRACT).write_text(CONTRACT_TEST)  # a coding agent runs it from the first round
+        return d
+
+    def start_change(self, name: str, spec: str) -> Path:
+        """A change build's staging folder: a copy of the module as it is, with the new SPEC.md. The module keeps
+        running from its own folder until the change is verified, committed and deployed."""
+        d = self._clear(name)
+        shutil.copytree(self.module(name), d, symlinks=True, ignore=shutil.ignore_patterns(*JUNK))
+        (d / SPEC).write_text(spec)
+        (d / CONTRACT).write_text(CONTRACT_TEST)
+        return d
+
+    def _clear(self, name: str) -> Path:
+        if not NAME_RE.match(name):
+            raise ValueError(f"invalid module name: {name!r} (lowercase slug, 2-31 chars)")
         d = self.staging(name)
         if d.exists():
             shutil.rmtree(d)
         d.parent.mkdir(parents=True, exist_ok=True)
-        scaffold(name, d.parent, self.template)
-        (d / SPEC).write_text(spec)
-        (d / CONTRACT).write_text(CONTRACT_TEST)  # a coding agent runs it from the first round
         return d
 
     def tidy(self, name: str, spec: str) -> list[str]:
@@ -145,19 +172,32 @@ class Workspace:
     def files(self, name: str) -> dict[str, str]:
         return read_files(self.staging(name))
 
-    def promote(self, name: str) -> Path:
+    def promote(self, name: str, replace: bool = False) -> Path:
+        """Staging becomes the module. With `replace` (a change) the version there moves aside until `settle`."""
         src, dest = self.staging(name), self.module(name)
         if dest.exists():
-            raise FileExistsError(f"{dest} already exists")
+            if not replace:
+                raise FileExistsError(f"{dest} already exists")
+            old = self.previous(name)
+            if old.exists():
+                shutil.rmtree(old)
+            dest.rename(old)
         _drop_junk(src)
         src.rename(dest)
         return dest
 
     def demote(self, name: str) -> None:
-        """Undo promote (a commit that failed): the module goes back to staging, out of GROWN_DIR."""
-        src, dest = self.module(name), self.staging(name)
+        """Undo promote (a commit that failed): the module goes back to staging, out of GROWN_DIR, and the version
+        a change replaced comes back."""
+        src, dest, old = self.module(name), self.staging(name), self.previous(name)
         if src.exists() and not dest.exists():
             src.rename(dest)
+        if old.exists() and not src.exists():
+            old.rename(src)
+
+    def settle(self, name: str) -> None:
+        """The change is committed: the version it replaced lives in git (its tag), not on disk."""
+        shutil.rmtree(self.previous(name), ignore_errors=True)
 
 
 def _drop_junk(d: Path) -> None:

@@ -30,6 +30,7 @@ class CoderContext(BaseModel):
     dir: Path  # GROWN_DIR/.staging/<name>: the only place a coder writes
     round: int
     fresh: bool  # no round has delivered files yet: write the module from the start
+    change: str = ""  # a change build: what to change in the module that is there (fresh is then never true)
     feedback: Feedback | None = None  # what failed last round, and its output
     brief: Brief
 

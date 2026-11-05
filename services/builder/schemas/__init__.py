@@ -10,7 +10,7 @@ gateway.py      what our coder asks the gateway before a build (rpc.llm.config)
 The model calls (Prompt, CompletionRequest, ChatMessage, Tool, CompletionReply) and ask() are the SDK's.
 """
 
-from .build import BuildRecord, BuildStatus, BuildSummary, FeedbackStage, Round, Stage
+from .build import BuildMode, BuildRecord, BuildStatus, BuildSummary, FeedbackStage, Round, Stage
 from .coder import CoderContext, CoderResult, Feedback, FileArg, ManifestDraft, Spend, WriteFiles
 from .events import BuildDone, BuildEvent, BuildFailed, BuildProgress, BuildStarted
 from .gateway import ConfigReply, ProviderState, SlotState
@@ -35,11 +35,14 @@ from .supervisor import (
     DeployReply,
     ModuleEntry,
     ModulesReply,
+    SnapshotCall,
+    SnapshotReply,
     VerifyCall,
     VerifyReply,
 )
 
 __all__ = [
+    "BuildMode",
     "BuildRecord",
     "BuildStatus",
     "BuildSummary",
@@ -79,6 +82,8 @@ __all__ = [
     "DeployReply",
     "ModuleEntry",
     "ModulesReply",
+    "SnapshotCall",
+    "SnapshotReply",
     "VerifyCall",
     "VerifyReply",
 ]

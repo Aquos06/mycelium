@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from mycelium_sdk import Envelope
 
-from .build import FeedbackStage, Stage
+from .build import BuildMode, FeedbackStage, Stage
 
 
 class BuildEvent(Envelope):
     build_id: str
     name: str
     coder: str
+    mode: BuildMode = BuildMode.NEW  # a change keeps the module running as it was until its new version deploys
 
 
 class BuildStarted(BuildEvent):

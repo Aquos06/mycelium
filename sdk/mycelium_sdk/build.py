@@ -1,6 +1,6 @@
 """rpc.build.start and rpc.build.get, as the builder answers them and Main and mctl ask them.
 
-    rpc.build.start   BuildRequest -> StartReply
+    rpc.build.start   BuildRequest -> StartReply: a new module from a spec, or a change to one the builder grew
     rpc.build.get     BuildRef     -> the build's record (services/builder/schemas/build.py)
 
 One definition for both sides, like llm.py for rpc.llm.*: the builder validates what arrives with the same
@@ -9,18 +9,22 @@ model Main fills, so the contract cannot drift between them.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .manifest import NAME_RE, RESERVED
 
 SPEC_MAX = 20_000
+CHANGE_MAX = 4_000
+TEXT_MIN = 20
 
 
 class BuildRequest(BaseModel):
-    """A module to grow from a spec Hansen approved."""
+    """A module to grow from a spec Hansen approved (`spec`), or a change he approved to one the builder grew
+    (`change`): one of the two. A change build edits the module as it is and keeps its data."""
 
     name: str
-    spec: str = Field(min_length=20, max_length=SPEC_MAX)  # SPEC.md: what Hansen approved
+    spec: str = Field(default="", max_length=SPEC_MAX)  # SPEC.md: what Hansen approved
+    change: str = Field(default="", max_length=CHANGE_MAX)  # what to change in the module, as Hansen approved it
     coder: str | None = None  # None: the builder's default
     cause: str | None = None  # the message that asked (an approval tap): build.* events point back at it
     hops: int = Field(default=0, ge=0)
@@ -36,13 +40,25 @@ class BuildRequest(BaseModel):
             raise ValueError(f"{v!r} is reserved")
         return v
 
-    @field_validator("spec")
+    @field_validator("spec", "change")
     @classmethod
-    def _spec(cls, v: str) -> str:
-        v = v.strip()
-        if len(v) < 20:
-            raise ValueError("a spec says what the module does: at least 20 characters")
-        return v + "\n"
+    def _strip(cls, v: str) -> str:
+        return v.strip()
+
+    @model_validator(mode="after")
+    def _spec_or_change(self) -> BuildRequest:
+        if self.spec and self.change:
+            raise ValueError("a build takes a spec (a new module) or a change (to one the builder grew), not both")
+        if len(self.spec or self.change) < TEXT_MIN:
+            what = "a change says what the module should do now" if self.change else "a spec says what the module does"
+            raise ValueError(f"{what}: at least {TEXT_MIN} characters")
+        if self.spec:
+            self.spec += "\n"
+        return self
+
+    @property
+    def is_change(self) -> bool:
+        return bool(self.change)
 
 
 class StartReply(BaseModel):

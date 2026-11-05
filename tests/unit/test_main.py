@@ -50,6 +50,7 @@ class World:
         self.remembered: list[dict] = []
         self.module_calls: list[tuple[str, dict]] = []
         self.recall_reply: dict | None = PACK
+        self.grown: list[str] = []  # the modules the builder grew (rpc.sys.list `grown`)
         self.svc: MainService
         self.modules = [
             {
@@ -92,7 +93,7 @@ class World:
         await msg.respond({"ok": True, "path": f"people/{msg.data['note']}.md", "created": False})
 
     async def _list(self, msg: Message):
-        await msg.respond({"ok": True, "modules": self.modules})
+        await msg.respond({"ok": True, "modules": self.modules, "grown": self.grown})
 
     async def _expenses(self, msg: Message):
         self.module_calls.append((msg.subject, msg.data))
@@ -172,7 +173,7 @@ def test_render_pack_states_when_memory_is_empty_or_down():
 
 def test_tool_specs_are_generated_from_the_argument_models():
     specs = {s.name: s for s in default_tools().specs()}
-    assert set(specs) == {"remember", "recall", "ask_module", "ask", "propose_module"}
+    assert set(specs) == {"remember", "recall", "ask_module", "ask", "propose_module", "change_module"}
     remember = specs["remember"].input_schema
     assert remember["type"] == "object" and remember["required"] == ["note"]
     assert remember["properties"]["type"]["enum"][:3] == ["self", "person", "place"]

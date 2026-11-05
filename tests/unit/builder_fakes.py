@@ -1,5 +1,6 @@
 """What the builder's tests share: a small module that works, a coder that writes what it is told, and a
-supervisor that answers verify by running pytest on the staged folder (no Docker), plus deploy and list."""
+supervisor that answers verify by running pytest on the staged folder (no Docker), plus deploy, snapshot and
+list."""
 
 from __future__ import annotations
 
@@ -154,9 +155,12 @@ class FakeSupervisor:
         self.modules = modules or ["hello"]
         self.verify_fn = verify or run_pytest
         self.deploy_error = deploy_error
-        self.answer = answer if answer is not None else {"list", "verify", "deploy"}
+        self.answer = answer if answer is not None else {"list", "verify", "deploy", "snapshot"}
         self.verified: list[str] = []
         self.deployed: list[str] = []
+        self.snapshots: list[tuple[str, str]] = []  # (name, label), in order
+        self.snapshot_error: str | None = None
+        self.events: list[str] = []  # snapshot:<name>, deploy:<name>: what happened in which order
         self.folders: list[str] = []
         self.list_error: str | None = None
 
@@ -169,7 +173,21 @@ class FakeSupervisor:
             await msg.respond({"ok": False, "error": self.list_error})
             return
         modules = [{"name": n, "status": "running"} for n in self.modules]
-        await msg.respond({"ok": True, "modules": modules, "folders": self.folders})
+        grown = (
+            sorted(d.name for d in self.grown.iterdir() if d.is_dir() and not d.name.startswith("."))
+            if (self.grown.is_dir())
+            else []
+        )
+        await msg.respond({"ok": True, "modules": modules, "folders": self.folders, "grown": grown})
+
+    async def _snapshot(self, msg) -> None:
+        name, label = msg.data["name"], msg.data["label"]
+        if self.snapshot_error:
+            await msg.respond({"ok": False, "error": self.snapshot_error})
+            return
+        self.snapshots.append((name, label))
+        self.events.append(f"snapshot:{name}")
+        await msg.respond({"ok": True, "name": name, "volume": f"test-data-{name}-{label}"})
 
     async def _verify(self, msg) -> None:
         name = msg.data["name"]
@@ -183,9 +201,14 @@ class FakeSupervisor:
         if self.deploy_error:
             await msg.respond({"ok": False, "error": self.deploy_error})
             return
-        assert (self.grown / name / "manifest.yaml").exists(), "deploy before promote"
+        manifest = self.grown / name / "manifest.yaml"
+        assert manifest.exists(), "deploy before promote"
+        version = next(
+            line.split(":", 1)[1].strip() for line in manifest.read_text().splitlines() if line.startswith("version:")
+        )
         self.deployed.append(name)
-        await msg.respond({"ok": True, "name": name, "image": f"test/mod-{name}:0.1.0", "status": "running"})
+        self.events.append(f"deploy:{name}")
+        await msg.respond({"ok": True, "name": name, "image": f"test/mod-{name}:{version}", "status": "running"})
 
 
 def make_pipeline(bus: InMemoryBus, grown: Path, max_rounds: int = 3) -> Pipeline:

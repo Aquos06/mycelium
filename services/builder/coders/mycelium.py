@@ -4,6 +4,7 @@ A local model gets lost in a long agent session, so this is a fixed pipeline of 
 with a fresh prompt and one forced tool:
 
     first round   write_manifest  ->  write_files (app/)  ->  write_files (tests/)
+    a change      write_files: the spec, the module's files as they are, the change
     later rounds  write_files: the spec, the files as they are on disk, what failed and its output
 
 Their wording is in prompts/mycelium.py; every prompt is rebuilt from disk, so it stays the same size however
@@ -46,8 +47,8 @@ from mycelium_sdk import (
 )
 
 from ..checks import relative_names
-from ..prompts.mycelium import code_prompt, fix_prompt, manifest_prompt, retry_text, tests_prompt
-from ..schemas import CoderContext, CoderResult, ConfigReply, ManifestDraft, Spend, WriteFiles
+from ..prompts.mycelium import change_prompt, code_prompt, fix_prompt, manifest_prompt, retry_text, tests_prompt
+from ..schemas import CoderContext, CoderResult, ConfigReply, ManifestDraft, Spend, Stage, WriteFiles
 from ..workspace import coder_may_write, read_files, write_file
 from .base import CoderError, CoderUnavailable
 
@@ -117,7 +118,12 @@ class MyceliumCoder:
             self._spend = Spend(build_id=ctx.build_id)
         before = self._spend.model_copy()
         try:
-            note = await (self._fresh(ctx) if ctx.fresh or ctx.feedback is None else self._fix(ctx))
+            if ctx.change and (ctx.feedback is None or ctx.feedback.stage == Stage.CODER):
+                note = await self._change(ctx)  # nothing judged yet: the change is still the whole task
+            elif ctx.fresh or ctx.feedback is None:
+                note = await self._fresh(ctx)
+            else:
+                note = await self._fix(ctx)
         except (CoderError, CoderUnavailable) as e:  # what this round spent stays on the record either way
             e.calls, e.cost_usd = self._spend.calls - before.calls, round(self._spend.cost_usd - before.cost_usd, 6)
             raise
@@ -145,6 +151,15 @@ class MyceliumCoder:
             lambda args: self._write_files(ctx, args, lambda rel: rel.startswith("tests/")),
         )
         return f"wrote the manifest, {_paths(code)}, {_paths(tests)}"
+
+    async def _change(self, ctx: CoderContext) -> str:
+        args = await self._stage(
+            ctx,
+            change_prompt(ctx, read_files(ctx.dir)),
+            WRITE_FILES,
+            lambda args: self._write_files(ctx, args, lambda rel: True),
+        )
+        return args.note or f"changed {_paths(args)}"
 
     async def _fix(self, ctx: CoderContext) -> str:
         args = await self._stage(

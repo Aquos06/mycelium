@@ -153,7 +153,7 @@ flowchart TB
 
     BUS -.->|"rpc.build.*"| BLD
     BLD -->|"build.started / progress / done / failed"| BUS
-    BLD -.->|"rpc.sys.verify · rpc.sys.deploy · rpc.llm.complete"| BUS
+    BLD -.->|"rpc.sys.verify · rpc.sys.snapshot · rpc.sys.deploy · rpc.llm.complete"| BUS
 
     BUS -.->|"rpc.sys.*"| SUP
     SUP -->|"sys.module.*"| BUS
@@ -206,10 +206,11 @@ flowchart TB
 | Main / module | module | `rpc.mod.<name>.<action>` | request | declared params → declared returns |
 | Main | memory | `rpc.memory.recall / remember / lookup` | request | notes, summaries, fuzzy matches |
 | Main, memory, bridges, modules | gateway | `rpc.llm.complete / embed / decide / transcribe` | request | prompt → completion; keys never leave the gateway |
-| Main | builder | `rpc.build.start` | request | `{name, spec, coder?}` after Hansen approved the spec; answers `{build_id, position}` or why not |
+| Main | builder | `rpc.build.start` | request | `{name, spec, coder?}` after Hansen approved the spec, or `{name, change, coder?}` after he approved a change to a grown module; answers `{build_id, position}` or why not |
 | Builder | bus | `build.started / progress / done / failed` | event | each round, then the commit or where it stopped and the output |
 | Builder | gateway | `rpc.llm.complete` (slot `coder`) | request | our coder: one forced tool call per file, `cause` = the build id |
 | Builder | supervisor | `rpc.sys.verify` | request | the staged build's tests in the sealed container |
+| Builder | supervisor | `rpc.sys.snapshot` | request | a change build: a copy of the module's data volume before the new version deploys |
 | Builder | supervisor | `rpc.sys.agent` | request | a coding agent's round on a copy of the staged build; the folder comes back |
 | Builder | supervisor | `rpc.sys.catalog` | request | what already exists, so the new module can subscribe to other modules' events and reuse their requests |
 | Builder | supervisor | `rpc.sys.deploy` | request | deploy the verified module |
@@ -303,13 +304,13 @@ The only service with Docker access. Turns a module folder into a running contai
 | | |
 |---|---|
 | Owns | `modules` table (deployed manifests, status), images, per-module volumes |
-| Answers | `rpc.sys.deploy / verify / stop / logs / list / health` |
+| Answers | `rpc.sys.deploy / verify / snapshot / stop / logs / list / health` |
 | Publishes | `sys.module.deployed / stopped / failed` |
 | Extend: **catalog** | `rpc.sys.catalog`: every deployed module's events, requests and their fields, plus the static core subjects (`sense.*`, `out.*`). Built from the manifests already stored; nothing kept by hand. |
 | Extend: **compat check** | Refuse a deploy that changes an event other modules subscribe to in a non-additive way. |
 | Extend: **secrets** | Inject declared secrets from a local store at container start. |
 | Extend: **backends** | Start a pinned third-party container next to a module that wraps it; only those two share a network. |
-| Extend: **rollback** | Keep the previous image and a `/data` snapshot; `rpc.sys.rollback <module>`. |
+| Extend: **rollback** | Keep the previous image and a `/data` snapshot; `rpc.sys.rollback <module>`. The snapshot is built (`rpc.sys.snapshot`, taken before every change build deploys) and the previous version is tagged in `GROWN_DIR`; the one call that puts both back is not. |
 
 *Built:* modules come from two roots: `MODULES_DIR` (hand-written: `hello`) and `GROWN_DIR` (the grown
 modules' own git repo, which the builder writes); a name in both is refused. **`rpc.sys.verify`** builds a
@@ -319,6 +320,10 @@ then removes it. That is the builder's independent check and the only place gene
 is deployed. A build is staged in `GROWN_DIR/.staging/<name>` (never a valid module name, so never deployed)
 until verify passes. Every module gets `TZ` from `MODULE_TZ`, so `mod.today()` is Hansen's day. Reconcile
 never retires modules because a whole root is missing (a `GROWN_DIR` without `.git` counts as missing).
+`rpc.sys.list` names the folders in `GROWN_DIR` apart (`grown`): those are the modules the builder can
+change. **`rpc.sys.snapshot`** copies a module's data volume to `<stack>-data-<name>-v<version>-<build id>`
+before a change build deploys: a throwaway module-base container with no network, the module paused while it
+copies (so the copy is what a crash would leave, which SQLite recovers from), and no copy kept if it fails.
 
 **Coding agents** run here too, because only the supervisor holds Docker (`rpc.sys.agent`, `rpc.sys.agents`;
 recipes in `services/supervisor/agent_images/agents.yaml`, an image per agent FROM module-base so the agent can run
@@ -396,7 +401,8 @@ undeclared events today.
 The judgment. Everything that decides, nothing that stores.
 
 **v0** (`services/main/`): `sense.chat` → recall pack from memory + the thread from NATS KV → planner
-through the gateway with five tools (`remember`, `recall`, `ask_module`, `ask`, `propose_module`) →
+through the gateway with six tools (`remember`, `recall`, `ask_module`, `ask`, `propose_module`,
+`change_module`) →
 `out.say`, or `out.ask` when the planner needs Hansen's choice → one `trace.plan` with the pack, the
 tool calls, usage and cost, linked by `cause`. `sense.feedback` answers continue the thread; votes are
 traced. When the gateway fails or the budget is spent, Main still replies that it cannot reach its model
@@ -439,6 +445,15 @@ module again while one waits or after Hansen chose Not now.
     proposed -> building -> done | failed
              -> declined
 
+**Changing a module.** A module the builder grew is marked `(grown, v0.1.0)` in the prompt's module list.
+When Hansen says it does something wrong, misses something, or should work differently ("the summary never
+counts yesterday", "keep a category too"), the planner calls `change_module` with the module, what it should
+do after the change (one line each) and why; `propose_module` for a name that exists now says to change it
+instead. Code refuses a module that is hand-written, gone, or being built. A valid change is a proposal of
+kind `change` and ends the turn the same way, with a card, Change it / Not now, that says the module keeps
+its data; a tap calls `rpc.build.start` with `change` instead of `spec`. Main tells the thread when the new
+version runs, or that the change failed and, unless it failed at deploy, that the module still runs as it was.
+A hand-written module (`hello`) is not the builder's to change.
 Tools (`services/main/tools/`) are pydantic: one argument model and one async handler per tool,
 held in a `ToolRegistry`. The `input_schema` the planner sees is generated from the argument model,
 and every call is validated against the same model before it touches the bus; a rejected call goes
@@ -498,7 +513,7 @@ The **profile** lives here as ordinary notes (who Hansen is, people, preferences
 
 ---
 
-## 7. Builder — v0 built (new modules)
+## 7. Builder — v0 built (new modules, changes to them)
 
 The software maker (`services/builder/`): a spec Hansen approved in, a running module out. It never runs
 the code it builds: the supervisor verifies every round in its sealed container.
@@ -508,7 +523,7 @@ the code it builds: the supervisor verifies every round in its sealed container.
 | Answers | `rpc.build.start {name, spec, coder?}` → `{build_id, position}` or the reason it will not (the name exists, the queue is full, the coder cannot work, the supervisor is down); `rpc.build.get`, `rpc.build.list`, `rpc.build.coders`; `rpc.build.default {coder}` chooses the coder a build gets when it names none (the web app's Settings → Builder, `mctl coders --use`), kept in KV across restarts, `BUILDER_CODER` until then |
 | Publishes | `build.started`, `build.progress` (each round), `build.done` (version, commit, image), `build.failed` (stage, error, output) |
 | Keeps | one record per build in the `builder` KV bucket; one build runs at a time, the rest wait in line; a restart fails the running build and puts the waiting ones back |
-| Modes | **new** today; **change** (edit an existing module; snapshot `/data` first; migration-aware prompt) and **wrap** (module + pinned backend) later |
+| Modes | **new** (a module from a spec) and **change** (a module the builder grew, edited as it is: below); **wrap** (module + pinned backend) later |
 | Coders | who writes the files, chosen per build (`--coder`; `BUILDER_CODER` is the default): **`mycelium`**, ours, through the gateway's `coder` slot (§11), so any model there, local by default; or a coding agent, **`opencode`**, **`codex`**, **`aider`** (on `AGENT_ENDPOINT` / `AGENT_MODEL`, your vLLM by default) or **`claude_code`** (`ANTHROPIC_API_KEY`), each run by the supervisor in a container of its own (§3) on a copy of the build. |
 | Rule | When a build fails, fix the contract, the template or the prompt. Never hand-edit the module. |
 
@@ -520,6 +535,25 @@ round n    coder writes -> tidy -> pin the manifest -> checks -> rpc.sys.verify
            (a failure is the next round's feedback; up to BUILD_MAX_ROUNDS, 6)
 promote    .staging/<name> -> <name>, one commit + tag in GROWN_DIR
 deploy     rpc.sys.deploy
+```
+
+**A change build** (`rpc.build.start {name, change}`, `mctl change <name> "<what>"`) is the same rounds on a
+copy of the module as it runs. Only a module in `GROWN_DIR` can be changed. Its `SPEC.md` gets the change as
+a last section (`## Change in v0.2.0`), so the file keeps every change in order; the version goes up by a
+minor step. The coder gets the files as they are and the change, and is told to keep the module's data
+readable: add tables and columns, never drop, rename or recreate them, and add a test that starts the new code
+on a data folder the old code wrote. After verify passes, `rpc.sys.snapshot` copies the data volume; then the
+new folder replaces the old one (the old one is put back if the commit fails), the commit is tagged
+`<name>-v0.2.0` next to `<name>-v0.1.0`, and the deploy starts it on the same data volume. Until then the old
+version runs as it was: a change that fails its rounds, its copy or its commit leaves `GROWN_DIR/<name>` and
+the running container as they were. One that fails at deploy says where the old version and its data are.
+
+```
+copy       GROWN_DIR/<name> -> .staging/<name>, SPEC.md ending with the change
+round n    the same: coder -> tidy -> pin (version 0.2.0) -> checks -> rpc.sys.verify
+snapshot   rpc.sys.snapshot: <stack>-data-<name>-v0.1.0-<build id>
+promote    .staging/<name> -> <name> (the old one aside until committed), commit + tag <name>-v0.2.0
+deploy     rpc.sys.deploy, on the same data volume
 ```
 
 - **Tidy** puts the builder's files back after every round (Dockerfile, requirements.txt, CONTRACT.md,

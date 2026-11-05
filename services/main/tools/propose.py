@@ -25,6 +25,19 @@ ADDS = ("add", "log", "record")  # a request that takes one entry from Main
 CARD_LINES = 6  # behaviour lines shown on the card; the spec keeps them all
 
 
+def split_lines(v: Any) -> Any:
+    """One line per item. A model that sends one block of text instead of a list, or a list whose item holds several
+    lines (written as `\\n`, escaped once too often: Hansen's expenses-v2 spec got all three of its requests on one
+    line that way), still means one line per line."""
+    items = [v] if isinstance(v, str) else v
+    if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
+        return v
+    out = []
+    for item in items:
+        out += [s.strip().lstrip("-* ").strip() for s in item.replace("\\n", "\n").splitlines() if s.strip()]
+    return out
+
+
 class ProposeArgs(BaseModel):
     name: str = Field(description="the module's name: a lowercase slug, 2-31 characters (expenses, water-log)")
     purpose: str = Field(min_length=8, max_length=300, description="one sentence: what the module does")
@@ -67,10 +80,7 @@ class ProposeArgs(BaseModel):
     @field_validator("behaviour", "answers", mode="before")
     @classmethod
     def _lines(cls, v: Any) -> Any:
-        """A model that sends one block of text instead of a list still means one line per line."""
-        if isinstance(v, str):
-            return [s.strip().lstrip("-* ").strip() for s in v.splitlines() if s.strip()]
-        return v
+        return split_lines(v)
 
     def requests(self) -> list[tuple[str, str, str]]:
         """The answers as (request, its fields as written, what it does); a line naming no request keeps its text."""
@@ -155,7 +165,10 @@ async def propose(args: ProposeArgs, ctx: ToolContext) -> dict[str, Any]:
     if args.name in taken:
         return {
             "ok": False,
-            "error": f"{args.name!r}: {taken[args.name]}. If it does what Hansen wants, use it; else pick another name.",
+            "error": (
+                f"{args.name!r}: {taken[args.name]}. If it does what Hansen wants, use it; if it should do more or "
+                "work differently, call `change_module` for it; else pick another name."
+            ),
         }
     return {"ok": True, "proposed": args.name, "spec": args.spec()}
 

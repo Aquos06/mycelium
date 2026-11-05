@@ -23,6 +23,7 @@ STACK_LABEL = "mycelium.stack"
 # the stack as the label's value: dev, staging and production share one Docker host, and each sweeps its own.
 VERIFY_LABEL = "mycelium.verify"
 AGENT_LABEL = "mycelium.agent"
+DATA_LABEL = "mycelium.data"  # on a copy of a module's data volume: the module it was taken from
 VERIFY_COMMAND = ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
 OUTPUT_TAIL = 4000
 
@@ -69,6 +70,7 @@ class DockerOps(Protocol):
         self, image: str, work: bytes, env: dict[str, str], timeout: float, memory_mb: int, cpus: float
     ) -> AgentResult: ...
     def run_module(self, image: str, manifest: Manifest) -> ContainerInfo: ...
+    def snapshot_data(self, name: str, label: str) -> str | None: ...
     def stop_module(self, name: str) -> bool: ...
     def logs(self, name: str, tail: int = 100) -> str: ...
     def list_modules(self) -> list[ContainerInfo]: ...
@@ -225,6 +227,48 @@ class RealDockerOps:
         c.remove()
         return True
 
+    def _data_volume(self, name: str) -> str:
+        return f"{self.stack}-data-{name}"
+
+    def snapshot_data(self, name: str, label: str) -> str | None:
+        """A copy of the module's data volume, `<stack>-data-<name>-<label>`, taken before a change deploys; None
+        when the module has no data volume yet. The module is paused while it copies, so the copy is what a crash at
+        that moment would leave (SQLite recovers from that), then it runs on. The copy runs in a throwaway
+        module-base container as root (the files are the module user's), with no network."""
+        import docker
+
+        source = self._data_volume(name)
+        try:
+            self.client.volumes.get(source)
+        except docker.errors.NotFound:
+            return None
+        target = f"{source}-{label}"
+        self.client.volumes.create(target, labels={DATA_LABEL: name, STACK_LABEL: self.stack})
+        try:
+            running = self.client.containers.get(self._container_name(name))
+            running = running if running.status == "running" else None
+        except docker.errors.NotFound:
+            running = None
+        if running is not None:
+            running.pause()
+        try:
+            self.client.containers.run(
+                self.base_image,
+                ["sh", "-c", "cp -a /from/. /to/"],
+                user="0",
+                network_mode="none",
+                volumes={source: {"bind": "/from", "mode": "ro"}, target: {"bind": "/to", "mode": "rw"}},
+                labels={VERIFY_LABEL: self.stack},  # swept on start if a restart cuts it short
+                remove=True,
+            )
+        except Exception:
+            self.client.volumes.get(target).remove(force=True)  # half a copy is no copy
+            raise
+        finally:
+            if running is not None:
+                running.unpause()
+        return target
+
     def run_module(self, image: str, manifest: Manifest) -> ContainerInfo:
         self.stop_module(manifest.name)
         c = self.client.containers.run(
@@ -233,7 +277,7 @@ class RealDockerOps:
             detach=True,
             network=self.bus_network,
             environment={"NATS_URL": self.nats_url, "MODULE": manifest.name, "TZ": self.tz},
-            volumes={f"{self.stack}-data-{manifest.name}": {"bind": "/data", "mode": "rw"}},
+            volumes={self._data_volume(manifest.name): {"bind": "/data", "mode": "rw"}},
             mem_limit=f"{manifest.resources.memory_mb}m",
             nano_cpus=int(manifest.resources.cpus * 1e9),
             labels={LABEL: manifest.name, STACK_LABEL: self.stack, "mycelium.version": manifest.version},
