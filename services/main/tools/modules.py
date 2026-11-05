@@ -31,6 +31,18 @@ class AskModuleArgs(BaseModel):
 
 
 async def ask_module(args: AskModuleArgs, ctx: ToolContext) -> dict[str, Any]:
+    """A module that is not running, or a request it does not declare, is said at once: asked on the bus it would
+    only time out (10 s, every retry), and the planner would keep trying what cannot answer."""
+    if ctx.modules is not None:
+        if args.module not in ctx.modules:
+            running = ", ".join(sorted(ctx.modules)) or "none"
+            return {
+                "ok": False,
+                "error": f"no module {args.module!r} is running (running: {running}). Tell Hansen; do not retry it.",
+            }
+        if args.action not in ctx.modules[args.module]:
+            actions = ", ".join(ctx.modules[args.module]) or "none"
+            return {"ok": False, "error": f"{args.module} has no request {args.action!r}; its requests: {actions}"}
     return await ctx.bus.request(f"rpc.mod.{args.module}.{args.action}", args.args, timeout=10.0)
 
 

@@ -44,6 +44,22 @@ modules:
         - {day: "2026-10-25", gym: Passion Climbing Xinyi, hardest: V4}
         - {day: "2026-10-29", gym: Passion Climbing Xinyi, hardest: V5}
         - {day: "2026-11-01", gym: B-Plus, hardest: V4}
+  ledger:  # the shape a grown tracker has now: described requests, entries through `add`, no chat parsing
+    purpose: Tracks Hansen's spending, one entry per expense, and answers totals and the list of them.
+    requests:
+      add:
+        description: Store one expense.
+        params: {amount: number, description: string, day: optional date}
+        returns: {id: number}
+      summary:
+        description: Totals and count for a date range, all time when no dates are given.
+        params: {from: optional date, to: optional date}
+        returns: {total: number, count: number}
+      history:
+        description: Every expense, newest first.
+        params: {limit: optional number}
+        returns: {expenses: list}
+    reply: {id: 7, total: 3420, count: 21}
 default_modules: [hello, expenses, climbing]
 
 notes:
@@ -437,6 +453,40 @@ cases:
     msg: spending this week vs last week?
     expect: ask_module
     args: {module: expenses, action: summary}
+  # a module that takes entries: Main reads the message and sends each entry to its `add`
+  - id: mod-add-breakfast
+    msg: spent 85 on breakfast
+    expect: ask_module
+    avoid: [propose_module]  # a module takes it already
+    modules: [hello, ledger]
+    args: {action: add, args: {has: ["85"]}}
+  - id: mod-add-two
+    msg: today i spend 112 for dinner and 25 for drinks
+    expect: ask_module
+    avoid: [propose_module]
+    modules: [hello, ledger]
+    args: {action: add}
+  - id: mod-add-zh
+    msg: 午餐120
+    expect: ask_module
+    modules: [hello, ledger]
+    args: {action: add, args: {has: ["120"]}}
+  - id: mod-add-yesterday
+    msg: yesterday the taxi home was 240
+    expect: ask_module
+    modules: [hello, ledger]
+    args: {action: add, args: {has: ["2026-11-02"]}}
+  - id: mod-ledger-total
+    msg: whats my expense
+    expect: ask_module
+    modules: [hello, ledger]
+    args: {action: [summary, history]}
+  - id: mod-ledger-backfill
+    msg: put my earlier expenses into the module
+    expect: ask_module
+    modules: [hello, ledger]
+    pack: [expense-log]
+    args: {action: add}
 
   # ---- ask: a choice that is Hansen's before Main acts ----------------------------------------------
   - id: ask-she-job
@@ -617,7 +667,7 @@ cases:
     msg: I want to track my expenses
     expect: propose_module
     modules: []
-    args: {name: {has: [expense, spend]}}
+    args: {name: {has: [expense, spend]}, answers: {has: ["add {", "add:", "add`", "log {", "log:", "record {", "record:"]}}
   - id: prop-zh-expenses
     msg: 幫我記帳，每天的花費都記下來
     expect: propose_module
@@ -632,7 +682,7 @@ cases:
   - id: prop-water
     msg: build me something to log how much water I drink
     expect: propose_module
-    args: {name: {has: [water, hydrat]}}
+    args: {name: {has: [water, hydrat]}, answers: {has: ["add {", "add:", "add`", "log {", "log:", "record {", "record:"]}}
   - id: prop-sleep
     msg: I want to track my sleep. I'll tell you when I go to bed and when I wake up
     expect: propose_module
@@ -640,7 +690,7 @@ cases:
   - id: prop-weight
     msg: keep a log of my weight, I'll send it every morning
     expect: propose_module
-    args: {name: {has: [weight]}}
+    args: {name: {has: [weight]}, answers: {has: ["add {", "add:", "add`", "log {", "log:", "record {", "record:"]}}
   - id: prop-reading
     msg: track my reading, which book and how many pages a day
     expect: propose_module
@@ -656,7 +706,7 @@ cases:
   - id: prop-runs
     msg: log my runs, distance and time, and tell me my weekly total
     expect: propose_module
-    args: {name: {has: [run]}}
+    args: {name: {has: [run]}, answers: {has: ["add {", "add:", "add`", "log {", "log:", "record {", "record:"]}}
   - id: prop-mood
     msg: I'd like to track my mood every evening, 1 to 5
     expect: propose_module
@@ -680,7 +730,7 @@ cases:
   - id: prop-steps
     msg: track my daily steps, I'll paste the number from my phone
     expect: propose_module
-    args: {name: {has: [step]}}
+    args: {name: {has: [step]}, answers: {has: ["add {", "add:", "add`", "log {", "log:", "record {", "record:"]}}
   - id: prop-swimming
     msg: count my swims per week, I'll tell you each time I go
     expect: propose_module
@@ -693,6 +743,22 @@ cases:
     msg: track how many hours I study japanese every day
     expect: propose_module
     args: {name: {has: [japan, study, language]}}
+  - id: prop-rebuild-retired  # Hansen's thread on 2026-11-04: expenses 0.1.0 built, then removed to be regrown
+    msg: I want to track my expenses
+    expect: propose_module
+    modules: [hello]
+    retired: [expenses]
+    proposals:
+      - {name: expenses, purpose: "Track and summarize Hansen's expenses over time", status: done, day: 2026-11-02}
+    history:
+      - {role: user, day: 2026-11-02, text: "try again"}
+      - {role: assistant, day: 2026-11-02, text: "expenses is built and running (version 0.1.0). Ask me about it any time."}
+      - {role: user, day: 2026-11-02, text: "whats my expense"}
+      - role: assistant
+        day: 2026-11-02
+        text: "The expense tracker is running, but it shows zero expenses logged so far. It seems it didn't capture the previous messages about 112, 25, or 152."
+        calls: [{name: ask_module, input: {module: expenses, action: stats}, result: {ok: true, count: 0, total: 0.0}}]
+    args: {name: {has: [expense, spend]}}
   - id: prop-subscriptions
     msg: keep a list of my subscriptions, what they cost and when they renew
     expect: propose_module

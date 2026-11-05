@@ -19,6 +19,9 @@ from .base import Tool, ToolContext
 
 Line = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
 REQUEST = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")  # a request name, as ask_module takes it
+# `add {amount: number, day: optional date}: store one expense`: the colons inside the braces are not the separator
+ANSWER = re.compile(r"^`?(?P<req>[a-z][a-z0-9_-]{0,40})`?\s*(?P<params>\{[^{}]*\})?\s*:\s*(?P<what>.+)$", re.S)
+ADDS = ("add", "log", "record")  # a request that takes one entry from Main
 CARD_LINES = 6  # behaviour lines shown on the card; the spec keeps them all
 
 
@@ -30,14 +33,19 @@ class ProposeArgs(BaseModel):
         min_length=1,
         max_length=12,
         description=(
-            "what it does, one line each: which chat messages it picks up and how it tells them apart, "
-            "what it stores, when it speaks up, what it ignores"
+            "what it does, one line each: what one entry holds, what it works out from them, when it speaks up. "
+            "You read Hansen's messages and send each entry to its `add`: it does not parse chat itself"
         ),
     )
     answers: list[Line] = Field(
         default_factory=list,
         max_length=6,
-        description="what you can ask it later, `request: what it returns`, e.g. `summary: totals for a date range`",
+        description=(
+            "the requests you will send it, `name {field: type, ...}: what it does`. Something that tracks entries "
+            "needs `add` taking one entry, and its queries cover all time unless dates are given, e.g. "
+            "`add {amount: number, description: string, day: optional date}: store one expense`, "
+            "`summary {from: optional date, to: optional date}: totals and count, all time by default`"
+        ),
     )
     example: str | None = Field(default=None, max_length=300, description="a message it handles, as Hansen types it")
 
@@ -64,14 +72,19 @@ class ProposeArgs(BaseModel):
             return [s.strip().lstrip("-* ").strip() for s in v.splitlines() if s.strip()]
         return v
 
-    def requests(self) -> list[tuple[str, str]]:
-        """The answers as (request, what it returns); a line that names no request keeps its text."""
+    def requests(self) -> list[tuple[str, str, str]]:
+        """The answers as (request, its fields as written, what it does); a line naming no request keeps its text."""
         out = []
         for a in self.answers:
-            req, sep, what = a.partition(":")
-            req = req.strip().strip("`").lower()
-            out.append((req, what.strip()) if sep and REQUEST.match(req) else ("", a))
+            m = ANSWER.match(a.strip())
+            if m and REQUEST.match(m["req"].lower()):
+                out.append((m["req"].lower(), (m["params"] or "").strip(), m["what"].strip()))
+            else:
+                out.append(("", "", a))
         return out
+
+    def takes_entries(self) -> bool:
+        return any(req in ADDS for req, _, _ in self.requests())
 
     def spec(self) -> str:
         """SPEC.md as the builder takes it (the format of specs/expenses.md)."""
@@ -83,7 +96,19 @@ class ProposeArgs(BaseModel):
             f"**What to build:** {self.purpose}",
         ]
         lines += [""] + [f"- {b}" for b in self.behaviour]
-        lines += [f"- answers `{req}`: {what}" if req else f"- answers {what}" for req, what in self.requests()]
+        lines += [
+            f"- answers `{req}`{' ' + params if params else ''}: {what}" if req else f"- answers {what}"
+            for req, params, what in self.requests()
+        ]
+        if self.takes_entries():
+            lines.append(
+                "- Entries come from Main through `add`: Main reads Hansen's messages and fills the fields, so the "
+                "module does not parse chat messages itself."
+            )
+        lines.append(
+            "- Every request is described in manifest.yaml (description, params, returns): Main calls the module "
+            "from that alone."
+        )
         if self.example:
             lines += ["", f'An example message: "{self.example}"']
         lines += ["", "No network, no actuation.", ""]
@@ -94,7 +119,7 @@ class ProposeArgs(BaseModel):
         shown = [f"- {b}" for b in self.behaviour[:CARD_LINES]]
         if len(self.behaviour) > CARD_LINES:
             shown.append(f"- and {len(self.behaviour) - CARD_LINES} more")
-        asks = [req for req, _ in self.requests() if req]
+        asks = [req for req, _, _ in self.requests() if req]
         tail = [f"Then I can ask it: {', '.join(asks)}."] if asks else []
         return "\n".join(
             [f"A new module, {self.name}: {self.purpose}", *shown, *tail, "Nothing is built until you choose."]

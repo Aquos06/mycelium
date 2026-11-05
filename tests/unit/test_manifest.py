@@ -73,3 +73,53 @@ def test_load_manifest_errors(tmp_path):
 def test_a_name_with_a_newline_is_refused(name):
     with pytest.raises(ManifestError):
         validate_manifest({"name": name, "purpose": "Tracks what Hansen spends in chat."})
+
+
+# ---- described requests (docs/ARCHITECTURE.md §4) ----------------------------------------------------
+
+DESCRIBED = {
+    "add": {
+        "description": "Store one expense.",
+        "params": {"amount": "number", "description": "string", "day?": "date"},  # block-style `day?:` is taken
+        "returns": {"id": "number"},
+    },
+    "summary": "Totals for a date range, all time by default.",
+    "history": None,
+}
+
+
+def test_described_requests_keep_the_names_and_their_specs():
+    man = validate_manifest(m(requests=DESCRIBED))
+    assert man.requests == ["add", "summary", "history"]  # every reader of the names keeps working
+    assert man.request_specs["add"].signature() == "{amount: number, description: string, day: optional date}"
+    assert man.request_specs["summary"].params == {}
+    assert man.undescribed() == ["history"]
+
+
+def test_a_dumped_manifest_validates_again_unchanged():
+    """The supervisor stores model_dump() and serves it; reading that back must give the same manifest."""
+    man = validate_manifest(m(requests=DESCRIBED))
+    assert validate_manifest(man.model_dump()) == man
+
+
+def test_named_requests_still_validate_and_are_undescribed():
+    man = validate_manifest(m(requests=["summary"]))
+    assert man.request_specs == {} and man.undescribed() == ["summary"]
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"description": "short"},  # a real description
+        {"description": "Store one expense.", "params": {"Amount": "number"}},  # lowercase names
+        {"description": "Store one expense.", "params": {"amount": ""}},  # a type
+    ],
+)
+def test_bad_request_specs(spec):
+    with pytest.raises(ManifestError):
+        validate_manifest(m(requests={"add": spec}))
+
+
+def test_a_spec_must_describe_a_declared_request():
+    with pytest.raises(ManifestError, match="not in `requests`"):
+        validate_manifest(m(requests=["add"], request_specs={"remove": {"description": "Remove one entry."}}))

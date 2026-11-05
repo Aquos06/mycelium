@@ -4,7 +4,11 @@ purpose: Describe in one sentence what this module does for Hansen.
 need: The observed need that caused this module to be built.
 subscribes: []        # e.g. [sense.chat]
 emits: []             # e.g. [item.logged]       -> mod.__NAME__.item.logged
-requests: []          # e.g. [summary]           -> rpc.mod.__NAME__.summary
+requests: {}          # each described: Main reads these to call it      -> rpc.mod.__NAME__.<action>
+#   summary:
+#     description: Totals for a date range, all time when no dates are given.
+#     params: {from: optional date, to: optional date}
+#     returns: {total: number, count: number}
 hooks:
   interval_seconds: []
 permissions:

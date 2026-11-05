@@ -36,6 +36,7 @@ from mycelium_sdk import (
     Message,
     NoAnswer,
     Refused,
+    RequestSpec,
     Role,
     TextBlock,
     ToolUse,
@@ -59,12 +60,23 @@ from .schemas import (
     Say,
     SayOutput,
 )
-from .thread import ThreadStore, Turn, TurnCall
-from .tools import AskArgs, ProposeArgs, RecallPayload, ToolContext, ToolOutcome, ToolRegistry, default_tools
+from .thread import Thread, ThreadStore, Turn, TurnCall
+from .tools import (
+    AskArgs,
+    AskModuleArgs,
+    ProposeArgs,
+    RecallPayload,
+    ToolContext,
+    ToolOutcome,
+    ToolRegistry,
+    default_tools,
+)
 
 log = logging.getLogger("mycelium.main")
 
 MODEL_DOWN_REPLY = "I can't reach my model right now, so I can't answer this yet. I kept your message."
+MODEL_SLOW_REPLY = "My model took too long to answer this time, so I stopped. I kept your message: ask me again."
+OUT_OF_ROUNDS = "planner did not finish"
 BUILD_IT = "Build it"
 NOT_NOW = "Not now"
 ERROR_SHOWN = 300  # characters of a builder error told in the chat; the build record has all of it
@@ -79,12 +91,14 @@ CLAIM = re.compile(
     r"|^(?:got it[,.!]? )?(?:saved|noted|logged|remembered|recorded)\b"  # "Saved: ...", "Noted." opening a line
     r"|\b(?:it's|it is|that's|that is|all|everything's|everything is) (?:saved|noted|logged|recorded|stored)\b"
     r"|\bI'll remember\b"
+    r"|\b(?:got|have) (?:it|that|this|them) (?:all )?(?:saved|noted|logged|down)\b"  # "I've got it saved"
     r"|已記住|已记住|記下了|记下了|記住了|记住了|已記錄|已记录|已儲存|已保存|存好了|幫你記|帮你记",
     re.IGNORECASE | re.MULTILINE,
 )  # not "nothing was saved", "I can remember it for you", or a module's own "logged 12 sessions"
+WRITES = ("add", "log", "record", "save", "store", "set", "update", "put", "track")  # a module request that keeps
 RECHECK = (
-    "(A note from Main's code, not from Hansen.) Your reply says something was saved, but no `remember` went "
-    "through in this turn. If something from his message belongs in memory, call `remember` now. If a module that "
+    "(A note from Main's code, not from Hansen.) Your reply says something was saved, but no `remember` or module "
+    "write (like `add`) went through in this turn. If something from his message belongs in memory, call `remember` now. If a module that "
     "listens to sense.chat logged it, say which one. Then write your reply to Hansen again from the start, as if "
     "this note had not been sent, and do not mention it."
 )
@@ -368,8 +382,18 @@ class MainService:
         (pack, recall_error), modules, offered = await asyncio.gather(
             self._recall(text), self._modules(), self._offered()
         )
-        prompt = planner_prompt(self.today(), self.tz, channel, text, pack, modules, recall_error, offered)
-        messages = [*thread.messages(self.zone), ChatMessage(role=Role.USER, content=prompt.user)]
+        # the tools see this turn's modules: a call to one that is not running is refused at once
+        ctx = self.ctx.model_copy(
+            update={
+                "modules": None if modules is None else {m.name: _actions(m) for m in modules if m.status == "running"}
+            }
+        )
+        modules = modules or []
+        prompt = planner_prompt(
+            self.today(), self.tz, channel, text, pack, modules, recall_error, offered, thread=thread_id
+        )
+        gone = _gone_since(thread, offered, modules, channel, thread_id) if modules else ""
+        messages = [*thread.messages(self.zone), ChatMessage(role=Role.USER, content=gone + prompt.user)]
 
         tool_log: list[ToolOutcome] = []
         llm_calls: list[LlmCall] = []
@@ -414,7 +438,7 @@ class MainService:
 
             results = []
             for c in r.tool_calls:
-                outcome = await self.tools.call(c.name, c.input, self.ctx)
+                outcome = await self.tools.call(c.name, c.input, ctx)
                 if asked is None and proposed is None:  # the first valid `ask` or proposal ends the turn
                     if isinstance(outcome.args, AskArgs):
                         asked = outcome.args
@@ -427,7 +451,7 @@ class MainService:
                 reply_text = r.text.strip()  # reasoning models lead with blank lines
                 break
         else:
-            error = f"planner did not finish in {self.max_rounds} rounds"
+            error = f"{OUT_OF_ROUNDS} in {self.max_rounds} rounds"
 
         out = Envelope.child_of(data, "main")
         output: SayOutput | AskOutput
@@ -461,7 +485,7 @@ class MainService:
             output = AskOutput(ask=asked)
         else:
             if error or not reply_text:
-                reply_text = MODEL_DOWN_REPLY if error else "(no reply)"
+                reply_text = _failed_reply(error, tool_log) if error else "(no reply)"
             await self.bus.publish("out.say", out.into(Say, channel=channel, thread=thread_id, text=reply_text))
             saved = reply_text
             output = SayOutput(say=reply_text)
@@ -513,15 +537,14 @@ class MainService:
             log.info("could not read the proposals: %s", e)
             return []
 
-    async def _modules(self) -> list[ModuleInfo]:
+    async def _modules(self) -> list[ModuleInfo] | None:
+        """Every module the supervisor knows, running or not; None when it did not answer (then nobody knows)."""
         try:
             reply = await self.bus.request("rpc.sys.list", {}, timeout=2.0)
         except Exception:
-            return []
+            return None
         out: list[ModuleInfo] = []
         for row in reply.get("modules") or []:
-            if row.get("status") not in (None, "running"):
-                continue
             manifest = row.get("manifest") or {}
             name = str(row.get("name") or manifest.get("name") or "")
             if not name:
@@ -532,18 +555,82 @@ class MainService:
                     purpose=str(manifest.get("purpose") or ""),
                     requests=[f"{name}.{a}" for a in manifest.get("requests") or []],
                     listens=[str(s) for s in manifest.get("subscribes") or []],
+                    specs=_specs(name, manifest.get("request_specs")),
+                    status=str(row.get("status") or "running"),
                 )
             )
         return out
 
 
+def _specs(name: str, raw: Any) -> dict[str, RequestSpec]:
+    """A manifest's described requests, as `<module>.<action>`; one that does not validate is left out (the
+    request is still listed, only undescribed), so a module's bad description never costs Main its module list."""
+    out: dict[str, RequestSpec] = {}
+    for action, spec in (raw or {}).items() if isinstance(raw, dict) else []:
+        try:
+            out[f"{name}.{action}"] = RequestSpec.model_validate(spec)
+        except ValueError:
+            log.info("module %s: request %s has a description Main cannot read", name, action)
+    return out
+
+
+def _failed_reply(error: str, tools: list[ToolOutcome]) -> str:
+    """Say what went wrong: steps used up (and the last step that failed), a model too slow, or one not reached."""
+    if error.startswith(OUT_OF_ROUNDS):
+        failed = [o for o in tools if not o.ok]
+        why = f" The last thing that went wrong: {str(failed[-1].result.get('error'))[:200]}" if failed else ""
+        return f"I couldn't finish this: I used all my steps without getting there.{why} I kept your message."
+    return MODEL_SLOW_REPLY if "timed out" in error or "timeout" in error.lower() else MODEL_DOWN_REPLY
+
+
+def _gone_since(
+    thread: Thread, offered: list[Proposal], modules: list[ModuleInfo], channel: str, thread_id: str
+) -> str:
+    """A note before Hansen's message when a module this chat built or used has stopped running since: the thread
+    still says "expenses is built and running", and the model believes the thread over the module list. Said in
+    the newest message, where it weighs most; never kept in the thread."""
+    used = {  # modules that answered here; a call refused because it never ran says nothing about now
+        str(c.input.get("module"))
+        for t in thread.turns
+        for c in t.calls
+        if c.name == "ask_module" and c.result.startswith('{"ok": true')
+    }
+    built = {
+        p.name for p in offered if p.status == ProposalStatus.DONE and (p.channel, p.thread) == (channel, thread_id)
+    }
+    status = {m.name: m.status for m in modules}
+    gone = sorted(n for n in used | built if status.get(n, "gone") != "running")
+    if not gone:
+        return ""
+    names = ", ".join(f"{n} ({status.get(n, 'gone')})" for n in gone)
+    return (
+        f"(A note from Main's code, not from Hansen: since earlier in this chat, these modules stopped running: "
+        f"{names}. Earlier messages saying they run are out of date; only the modules under Modules run now.)\n\n"
+    )
+
+
+def _actions(m: ModuleInfo) -> list[str]:
+    """`expenses.add` -> `add`: the names a module answers on."""
+    return [r.removeprefix(f"{m.name}.") for r in m.requests]
+
+
 def _unbacked_claim(text: str, tools: list[ToolOutcome], modules: list[ModuleInfo]) -> bool:
-    """The reply says something was saved, no `remember` went through, and it names no module that hears the chat
-    (one that logged the message itself, as the policy asks it to say)."""
-    if not CLAIM.search(text) or any(o.name == "remember" and o.ok for o in tools):
+    """The reply says something was saved, nothing that saves went through (`remember`, a module's `add`), and it
+    names no module that hears the chat (one that logged the message itself, as the policy asks it to say)."""
+    if not CLAIM.search(text) or any(_kept_something(o) for o in tools):
         return False
     lowered = text.lower()
     return not any(m.name.lower() in lowered for m in modules if "sense.chat" in m.listens)
+
+
+def _kept_something(o: ToolOutcome) -> bool:
+    """A call that saved something: `remember`, or a module request that writes (`expenses.add`)."""
+    if not o.ok:
+        return False
+    if o.name == "remember":
+        return True
+    action = o.args.action if isinstance(o.args, AskModuleArgs) else ""
+    return o.name == "ask_module" and re.split(r"[-_]", action)[0] in WRITES
 
 
 def _kept(tools: list[ToolOutcome]) -> list[TurnCall]:

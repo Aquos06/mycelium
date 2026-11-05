@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from mycelium_sdk import Envelope, Usage
+from mycelium_sdk import Envelope, RequestSpec, Usage
 
 from .tools import AskArgs, ToolOutcome
 
@@ -47,6 +47,8 @@ class ModuleInfo(BaseModel):
     purpose: str = ""
     requests: list[str] = Field(default_factory=list)  # "<module>.<action>", as the planner must call them
     listens: list[str] = Field(default_factory=list)  # its manifest's subscribes: sense.chat = it hears every message
+    specs: dict[str, RequestSpec] = Field(default_factory=dict)  # "<module>.<action>" -> what it takes and returns
+    status: str = "running"  # the supervisor's: a stopped or retired module is listed as not running, never called
 
 
 class PackItem(BaseModel):

@@ -126,6 +126,7 @@ def test_pin_manifest_sets_the_builders_fields(tmp_path):
         ("purpose: Keeps notes for the user.\nemits: [mod.notes.kept]\n", "write 'kept'"),
         ("purpose: Keeps notes for the user.\nrequests: [rpc.mod.notes.last]\n", "write 'last'"),
         ("purpose: Keeps notes for the user.\nsubscribes: [rpc.sys.deploy]\n", "may not subscribe"),
+        ("purpose: Keeps notes for the user.\nrequests: [last]\n", "not described: last"),  # Main would guess
     ],
 )
 def test_pin_manifest_problems(tmp_path, text, expect):

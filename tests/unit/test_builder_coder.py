@@ -34,7 +34,7 @@ MANIFEST_ARGS = {
     "purpose": "Keeps the last note from chat so it can be read back.",
     "subscribes": ["sense.chat"],
     "emits": ["note.kept"],
-    "requests": ["last"],
+    "requests": [{"name": "last", "description": "The last note kept from chat.", "returns": {"note": "string"}}],
 }
 CODE_ARGS = {"files": [{"path": "app/main.py", "content": CODE}]}
 TEST_ARGS = {"files": [{"path": "tests/test_notes.py", "content": TESTS.replace("WANT", "buy milk")}]}
@@ -98,14 +98,18 @@ async def test_a_fresh_round_writes_manifest_code_and_tests_through_forced_tools
     assert [r["tool_choice"] for r in gw.requests] == ["write_manifest", "write_files", "write_files"]
     assert all(r["slot"] == "coder" and r["cause"] == "b1" and len(r["tools"]) == 1 for r in gw.requests)
     assert "Step 1 of 3" in gw.requests[0]["messages"][0]["content"]
-    assert "requests:\n- last" in gw.requests[1]["messages"][0]["content"]  # the code stage sees the manifest
+    # the code stage sees the manifest, its request described
+    assert (
+        "requests:\n  last:\n    description: The last note kept from chat." in gw.requests[1]["messages"][0]["content"]
+    )
     assert "def build" in gw.requests[2]["messages"][0]["content"]  # the tests stage sees the code
     assert "CONTRACT" not in gw.requests[0]["messages"][0]["content"]  # the brief is in the system prompt
     assert "Module contract" in gw.requests[0]["system"] and "hello" in gw.requests[0]["system"]
     assert len({r["system"] for r in gw.requests}) == 1  # one system part for every stage: the prefix cache keeps it
 
     manifest = yaml.safe_load((staged / "manifest.yaml").read_text())
-    assert manifest["name"] == "notes" and manifest["requests"] == ["last"]
+    assert manifest["name"] == "notes" and list(manifest["requests"]) == ["last"]
+    assert manifest["requests"]["last"]["description"] == "The last note kept from chat."  # described, for Main
     assert (staged / "app" / "main.py").read_text() == CODE
     assert (staged / "tests" / "test_notes.py").exists()
     assert res.calls == 3 and res.cost_usd == 0.03 and res.model == "local-coder"

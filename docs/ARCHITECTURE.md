@@ -355,8 +355,17 @@ keeps only `template/` and the hand-written reference module `hello` in `modules
 the example every coder is shown), so the public repo never holds Hansen's grown software and
 `make test` does not depend on what the system has built.
 
-**Manifest change needed first:** `emits` and `requests` become described, not just named, so the
-catalog and Main know what the fields mean:
+**Described requests: built.** A manifest's `requests` may be described (below, with `optional <type>` for a
+field that may be left out, since YAML refuses `{day?: date}`). The SDK keeps the names in `requests`, so every
+reader of them is unchanged, and the descriptions in `request_specs`; the supervisor stores the manifest in its
+`modules` table and serves it on `rpc.sys.list`, and Main's prompt shows each request with its fields
+(`expenses.add {amount: number, day: optional date}: Store one expense.`), so it calls a module from what the
+module says rather than guessing. A grown module must describe every request: the builder's manifest check
+fails the round otherwise. `hello` is described the same way, as the example every coder reads. **Still to
+come:** described `emits` with payloads checked by the SDK, `storage`, and `rpc.sys.catalog` (today
+`rpc.sys.list` carries the same manifests).
+
+The design, with events described too:
 
 ```yaml
 emits:
@@ -406,9 +415,12 @@ once more, and it either calls `remember` or says it plainly. The trace marks su
 
 **Growing a module.** When Hansen wants something ongoing that no module does ("track my expenses"),
 or logs something no module tracks ("spent 85 on breakfast": remembered first, since a proposal ends the
-turn), the planner calls `propose_module` with the parts of a spec (name, purpose, need, behaviour, answers,
-example); code renders `SPEC.md` in the format of `specs/expenses.md` and checks the name against the
-SDK's rules, `rpc.sys.list` and the running builds. A valid proposal ends the turn like `ask`: Main
+turn), the planner calls `propose_module` with the parts of a spec (name, purpose, need, behaviour, answers
+with their fields, example); code renders `SPEC.md` in the format of `specs/expenses.md` and checks the name
+against the SDK's rules, `rpc.sys.list` and the running builds. A module that tracks entries gets an `add`
+taking one entry, and queries over all time by default: Main reads Hansen's messages and sends each entry to
+`add` (`ask_module`), so the module never parses chat with a pattern of its own (the first grown `expenses`
+did, and missed "today i spend 112 for dinner"). A valid proposal ends the turn like `ask`: Main
 stores it in its KV (`proposals.py`, keyed by the card's id) and only then sends the card, Build it /
 Not now. The tap is handled in code, never by the model: under the thread's lock Main re-reads the
 proposal (a second tap or an old card finds it decided), calls `rpc.build.start` with the channel and
@@ -908,6 +920,8 @@ real module exists.
 ## Build order
 
 1. Manifest with described events/requests and `storage`, envelope, durable consumers, catalog.
+   *Done: described requests (SDK, builder check, Main's prompt). Not yet: described events, `storage`,
+   `rpc.sys.catalog`.*
    (SDK + supervisor)
 2. Prove the builder on `specs/expenses.md`, with allowlist and static checks before verify.
 3. Model gateway with the Claude API and one local (Ollama or vLLM) provider, shadow mode included.

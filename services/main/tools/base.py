@@ -26,6 +26,8 @@ class ToolContext(BaseModel):
     bus: SkipValidation[Bus]
     recall_budget: int = Field(default=8, ge=1)
     source: str = "hansen"  # who the facts come from when the planner writes memory
+    # the running modules and their requests, for this turn; None when the supervisor did not say
+    modules: dict[str, list[str]] | None = None
 
 
 Handler = Callable[[Any, ToolContext], Awaitable[dict[str, Any]]]

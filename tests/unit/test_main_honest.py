@@ -154,6 +154,7 @@ async def test_a_claim_in_chinese_is_checked_too(w):
         "Saved: the gas pump, 12000.",
         "That's noted for next week.",
         "已記住：小美下個月要搬去台南。",
+        "Sounds good. Mei recommended Draft Land back in September, so I've got it saved.",
     ],
 )
 def test_claims_of_a_save_are_recognised(reply):
@@ -196,6 +197,31 @@ async def test_a_save_whose_remember_failed_is_checked():
     assert w.bus.events("out.say")[0][1]["text"] == "I couldn't save it."
 
 
+async def test_a_modules_add_backs_a_save_and_a_query_does_not(w):
+    w.modules = [
+        {"name": "expenses", "status": "running", "manifest": {"purpose": "Tracks spending.", "requests": ["add"]}}
+    ]
+
+    async def add(msg):
+        await msg.respond({"ok": True, "id": 7})
+
+    await w.bus.subscribe("rpc.mod.expenses.add", add)
+    w.llm_script = [
+        call("ask_module", {"module": "expenses", "action": "add", "args": {"amount": 85}}),
+        say("Logged 85."),
+    ]
+    await w.send("sense.chat", chat("spent 85 on breakfast").data)
+    assert plan(w)["claim_check"] is False  # the module kept it
+
+    w.llm_script = [
+        call("ask_module", {"module": "expenses", "action": "summary"}),
+        say("Logged 85."),
+        say("85 so far."),
+    ]
+    await w.send("sense.chat", chat("how much so far?").data)
+    assert plan(w)["claim_check"] is True  # a query keeps nothing
+
+
 async def test_a_module_that_hears_the_chat_may_have_logged_it(w):
     w.modules = [
         {
@@ -212,35 +238,62 @@ async def test_a_module_that_hears_the_chat_may_have_logged_it(w):
 # ---- what was offered is in the prompt ----------------------------------------------------------------
 
 
-async def test_the_prompt_lists_modules_offered_and_not_running(w):
-    def proposal(i: int, name: str, status: ProposalStatus) -> Proposal:
-        return Proposal(
-            id=f"p{i}",
-            name=name,
-            purpose=f"Tracks {name}.",
-            spec=f"# Spec: {name}\n",
-            channel="web",
-            thread="web",
-            status=status,
-            created=f"2026-11-0{i}T10:00:00+00:00",
-            decided=None if status == ProposalStatus.PROPOSED else f"2026-11-0{i}T11:00:00+00:00",
-        )
+def offer(i: int, name: str, status: ProposalStatus, channel="telegram", thread="123") -> Proposal:
+    return Proposal(
+        id=f"p{i}",
+        name=name,
+        purpose=f"Tracks {name}.",
+        spec=f"# Spec: {name}\n",
+        channel=channel,
+        thread=thread,
+        status=status,
+        created=f"2026-11-0{i}T10:00:00+00:00",
+        decided=None if status == ProposalStatus.PROPOSED else f"2026-11-0{i}T11:00:00+00:00",
+    )
 
-    await w.svc.proposals.create(proposal(1, "expenses", ProposalStatus.PROPOSED))
-    await w.svc.proposals.create(proposal(2, "sleep", ProposalStatus.DECLINED))
-    await w.svc.proposals.create(proposal(3, "weight", ProposalStatus.FAILED))
-    await w.svc.proposals.create(proposal(4, "water", ProposalStatus.DONE))  # running: in the module list instead
+
+def offered(world: World) -> list[str]:
+    system = world.llm_requests[-1]["system"]
+    return system.split("Offered (modules proposed to Hansen, not running):\n", 1)[1].splitlines()
+
+
+async def test_the_prompt_lists_modules_offered_and_not_running(w):
+    await w.svc.proposals.create(offer(1, "groceries", ProposalStatus.PROPOSED))  # this chat (telegram 123)
+    await w.svc.proposals.create(offer(2, "sleep", ProposalStatus.DECLINED))
+    await w.svc.proposals.create(offer(3, "weight", ProposalStatus.FAILED))
+    await w.svc.proposals.create(offer(4, "expenses", ProposalStatus.DONE))  # running: under Modules instead
     w.llm_script = [say("ok")]
     await w.send("sense.chat", chat("lunch was 120").data)
-
-    system = w.llm_requests[0]["system"]
-    offered = system.split("Offered (modules proposed to Hansen, not running):\n", 1)[1]
-    assert offered.splitlines() == [
-        "- weight: Tracks weight. (its build failed on 2026-11-03: offer it again only if he asks for it)",
+    assert offered(w) == [
+        "- weight: Tracks weight. (its build failed on 2026-11-03: call `propose_module` again only if he asks for it)",
         "- sleep: Tracks sleep. (he chose Not now on 2026-11-02: do not offer it again unless he asks for it)",
-        "- expenses: Tracks expenses. (offered 2026-11-01, waiting for his Build it: do not offer it again, the card "
-        "is there)",
+        "- groceries: Tracks groceries. (offered 2026-11-01, waiting for his Build it: do not offer it again, the "
+        "card is there)",
     ]
+
+
+async def test_a_card_in_another_chat_does_not_stop_an_offer_here(w):
+    """A card Hansen cannot see here (a test thread on the cli) must not keep Main from offering one in the app."""
+    await w.svc.proposals.create(offer(1, "groceries", ProposalStatus.PROPOSED, channel="cli", thread="grow-test"))
+    w.llm_script = [say("ok")]
+    await w.send("sense.chat", chat("I want to track my groceries").data)
+    assert offered(w) == [
+        "- groceries: Tracks groceries. (offered 2026-11-01 in another chat, still waiting there: if he asks "
+        "here, call `propose_module` here)"
+    ]
+
+
+async def test_a_module_built_then_retired_can_be_offered_again(w):
+    """Hansen's expenses 0.1.0: built, removed, and its proposal still said done. The newest of a name counts."""
+    await w.svc.proposals.create(offer(1, "groceries", ProposalStatus.PROPOSED, channel="cli", thread="grow-test"))
+    await w.svc.proposals.create(offer(4, "groceries", ProposalStatus.DONE))  # not among the running modules
+    w.llm_script = [say("ok")]
+    await w.send("sense.chat", chat("I want to track my groceries").data)
+    assert offered(w) == [
+        "- groceries: Tracks groceries. (built on 2026-11-04 but not running now: if he wants it, call "
+        "`propose_module` for it again)"
+    ]
+    assert "Only the modules listed under Modules are running now" in w.llm_requests[-1]["system"]
 
 
 async def test_nothing_offered_says_so(w):
