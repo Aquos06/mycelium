@@ -22,7 +22,8 @@ def build(**kwargs) -> Module:            # keep this shape: tests call build(ma
     @mod.on("sense.chat")                 # an event; msg.data is a dict
     async def on_chat(msg): ...
 
-    @mod.on_request("summary")            # answers rpc.mod.<name>.summary; return a dict, raise ValueError for bad input
+    @mod.on_request("summary")            # answers rpc.mod.<name>.summary (described under `requests`); return a
+                                          # dict, raise ValueError for bad input
     async def summary(data: dict) -> dict: ...
 
     @mod.every(3600)                      # every N seconds (declared under hooks.interval_seconds)
@@ -52,6 +53,8 @@ RULES = """\
   Dockerfile, requirements.txt, CONTRACT.md, pytest.ini, tests/conftest.py, SPEC.md and tests/test_contract.py
   are the builder's and are put back after you.
 - The builder sets the manifest's name, version, permissions (no network, no actuation) and resources.
+- Every request is described in manifest.yaml: `description`, `params` and `returns`, each field `name: type`
+  (`optional <type>` when it may be left out). Main calls the module from these alone; the build fails without.
 - Not allowed in the code: subprocess, socket, http/urllib and other network libraries, raw nats, the
   module's `.bus`, eval/exec, dynamic imports. A module talks to the world only through `mod`.
 - tests/test_contract.py (the builder's) checks that the module starts, answers health, answers every

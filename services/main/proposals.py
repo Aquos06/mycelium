@@ -99,10 +99,12 @@ class ProposalStore:
         return [p for p in await self._all() if p.status == ProposalStatus.BUILDING]
 
     async def offered(self, limit: int = 8) -> list[Proposal]:
-        """The latest proposals that are not running modules yet (waiting, declined, building, failed): what the
-        planner reads so it does not offer the same module twice."""
-        open_ = [p for p in await self._all() if p.status != ProposalStatus.DONE]
-        return sorted(open_, key=lambda p: p.created, reverse=True)[:limit]
+        """The newest proposal of each name, newest first: what the planner reads so it does not offer the same
+        module twice. A newer proposal of a name is the state of that idea (a card from another day is not)."""
+        latest: dict[str, Proposal] = {}
+        for p in sorted(await self._all(), key=lambda p: p.created, reverse=True):
+            latest.setdefault(p.name, p)
+        return list(latest.values())[:limit]
 
     async def _all(self) -> list[Proposal]:
         out = []

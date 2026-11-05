@@ -26,7 +26,10 @@ MANIFEST = """\
 purpose: Keeps the last note from chat so it can be read back.
 subscribes: [sense.chat]
 emits: [note.kept]
-requests: [last]
+requests:
+  last:
+    description: The last note kept from chat.
+    returns: {note: string}
 permissions: {network: true, actuation: true}
 """
 

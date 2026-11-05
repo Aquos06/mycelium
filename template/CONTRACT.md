@@ -26,7 +26,16 @@ Do not create files outside this folder. Do not edit CONTRACT.md.
    emit, answer, or schedule anything not declared.
    - `subscribes`: full subjects or patterns, e.g. `sense.chat`, `mod.receipts.parsed`
    - `emits`: relative event names -> published as `mod.<name>.<event>`
-   - `requests`: relative action names -> answered on `rpc.mod.<name>.<action>`
+   - `requests`: relative action names -> answered on `rpc.mod.<name>.<action>`, each **described**:
+     a `description`, the `params` it takes and what it `returns`, as `name: type` (`optional <type>` when it may be left out).
+     Main reads these to call the module, so a request it cannot read is a request it guesses at:
+     ```yaml
+     requests:
+       add:
+         description: Store one expense.
+         params: {amount: number, description: string, day: optional date}
+         returns: {id: number}
+     ```
    - `hooks.interval_seconds`: list of intervals (>= 10s)
 3. **Never subscribe to your own events** (loops). Subscribe only to events: `sense.*`, `brain.*`, `mod.*`, `sys.*`,
    `build.*`, `out.*`. A module's bus login cannot send requests, read `rpc.*`, `trace.*` or `stream.*`.

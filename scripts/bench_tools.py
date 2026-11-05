@@ -60,6 +60,7 @@ from mycelium_sdk import (  # noqa: E402
     CompletionRequest,
     InMemoryBus,
     InMemoryKV,
+    Manifest,
     Message,
     Role,
 )
@@ -83,9 +84,18 @@ class NoteLine(BaseModel):
 
 class FixtureModule(BaseModel):
     purpose: str
-    requests: list[str] = Field(min_length=1)
+    requests: list[str] | dict[str, Any] = Field(min_length=1)  # named, or described as a manifest would
     subscribes: list[str] = Field(default_factory=list)  # Main's prompt says what a module listens to
     reply: dict[str, Any] = Field(default_factory=dict)  # what every request of the module answers
+
+    def manifest(self, name: str) -> dict[str, Any]:
+        """What the supervisor would serve for it: the SDK's manifest, described requests in `request_specs`."""
+        data = {"name": name, "purpose": self.purpose, "requests": self.requests, "subscribes": self.subscribes}
+        return Manifest.model_validate(data).model_dump()
+
+    @property
+    def actions(self) -> list[str]:
+        return list(self.requests)
 
 
 class ArgCheck(BaseModel):
@@ -149,6 +159,7 @@ class Case(BaseModel):
     avoid: list[str] = Field(default_factory=list)  # tools that must not be called
     pack: list[str] = Field(default_factory=list)  # names under `notes`
     modules: list[str] | None = None  # names under `modules`; None: the suite's default_modules
+    retired: list[str] = Field(default_factory=list)  # modules the supervisor lists as retired (built, then removed)
     history: list[HistoryTurn] = Field(default_factory=list)
     proposals: list[FixtureProposal] = Field(default_factory=list)
     args: dict[str, ArgCheck] = Field(default_factory=dict)
@@ -170,6 +181,8 @@ class Suite(BaseModel):
         for name in self.default_modules:
             if name not in self.modules:
                 raise ValueError(f"default_modules: no module {name!r}")
+        for name, module in self.modules.items():
+            module.manifest(name)  # a module the supervisor would refuse is not one Main could see
         for c in self.cases:
             if missing := [n for n in c.pack if n not in self.notes]:
                 raise ValueError(f"{c.id}: no notes {missing}")
@@ -218,6 +231,7 @@ class StubStack:
     def __init__(self, suite: Suite, case: Case) -> None:
         self.pack = suite.pack_for(case)
         self.modules = suite.modules_for(case)
+        self.retired = case.retired
         self.paths = {Path(n.note).stem: n.note for n in suite.notes.values()}  # slug -> the note's path
         self._recalls = 0
 
@@ -242,9 +256,9 @@ class StubStack:
         await msg.respond({"ok": True, "path": path, "created": known is None})
 
     async def _list(self, msg: Message) -> None:
-        rows = [
-            {"name": n, "status": "running", "manifest": {"name": n, **m.model_dump(exclude={"reply"})}}
-            for n, m in self.modules.items()
+        rows = [{"name": n, "status": "running", "manifest": m.manifest(n)} for n, m in self.modules.items()]
+        rows += [
+            {"name": n, "status": "retired", "manifest": {"name": n, "purpose": f"{n}, retired"}} for n in self.retired
         ]
         await msg.respond({"ok": True, "modules": rows})
 
@@ -254,7 +268,7 @@ class StubStack:
     async def _module(self, msg: Message) -> None:
         _, _, name, action = (msg.subject.split(".", 3) + ["", "", "", ""])[:4]
         module = self.modules.get(name)
-        if module is None or action not in module.requests:
+        if module is None or action not in module.actions:
             await msg.respond({"ok": False, "error": f"no responders for {msg.subject}"})
             return
         await msg.respond({"ok": True, **module.reply})

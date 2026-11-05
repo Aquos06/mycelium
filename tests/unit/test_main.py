@@ -423,7 +423,8 @@ async def test_tool_loop_stops_after_max_rounds(world):
     await world.send("sense.chat", chat("loop").data)
     trace = world.bus.events("trace.plan")[0][1]
     assert trace["error"] == "planner did not finish in 2 rounds" and trace["rounds"] == 2
-    assert world.bus.events("out.say")[0][1]["text"] == MODEL_DOWN_REPLY
+    # the model was reached every round: running out of steps is said as that, not as an unreachable model
+    assert world.bus.events("out.say")[0][1]["text"].startswith("I couldn't finish this: I used all my steps")
 
 
 async def test_empty_text_is_ignored(world):

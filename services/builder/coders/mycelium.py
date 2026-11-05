@@ -254,7 +254,7 @@ class MyceliumCoder:
             "need": draft.need,
             "subscribes": draft.subscribes,
             "emits": draft.emits,
-            "requests": draft.requests,
+            "requests": {r.name: r.model_dump(exclude={"name"}) for r in draft.requests},
             "hooks": {"interval_seconds": draft.interval_seconds},
         }
         problems = relative_names(data, ctx.name)

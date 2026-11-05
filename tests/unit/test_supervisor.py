@@ -89,6 +89,18 @@ async def test_deploy_happy_path(sup, tmp_path):
     assert bus.events("sys.module.deployed")[0][1]["name"] == "alpha"
 
 
+async def test_list_serves_what_each_request_takes(sup, tmp_path):
+    """The manifest's described requests reach rpc.sys.list as they were written: Main reads them to call it."""
+    _, bus, _, _ = sup
+    add = {"description": "Store one expense.", "params": {"amount": "number", "day": "optional date"}}
+    write_module(tmp_path, "alpha", requests={"add": add, "total": "Totals, all time by default."})
+    await bus.request("rpc.sys.deploy", {"name": "alpha"})
+    manifest = (await bus.request("rpc.sys.list", {}))["modules"][0]["manifest"]
+    assert manifest["requests"] == ["add", "total"]
+    assert manifest["request_specs"]["add"] == {**add, "returns": {}}
+    assert manifest["request_specs"]["total"]["description"] == "Totals, all time by default."
+
+
 @pytest.mark.parametrize("name", ["../etc", "Bad", "", None, 42, "sys", ".staging"])
 async def test_deploy_rejects_bad_names(sup, name):
     _, bus, docker, _ = sup

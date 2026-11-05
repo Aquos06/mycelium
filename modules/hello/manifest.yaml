@@ -4,7 +4,11 @@ purpose: Counts chat messages per day so the system has a first working module t
 need: Hand-written example that proves the deploy, event and request paths work end to end.
 subscribes: [sense.chat]
 emits: [message.counted]
-requests: [stats]
+requests:                 # described, so Main knows what to send and what comes back
+  stats:
+    description: Messages counted on one day, and in all.
+    params: {day: optional date}    # YYYY-MM-DD; today when left out
+    returns: {day: date, count: number, total: number}
 hooks:
   interval_seconds: [3600]
 permissions:

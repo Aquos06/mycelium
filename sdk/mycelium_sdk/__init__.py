@@ -34,7 +34,7 @@ from .llm import (
     ToolUse,
     Usage,
 )
-from .manifest import Manifest, ManifestError, load_manifest, validate_manifest
+from .manifest import Manifest, ManifestError, RequestSpec, load_manifest, validate_manifest
 from .module import Module
 from .notes import NoteType
 from .prompt import Prompt
@@ -58,6 +58,7 @@ __all__ = [
     "new_id",
     "now_iso",
     "Manifest",
+    "RequestSpec",
     "ManifestError",
     "load_manifest",
     "validate_manifest",

@@ -42,6 +42,18 @@ class CoderResult(BaseModel):
     model: str | None = None
 
 
+class RequestDraft(BaseModel):
+    """One request the module answers, described: Main reads this to call it."""
+
+    name: str = Field(description="relative action, e.g. add or summary (answered on rpc.mod.<name>.<action>)")
+    description: str = Field(min_length=8, description="what it does, one sentence")
+    params: dict[str, str] = Field(
+        default_factory=dict,
+        description='what it takes, name -> type: {"amount": "number", "day": "optional date"}',
+    )
+    returns: dict[str, str] = Field(default_factory=dict, description='what it gives back: {"total": "number"}')
+
+
 class ManifestDraft(BaseModel):
     purpose: str = Field(min_length=10, description="one sentence: what the module does for Hansen")
     need: str = Field(default="", description="the need from the spec, in one sentence")
@@ -49,8 +61,8 @@ class ManifestDraft(BaseModel):
     emits: list[str] = Field(
         default_factory=list, description="relative event names, e.g. expense.logged (sent as mod.<name>.<event>)"
     )
-    requests: list[str] = Field(
-        default_factory=list, description="relative actions it answers, e.g. summary (rpc.mod.<name>.<action>)"
+    requests: list[RequestDraft] = Field(
+        default_factory=list, description="every request it answers, each described: Main reads these to call it"
     )
     interval_seconds: list[int] = Field(default_factory=list, description="periodic hooks, each at least 10")
 

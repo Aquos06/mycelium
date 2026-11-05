@@ -58,6 +58,12 @@ def pin_manifest(module_dir: Path, name: str, version: str) -> tuple[Manifest | 
         manifest = validate_manifest(data)
     except ManifestError as e:
         return None, problems + [f"manifest.yaml: {e}"]
+    if missing := manifest.undescribed():  # Main reads these to call the module: a bare name is a guess
+        problems.append(
+            f"manifest.yaml: describe every request (description, params, returns), Main reads them to call it; "
+            f"not described: {', '.join(missing)}. E.g. requests: {{add: {{description: Store one expense., "
+            f"params: {{amount: number, day: optional date}}, returns: {{id: number}}}}}}"
+        )
     return (None if problems else manifest), problems
 
 
