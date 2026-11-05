@@ -225,3 +225,18 @@ def test_a_spec_without_add_does_not_claim_entries_come_from_main():
     plain = {**TRACKER, "answers": ["summary: totals for a date range"]}
     spec = ProposeArgs.model_validate(plain).spec()
     assert "does not parse chat" not in spec and "Every request is described" in spec
+
+
+def test_lines_written_with_an_escaped_newline_are_still_one_line_each():
+    """Hansen's expenses-v2 spec: the model sent each list as one item with `\\n` in it, so the three requests were
+    one answer line and the spec read "store one expense entry\\nsummary {...}"."""
+    args = ProposeArgs.model_validate(
+        {
+            **TRACKER,
+            "behaviour": ["one entry holds: date, amount\\n- summarizes: totals by category"],
+            "answers": ["add {amount: number}: store one expense entry\\nsummary {from: optional date}: totals"],
+        }
+    )
+    assert args.behaviour == ["one entry holds: date, amount", "summarizes: totals by category"]
+    assert [req for req, _, _ in args.requests()] == ["add", "summary"]
+    assert "\\n" not in args.spec()

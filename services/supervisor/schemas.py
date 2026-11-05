@@ -2,6 +2,7 @@
 
     rpc.sys.deploy   ModuleRef        -> Deployed
     rpc.sys.verify   VerifyRequest    -> VerifyResult
+    rpc.sys.snapshot SnapshotRequest  -> Snapshot (a copy of a module's data, before a change deploys)
     rpc.sys.agent    AgentRequest     -> AgentRun
     rpc.sys.agents   {}               -> AgentList
     rpc.sys.stop     ModuleRef        -> Stopped
@@ -62,6 +63,11 @@ class VerifyRequest(BaseModel):
     staging: bool = False  # the build in GROWN_DIR/.staging/<name>, not the deployed folder
 
 
+class SnapshotRequest(BaseModel):
+    name: ModuleName
+    label: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")  # in the copy's volume name: v0.1.0-<build id>
+
+
 class AgentRequest(BaseModel):
     agent: str
     name: ModuleName  # a staged build: the agent works on a copy of it
@@ -88,6 +94,11 @@ class Deployed(BaseModel):
     name: str
     image: str
     status: str  # the container's
+
+
+class Snapshot(BaseModel):
+    name: str
+    volume: str | None = None  # the copy; None: the module had no data volume yet, so nothing to keep
 
 
 class Stopped(BaseModel):
@@ -176,6 +187,7 @@ class ModuleList(BaseModel):
 
     modules: list[ModuleRow] = Field(default_factory=list)
     folders: list[str] = Field(default_factory=list)
+    grown: list[str] = Field(default_factory=list)  # the folders in GROWN_DIR: the modules the builder can change
 
 
 class ModuleHealth(BaseModel):

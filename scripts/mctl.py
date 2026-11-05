@@ -5,6 +5,7 @@
     python scripts/mctl.py deploy hello
     python scripts/mctl.py verify hello                           # its tests, locked down (--staging: a build)
     python scripts/mctl.py build expenses specs/expenses.md --wait  # grow a module; --coder picks who writes it
+    python scripts/mctl.py change expenses "keep a category" --wait  # change a grown module; it keeps its data
     python scripts/mctl.py builds                                 # the latest builds
     python scripts/mctl.py build-get <build_id>                   # one build, round by round
     python scripts/mctl.py coders                                 # who can write a module, and the default
@@ -76,7 +77,10 @@ async def follow_build(bus: NatsBus, args) -> int:
 
         await bus.subscribe("build.>", on_build)
         await bus.flush()
-    payload = {"name": args.name, "spec": open(args.spec, encoding="utf-8").read()}
+    if args.cmd == "change":
+        payload = {"name": args.name, "change": args.change}
+    else:
+        payload = {"name": args.name, "spec": open(args.spec, encoding="utf-8").read()}
     if args.coder:
         payload["coder"] = args.coder
     reply = await bus.request("rpc.build.start", payload, timeout=30)
@@ -172,7 +176,7 @@ async def run(args) -> int:
                 print(reply.pop("output"))
                 print(json.dumps(reply, indent=2))
                 return 0 if reply["passed"] else 1
-        elif args.cmd == "build":
+        elif args.cmd in ("build", "change"):
             return await follow_build(bus, args)
         elif args.cmd == "builds":
             reply = await bus.request("rpc.build.list", {"limit": args.limit}, timeout=args.timeout)
@@ -216,6 +220,11 @@ def main() -> int:
     bu.add_argument("spec", help="the spec, a markdown file (e.g. specs/expenses.md)")
     bu.add_argument("--coder", help="who writes it (mctl coders); default BUILDER_CODER")
     bu.add_argument("--wait", action="store_true", help="follow the build round by round until it ends")
+    ch = sub.add_parser("change", help="change a module the builder grew; it keeps its data (rpc.build.start)")
+    ch.add_argument("name")
+    ch.add_argument("change", help="what it should do after the change, in a sentence or a few lines")
+    ch.add_argument("--coder", help="who writes it (mctl coders); default BUILDER_CODER")
+    ch.add_argument("--wait", action="store_true", help="follow the build round by round until it ends")
     bl = sub.add_parser("builds", help="the latest builds")
     bl.add_argument("--limit", type=int, default=20)
     sub.add_parser("build-get", help="one build, round by round").add_argument("build_id")

@@ -1,6 +1,7 @@
 """Proposals: a module Main drafted, kept in Main's KV until it is built or turned down.
 
-A proposal is stored before its card goes out, under the card's own id (the `ref` a tap carries back), so a
+A proposal is a new module (kind `new`, from propose_module: its SPEC.md) or a change to one the builder grew
+(kind `change`, from change_module: what to change). It is stored before its card goes out, under the card's own id (the `ref` a tap carries back), so a
 tap on Build it starts the build in code, never through the model: the approval is enforced here, not in the
 prompt. A second tap, or a tap on an old card, finds the proposal already decided.
 
@@ -31,6 +32,11 @@ BY_NAME = "proposal-name"
 NOTE_SHOWN = 300  # characters of a note told in the chat
 
 
+class ProposalKind(StrEnum):
+    NEW = "new"  # a module to grow: `spec`
+    CHANGE = "change"  # a change to a grown module: `change`; the module runs as it was until it is built
+
+
 class ProposalStatus(StrEnum):
     PROPOSED = "proposed"
     DECLINED = "declined"
@@ -42,8 +48,11 @@ class ProposalStatus(StrEnum):
 class Proposal(BaseModel):
     id: str  # its first card's id (out.ask)
     name: str
-    purpose: str
-    spec: str  # SPEC.md, as Hansen approves it
+    purpose: str  # a change: its first line
+    kind: ProposalKind = ProposalKind.NEW
+    spec: str = ""  # a new module: SPEC.md, as Hansen approves it
+    change: str = ""  # a change: what to change, as Hansen approves it
+    base_version: str | None = None  # a change: the version it was drafted against
     channel: str
     thread: str
     cause: str | None = None  # the message Main was answering when it proposed
@@ -52,6 +61,10 @@ class Proposal(BaseModel):
     decided: str | None = None
     build_id: str | None = None
     note: str | None = None  # the last thing that went wrong: why the builder would not start, where it failed
+
+    @property
+    def is_change(self) -> bool:
+        return self.kind == ProposalKind.CHANGE
 
     def short_note(self) -> str:
         note = self.note or "no reason given"

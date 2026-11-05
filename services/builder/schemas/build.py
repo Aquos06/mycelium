@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field
 from mycelium_sdk import Envelope, new_id, now_iso
 
 
+class BuildMode(StrEnum):
+    NEW = "new"  # a module from a spec
+    CHANGE = "change"  # a module the builder grew, edited as it is; its data is kept
+
+
 class BuildStatus(StrEnum):
     QUEUED = "queued"
     BUILDING = "building"
@@ -25,6 +30,7 @@ class Stage(StrEnum):
     VERIFY = "verify"  # the supervisor's verify: its image build, then the tests
     BUILD = "build"
     TESTS = "tests"
+    SNAPSHOT = "snapshot"  # a change: the module's data copied before the new version touches it
     PROMOTE = "promote"  # promote + commit
     DEPLOY = "deploy"
     RESTART = "restart"  # the builder restarted while it ran
@@ -55,6 +61,8 @@ class BuildSummary(BaseModel):
     name: str
     coder: str
     status: BuildStatus
+    mode: BuildMode = BuildMode.NEW
+    base_version: str | None = None  # a change: the version it started from
     created: str
     started: str | None = None
     finished: str | None = None
@@ -71,8 +79,13 @@ class BuildRecord(BaseModel):
 
     id: str = Field(default_factory=new_id)
     name: str
-    spec: str
+    spec: str  # SPEC.md as the coder reads it; a change build's ends with the change
     coder: str
+    mode: BuildMode = BuildMode.NEW
+    change: str = ""  # a change build: what Hansen approved, also the last section of `spec`
+    base_version: str | None = None  # a change build: the version it starts from
+    base_commit: str | None = None  # and its commit in GROWN_DIR: where to go back to
+    snapshot: str | None = None  # a change build: the copy of the module's data taken before it deployed
     status: BuildStatus = BuildStatus.QUEUED
     created: str = Field(default_factory=now_iso)
     started: str | None = None
@@ -93,7 +106,7 @@ class BuildRecord(BaseModel):
 
     def summary(self) -> BuildSummary:
         return BuildSummary.model_validate(
-            {**self.model_dump(exclude={"rounds", "spec", "output"}), "rounds": len(self.rounds)}
+            {**self.model_dump(exclude={"rounds", "spec", "change", "output"}), "rounds": len(self.rounds)}
         )
 
     def envelope(self) -> Envelope:

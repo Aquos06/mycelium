@@ -1,6 +1,6 @@
 """The builder on the bus.
 
-    rpc.build.start   BuildRequest       -> StartReply
+    rpc.build.start   BuildRequest       -> StartReply (a spec: a new module; a change: one the builder grew)
     rpc.build.get     BuildRef           -> BuildRecord
     rpc.build.list    BuildListRequest   -> BuildList (newest first)
     rpc.build.coders  {}                 -> CoderList
@@ -10,8 +10,9 @@ Events:
     build.started / build.progress (one per round) / build.done / build.failed
 
 A build starts by request, not by event: an event would vanish while the builder is down (core NATS has no
-durable consumers here), a request gets an answer or an error. A name that exists, a full queue, a coder that
-cannot work or a supervisor that does not answer is refused at once, with the reason. One build runs at a
+durable consumers here), a request gets an answer or an error. A name that exists (a change: one the builder
+did not grow), a full queue, a coder that cannot work or a supervisor that does not answer is refused at once,
+with the reason. One build runs at a
 time; the rest wait in line. Records live in the `builder` KV bucket. A restart fails the build that was
 running (its folder is half written) and puts the waiting ones back in line.
 """
@@ -25,15 +26,29 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from mycelium_sdk import KV, Bus, Message, NoAnswer, Refused, ask, kv_key, now_iso, validation_message
+from mycelium_sdk import (
+    KV,
+    Bus,
+    ManifestError,
+    Message,
+    NoAnswer,
+    Refused,
+    ask,
+    kv_key,
+    load_manifest,
+    now_iso,
+    validation_message,
+)
 
 from .coders import Coder, CoderUnavailable
-from .pipeline import Pipeline, PipelineError
+from .pipeline import Pipeline, PipelineError, change_spec, next_version
 from .schemas import (
+    SPEC_MAX,
     BuildDone,
     BuildFailed,
     BuildList,
     BuildListRequest,
+    BuildMode,
     BuildProgress,
     BuildRecord,
     BuildRef,
@@ -131,16 +146,21 @@ class BuilderService:
         coder = self.coders.get(coder_name)
         if coder is None:
             raise ValueError(f"no coder {coder_name!r}; one of {', '.join(self.coders)}")
-        if self.workspace.exists(req.name):
-            raise ValueError(
-                f"a module named {req.name!r} has already been grown (GROWN_DIR/{req.name}); "
-                f"if its build failed at deploy, `mctl deploy {req.name}` once the cause is fixed"
-            )
         busy = [r for r in [self._current, *self._waiting] if r is not None and r.name == req.name]
         if busy:
             raise ValueError(f"{req.name!r} is already being built ({busy[0].id})")
-        if req.name in await self._known_modules():
-            raise ValueError(f"a module named {req.name!r} already exists")
+        if req.is_change:
+            record = await self._change(req, coder_name)
+        else:
+            if self.workspace.exists(req.name):
+                raise ValueError(
+                    f"a module named {req.name!r} has already been grown (GROWN_DIR/{req.name}); to change it, send "
+                    f"a `change` instead of a spec. If its build failed at deploy, `mctl deploy {req.name}` once the "
+                    "cause is fixed"
+                )
+            if req.name in await self._known_modules():
+                raise ValueError(f"a module named {req.name!r} already exists")
+            record = BuildRecord(name=req.name, spec=req.spec, coder=coder_name)
         if len(self._waiting) >= self.max_queue:
             raise ValueError(f"the builder is busy: {len(self._waiting)} builds are waiting; try again later")
         try:
@@ -150,21 +170,47 @@ class BuilderService:
         reason = await coder.ready()
         if reason:
             raise ValueError(f"the {coder_name} coder cannot build now: {reason}")
-        record = BuildRecord(
-            name=req.name,
-            spec=req.spec,
-            coder=coder_name,
-            cause=req.cause,
-            hops=req.hops,
-            channel=req.channel,
-            thread=req.thread,
+        record = record.model_copy(
+            update={"cause": req.cause, "hops": req.hops, "channel": req.channel, "thread": req.thread}
         )
         await self._save(record)
         position = len(self._waiting) + (1 if self._current else 0)
         self._waiting.append(record)
         self._wake.set()
-        log.info("build %s queued: %s with %s, %d ahead", record.id, record.name, coder_name, position)
+        log.info(
+            "build %s queued: %s (%s) with %s, %d ahead", record.id, record.name, record.mode, coder_name, position
+        )
         return StartReply(build_id=record.id, position=position)
+
+    async def _change(self, req: BuildRequest, coder: str) -> BuildRecord:
+        """A change to a module the builder grew: its folder in GROWN_DIR, its version, its spec with the change."""
+        name = req.name
+        if not self.workspace.exists(name):
+            here = " (it is hand-written, in modules/)" if name in await self._known_modules() else ""
+            raise ValueError(
+                f"there is no grown module {name!r} to change{here}: the builder changes only the modules it grew, "
+                "in GROWN_DIR"
+            )
+        await self._known_modules()  # the supervisor answers: a change needs it to verify, copy the data, deploy
+        try:
+            base = load_manifest(self.workspace.module(name) / "manifest.yaml").version
+        except (OSError, ManifestError) as e:
+            raise ValueError(f"{name}'s manifest does not read ({e}); it cannot be changed as it is") from e
+        spec = change_spec(self.workspace.spec(name), req.change, next_version(base))
+        if len(spec) > SPEC_MAX:
+            raise ValueError(
+                f"{name}'s SPEC.md with this change is {len(spec)} characters, over {SPEC_MAX}: too many changes in "
+                "one module; grow a new one from a spec instead"
+            )
+        return BuildRecord(
+            name=name,
+            spec=spec,
+            coder=coder,
+            mode=BuildMode.CHANGE,
+            change=req.change,
+            base_version=base,
+            base_commit=await self.pipeline.repo.last_commit(name),
+        )
 
     async def get(self, data: dict[str, Any]) -> BuildRecord:
         build_id = BuildRef.model_validate(data).build_id
@@ -278,7 +324,9 @@ class BuilderService:
             await self._save(record)
             await self.bus.publish(
                 "build.started",
-                record.envelope().into(BuildStarted, build_id=record.id, name=record.name, coder=record.coder),
+                record.envelope().into(
+                    BuildStarted, build_id=record.id, name=record.name, coder=record.coder, mode=record.mode
+                ),
             )
             async with asyncio.timeout(self.build_timeout) as deadline:
                 await self.pipeline.run(record, self.coders[record.coder], self._on_round)
@@ -311,6 +359,7 @@ class BuilderService:
                 build_id=record.id,
                 name=record.name,
                 coder=record.coder,
+                mode=record.mode,
                 round=rnd.n,
                 stage=rnd.stage,
                 passed=rnd.passed,
@@ -326,6 +375,7 @@ class BuilderService:
             "build_id": record.id,
             "name": record.name,
             "coder": record.coder,
+            "mode": record.mode,
             "rounds": len(record.rounds),
             "seconds": seconds,
             "cost_usd": record.cost_usd,

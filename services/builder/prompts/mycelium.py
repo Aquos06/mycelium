@@ -1,6 +1,7 @@
 """Our coder's prompts (coders/mycelium.py), one per stage, each for one forced tool call:
 
     first round   manifest_prompt -> code_prompt -> tests_prompt
+    a change      change_prompt: the module's files as they are and the change (its first round)
     later rounds  fix_prompt: the files as they are on disk, what failed and its output
 
 Every one is built from disk and the last failure only, so it stays the same size however many rounds a
@@ -14,7 +15,7 @@ from typing import TYPE_CHECKING
 from mycelium_sdk import Prompt
 
 from ..schemas import Stage
-from .brief import coder_test_file, files_text, spec_text
+from .brief import KEEP_DATA, UPGRADE_TEST, coder_test_file, files_text, spec_text
 
 if TYPE_CHECKING:
     from ..schemas import CoderContext
@@ -59,6 +60,24 @@ def tests_prompt(ctx: CoderContext, files: dict[str, str]) -> Prompt:
     )
 
 
+def change_prompt(ctx: CoderContext, files: dict[str, str]) -> Prompt:
+    """A change build's first round. `files`: the module as it runs now."""
+    tried = ""
+    if ctx.feedback is not None:  # the round before could not write its files
+        tried = (
+            f"\n\n## Round {ctx.round}: the last round did not finish writing\n\n{ctx.feedback.output[-FEEDBACK_MAX:]}"
+            "\n\nKeep each file short enough to write in one go."
+        )
+    return Prompt(
+        system=system(ctx),
+        user=f"{spec_text(ctx.name, ctx.spec, change=True)}\n\n## The files now: the module as it runs\n\n"
+        f"{files_text(files)}\n\n## This build: the change\n\n{ctx.change.strip()}\n\n"
+        f"Change `{ctx.name}` to do this, and keep everything else it does. {KEEP_DATA}\n\n{UPGRADE_TEST} "
+        "Rewrite only the files that need it, each one whole. tests/test_contract.py is the builder's. Call "
+        f"write_files with a note on what you changed.{tried}",
+    )
+
+
 def fix_prompt(ctx: CoderContext, files: dict[str, str]) -> Prompt:
     """`files`: the whole folder as the last round left it."""
     fb = ctx.feedback
@@ -66,9 +85,11 @@ def fix_prompt(ctx: CoderContext, files: dict[str, str]) -> Prompt:
     failed = f"## Round {ctx.round}: the last round failed at {fb.stage}\n\n```\n{fb.output[-FEEDBACK_MAX:]}\n```"
     if fb.stage == Stage.CODER:
         failed += "\n\nThe files below may be incomplete: write every file the module needs."
+    if ctx.change:
+        failed += f"\n\nThis build changes a module that runs with Hansen's data: keep that data readable. The change:\n\n{ctx.change.strip()}"
     return Prompt(
         system=system(ctx),
-        user=f"{spec_text(ctx.name, ctx.spec)}\n\n## The files now\n\n{files_text(files)}\n\n{failed}\n\n"
+        user=f"{spec_text(ctx.name, ctx.spec, bool(ctx.change))}\n\n## The files now\n\n{files_text(files)}\n\n{failed}\n\n"
         "Fix the cause. Rewrite only the files that need it, each one whole. When a test expects something the "
         "spec does not ask for, fix the test; otherwise fix the code. tests/test_contract.py is the builder's: "
         "make the module pass it, do not write it. Call write_files with a note on what you changed.",

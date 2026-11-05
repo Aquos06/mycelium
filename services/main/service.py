@@ -11,6 +11,8 @@ reply, linked by `cause` to the message that started it.
 Growing a module: `propose_module` ends the turn like `ask`; Main stores the proposal (proposals.py), then
 sends its card with Build it / Not now. A tap on Build it is handled here, not by the model: it calls
 rpc.build.start under the thread's lock, so a double tap or an old card finds the proposal decided.
+`change_module` is the same for a module the builder grew: a card with Change it / Not now, and a tap starts a
+change build, which keeps the module running as it is until the new version deploys.
 
 Each message is handled in its own task, so one slow turn never holds up the others; turns on the
 same (channel, thread) take a lock, so a typed message and a button tap cannot interleave.
@@ -47,7 +49,7 @@ from mycelium_sdk import (
 from mycelium_sdk.build import BuildRef, BuildRequest, StartReply
 
 from .prompt import planner_prompt
-from .proposals import Proposal, ProposalStatus, ProposalStore
+from .proposals import Proposal, ProposalKind, ProposalStatus, ProposalStore
 from .schemas import (
     Ask,
     AskOutput,
@@ -64,6 +66,7 @@ from .thread import Thread, ThreadStore, Turn, TurnCall
 from .tools import (
     AskArgs,
     AskModuleArgs,
+    ChangeArgs,
     ProposeArgs,
     RecallPayload,
     ToolContext,
@@ -78,7 +81,9 @@ MODEL_DOWN_REPLY = "I can't reach my model right now, so I can't answer this yet
 MODEL_SLOW_REPLY = "My model took too long to answer this time, so I stopped. I kept your message: ask me again."
 OUT_OF_ROUNDS = "planner did not finish"
 BUILD_IT = "Build it"
+CHANGE_IT = "Change it"
 NOT_NOW = "Not now"
+UNTOUCHED_AFTER = ("deploy",)  # a change that failed at deploy may have stopped the old version; before it, never
 ERROR_SHOWN = 300  # characters of a builder error told in the chat; the build record has all of it
 MAX_TOOL_RESULT_CHARS = 4000
 BUS_MARGIN_S = 5.0  # the gateway enforces the timeout; Main waits a little longer for its clean error
@@ -207,7 +212,7 @@ class MainService:
         if not answer:
             return
         ref = str(data.get("ref") or "")
-        if ref and answer in (BUILD_IT, NOT_NOW) and (proposal := await self.proposals.by_card(ref)):
+        if ref and answer in (BUILD_IT, CHANGE_IT, NOT_NOW) and (proposal := await self.proposals.by_card(ref)):
             async with self._lock(proposal.channel, proposal.thread):
                 await self._decide(ref, answer, data)
             return
@@ -228,7 +233,11 @@ class MainService:
             reply = _already(p)
         elif answer == NOT_NOW:
             p.status, p.decided = ProposalStatus.DECLINED, now_iso()
-            reply = f"OK, I won't build {p.name}. Ask me again whenever you want it."
+            reply = (
+                f"OK, I'll leave {p.name} as it is. Ask me again whenever you want the change."
+                if p.is_change
+                else f"OK, I won't build {p.name}. Ask me again whenever you want it."
+            )
         else:
             reply, offer_again = await self._start_build(p, data)
         await self.proposals.save(p)
@@ -239,7 +248,8 @@ class MainService:
         so a start that did not happen needs a new one to try again."""
         call = BuildRequest(
             name=p.name,
-            spec=p.spec,
+            spec="" if p.is_change else p.spec,
+            change=p.change if p.is_change else "",
             cause=data.get("id"),
             hops=int(data.get("hops") or 0),
             channel=p.channel,
@@ -254,13 +264,14 @@ class MainService:
             p.note = "the builder did not answer"
             return (
                 f"The builder didn't answer in time. If it starts {p.name} anyway, I'll tell you here; "
-                "otherwise choose Build it again."
+                f"otherwise choose {CHANGE_IT if p.is_change else BUILD_IT} again."
             ), True
         except Refused as e:  # busy, coder not ready, name taken, or already started by a tap that timed out
             if await self._adopt(p):
                 return _building(p), False
             p.note = str(e)
-            return f"The builder won't start {p.name}: {p.short_note()}", True
+            verb = "change" if p.is_change else "start"
+            return f"The builder won't {verb} {p.name}: {p.short_note()}", True
         p.status, p.build_id, p.decided, p.note = ProposalStatus.BUILDING, started.build_id, now_iso(), None
         return _building(p, started.position), False
 
@@ -343,11 +354,18 @@ class MainService:
         if outcome.done:
             p.status = ProposalStatus.DONE
             version = f" (version {outcome.version})" if outcome.version else ""
-            reply = f"{p.name} is built and running{version}. Ask me about it any time."
+            reply = (
+                f"{p.name} is changed and running{version}, with its data kept. Ask me about it any time."
+                if p.is_change
+                else f"{p.name} is built and running{version}. Ask me about it any time."
+            )
         else:
             p.status = ProposalStatus.FAILED
             p.note = f"{outcome.stage or 'unknown stage'}: {outcome.error or 'no error given'}"
-            reply = f"Building {p.name} failed at {outcome.stage or 'an unknown stage'}: {(outcome.error or '')[:ERROR_SHOWN]}"
+            what = "Changing" if p.is_change else "Building"
+            reply = f"{what} {p.name} failed at {outcome.stage or 'an unknown stage'}: {(outcome.error or '')[:ERROR_SHOWN]}"
+            if p.is_change and outcome.stage not in UNTOUCHED_AFTER:
+                reply += f"\n\n{p.name} still runs as it was{f' (version {p.base_version})' if p.base_version else ''}."
         await self.proposals.save(p)
         await self._tell(p, reply, data)
 
@@ -359,7 +377,7 @@ class MainService:
         out = Envelope.child_of(data, "main") if data else Envelope(source="main")
         if offer_again:
             await self.proposals.add_card(out.id, p)
-            choices = [BUILD_IT, NOT_NOW]
+            choices = [CHANGE_IT if p.is_change else BUILD_IT, NOT_NOW]
             card = out.into(Ask, channel=p.channel, thread=p.thread, text=text, choices=choices, ref=out.id)
             await self.bus.publish("out.ask", card)
             saved = f"{text}\n[choices: {' / '.join(choices)}]"
@@ -399,7 +417,8 @@ class MainService:
         llm_calls: list[LlmCall] = []
         reply_text = ""
         asked: AskArgs | None = None
-        proposed: ProposeArgs | None = None
+        proposed: ProposeArgs | ChangeArgs | None = None
+        base_version: str | None = None  # a change: the module's version when it was drafted
         error: str | None = None
         claim_check = False
 
@@ -442,8 +461,9 @@ class MainService:
                 if asked is None and proposed is None:  # the first valid `ask` or proposal ends the turn
                     if isinstance(outcome.args, AskArgs):
                         asked = outcome.args
-                    elif isinstance(outcome.args, ProposeArgs) and outcome.ok:  # not when the name is taken
+                    elif isinstance(outcome.args, ProposeArgs | ChangeArgs) and outcome.ok:  # not when refused
                         proposed = outcome.args
+                        base_version = outcome.result.get("version")
                 tool_log.append(outcome)
                 results.append(outcome.tool_result(c.id, MAX_TOOL_RESULT_CHARS))
             messages.append(ChatMessage(role=Role.USER, content=results))
@@ -457,21 +477,27 @@ class MainService:
         output: SayOutput | AskOutput
         if proposed and not error:  # stored before its card goes out: the tap finds it by the card's id
             proposal = Proposal(
-                id=out.id,
-                name=proposed.name,
-                purpose=proposed.purpose,
-                spec=proposed.spec(),
-                channel=channel,
-                thread=thread_id,
-                cause=cause,
+                id=out.id, name=proposed.name, purpose="", channel=channel, thread=thread_id, cause=cause
             )
+            if isinstance(proposed, ChangeArgs):
+                proposal.kind, proposal.purpose, proposal.change = (
+                    ProposalKind.CHANGE,
+                    proposed.summary(),
+                    proposed.text(),
+                )
+                proposal.base_version = base_version
+                card = AskArgs(text=proposed.card(base_version), choices=[CHANGE_IT, NOT_NOW])
+            else:
+                proposal.purpose, proposal.spec = proposed.purpose, proposed.spec()
+                card = AskArgs(text=proposed.card(), choices=[BUILD_IT, NOT_NOW])
             try:
                 await self.proposals.create(proposal)
-                asked = AskArgs(text=proposed.card(), choices=[BUILD_IT, NOT_NOW])
+                asked = card
             except Exception as e:  # no card without its proposal stored, but Hansen still gets a reply
                 log.exception("could not store the proposal for %s", proposed.name)
                 reply_text = (
-                    f"I drafted a module for this ({proposed.name}) but couldn't save it ({type(e).__name__}), "
+                    f"I drafted {'a change to ' if isinstance(proposed, ChangeArgs) else 'a module for this '}"
+                    f"({proposed.name}) but couldn't save it ({type(e).__name__}), "
                 )
                 reply_text += "so I can't offer it right now. Ask me again in a moment."
                 proposed = None
@@ -544,6 +570,7 @@ class MainService:
         except Exception:
             return None
         out: list[ModuleInfo] = []
+        grown = {str(n) for n in reply.get("grown") or []}
         for row in reply.get("modules") or []:
             manifest = row.get("manifest") or {}
             name = str(row.get("name") or manifest.get("name") or "")
@@ -557,6 +584,8 @@ class MainService:
                     listens=[str(s) for s in manifest.get("subscribes") or []],
                     specs=_specs(name, manifest.get("request_specs")),
                     status=str(row.get("status") or "running"),
+                    version=str(row.get("version") or manifest.get("version") or ""),
+                    grown=name in grown,
                 )
             )
         return out
@@ -640,6 +669,16 @@ def _kept(tools: list[ToolOutcome]) -> list[TurnCall]:
 
 def _already(p: Proposal) -> str:
     """A tap on a card that was decided already: a second tap, or an old card."""
+    if p.is_change:
+        match p.status:
+            case ProposalStatus.DECLINED:
+                return f"You chose to leave {p.name} as it is. Ask me again if you want the change now."
+            case ProposalStatus.BUILDING:
+                return f"{p.name} is already being changed. I'll tell you here when the new version runs."
+            case ProposalStatus.DONE:
+                return f"{p.name} is already changed and running."
+            case _:
+                return f"Changing {p.name} failed ({p.short_note()}). Ask me to change it again."
     match p.status:
         case ProposalStatus.DECLINED:
             return f"You chose not to build {p.name}. Ask me again if you want it now."
@@ -653,4 +692,6 @@ def _already(p: Proposal) -> str:
 
 def _building(p: Proposal, position: int = 0) -> str:
     ahead = f", after {position} other build{'s' if position > 1 else ''}" if position else ""
+    if p.is_change:
+        return f"Changing {p.name}{ahead}. It runs as it is until the new version is ready; I'll tell you here."
     return f"Building {p.name}{ahead}. I'll tell you here when it's running."

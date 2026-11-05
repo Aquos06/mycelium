@@ -1,11 +1,15 @@
 """One build, start to end: the rounds, then promote, commit and deploy.
 
     scaffold GROWN_DIR/.staging/<name> from template/, with SPEC.md
+              (a change: a copy of GROWN_DIR/<name> as it is, its SPEC.md ending with the change)
     round n:  coder writes -> tidy (the builder's files back, strays out) -> pin the manifest -> checks
               -> rpc.sys.verify (the image builds, the tests pass in the sealed container)
               a failure becomes the next round's feedback; a pass ends the rounds
+    snapshot  a change: rpc.sys.snapshot copies the module's data before the new version can touch it
     promote   .staging/<name> -> <name>, one commit in GROWN_DIR, tagged <name>-v<version>
-    deploy    rpc.sys.deploy
+    deploy    rpc.sys.deploy (the same data volume: a change keeps the module's data)
+
+A change that fails before deploy leaves the module running as it was: nothing of it reaches GROWN_DIR/<name>.
 
 Every coder is judged the same way; none of them grades its own work. The record is updated as it goes
 (`stage` says where the build is), and each round is handed to `on_round` to be stored and announced.
@@ -27,22 +31,40 @@ from .coders.base import Coder, CoderError, CoderUnavailable
 from .prompts import Brief
 from .repo import GrownRepo
 from .schemas import (
+    BuildMode,
     BuildRecord,
     CoderContext,
     DeployCall,
     DeployReply,
     Feedback,
     Round,
+    SnapshotCall,
+    SnapshotReply,
     Stage,
     VerifyCall,
     VerifyReply,
 )
 from .workspace import CONTRACT, Workspace
 
-VERSION = "0.1.0"  # a new module; change builds bump it
+VERSION = "0.1.0"  # a new module; a change bumps the minor version (next_version)
 
 OnRound = Callable[[BuildRecord, Round], Awaitable[None]]
 R = TypeVar("R", bound=BaseModel)
+
+
+def next_version(base: str) -> str:
+    """0.1.0 -> 0.2.0: a change build's version. A version that does not read as x.y.z starts again at 0.2.0."""
+    parts = base.split(".")
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        return f"{parts[0]}.{int(parts[1]) + 1}.0"
+    return "0.2.0"
+
+
+def change_spec(spec: str, change: str, version: str) -> str:
+    """SPEC.md for a change build: what the module was built from, and the change as its last section, so the
+    file keeps every change in order and the next one starts from all of it."""
+    base = spec.strip() or "(no SPEC.md was kept for this module: its code is what it does)"
+    return f"{base}\n\n## Change in v{version}\n\n{change.strip()}\n"
 
 
 class PipelineError(Exception):
@@ -77,8 +99,11 @@ class Pipeline:
     async def run(self, record: BuildRecord, coder: Coder, on_round: OnRound) -> None:
         """Fills the record's version, commit and image, or raises PipelineError (CoderUnavailable passes up)."""
         name = record.name
-        d = await asyncio.to_thread(self.workspace.start, name, record.spec)
-        fresh, feedback = True, None
+        change = record.mode == BuildMode.CHANGE
+        version = next_version(record.base_version or VERSION) if change else VERSION
+        start = self.workspace.start_change if change else self.workspace.start
+        d = await asyncio.to_thread(start, name, record.spec)
+        fresh, feedback = not change, None
         for n in range(1, self.max_rounds + 1):
             t0 = time.monotonic()
             record.stage = Stage.CODER
@@ -89,6 +114,7 @@ class Pipeline:
                 dir=d,
                 round=n,
                 fresh=fresh,
+                change=record.change,
                 feedback=feedback,
                 brief=self.brief,
             )
@@ -117,7 +143,7 @@ class Pipeline:
             removed = await asyncio.to_thread(self.workspace.tidy, name, record.spec)
             if removed:
                 rnd.note = f"{rnd.note} (removed {', '.join(removed)})".strip()
-            _, problems = pin_manifest(d, name, VERSION)
+            _, problems = pin_manifest(d, name, version)
             files = {k: v for k, v in self.workspace.files(name).items() if k != CONTRACT}
             problems += check_files(d, files)
             if problems:
@@ -139,23 +165,36 @@ class Pipeline:
             last = record.rounds[-1]
             raise PipelineError(last.stage, f"no working module after {self.max_rounds} rounds", last.output)
 
+        if change:  # before anything of the new version is in GROWN_DIR: a failure here leaves the old one as it was
+            record.stage = Stage.SNAPSHOT
+            call = SnapshotCall(name=name, label=f"v{record.base_version}-{record.id}")
+            try:
+                snap = await self._ask("rpc.sys.snapshot", call, SnapshotReply, self.deploy_timeout, Stage.SNAPSHOT)
+            except PipelineError as e:  # no copy, no change: the data is what Hansen cannot get back
+                e.error += f". Nothing was changed: {name} still runs as v{record.base_version}"
+                raise
+            record.snapshot = snap.volume
+
         record.stage = Stage.PROMOTE
         try:
             purpose = load_manifest(d / "manifest.yaml").purpose
-            await asyncio.to_thread(self.workspace.promote, name)
+            await asyncio.to_thread(self.workspace.promote, name, change)
         except (OSError, ManifestError) as e:
             raise PipelineError(Stage.PROMOTE, str(e)) from e
+        what = f"change from v{record.base_version}: {record.change.strip()}\n\n" if change else ""
+        kept = f", data copied to {record.snapshot} first" if record.snapshot else ""
         message = (
-            f"{name} v{VERSION}\n\n{purpose}\n\n"
+            f"{name} v{version}\n\n{purpose}\n\n{what}"
             f"build {record.id}, coder {record.coder}{f' ({record.model})' if record.model else ''}, "
-            f"{len(record.rounds)} round{'s' if len(record.rounds) != 1 else ''}"
+            f"{len(record.rounds)} round{'s' if len(record.rounds) != 1 else ''}{kept}"
         )
         try:
-            record.commit = await self.repo.commit(name, VERSION, message)
+            record.commit = await self.repo.commit(name, version, message)
         except (OSError, RuntimeError) as e:  # back to staging: an uncommitted module never sits in GROWN_DIR
             await asyncio.to_thread(self.workspace.demote, name)
             raise PipelineError(Stage.PROMOTE, f"could not commit it: {e}") from e
-        record.version = VERSION
+        await asyncio.to_thread(self.workspace.settle, name)
+        record.version = version
 
         record.stage = Stage.DEPLOY
         try:
@@ -164,6 +203,11 @@ class Pipeline:
             )
         except PipelineError as e:  # the module is built and committed: only the deploy is left to do
             e.error += f". It is committed ({record.commit}): `mctl deploy {name}` once that is fixed"
+            if change:
+                e.error += (
+                    f"; v{record.base_version} is tagged {name}-v{record.base_version}"
+                    f"{f' and its data is in {record.snapshot}' if record.snapshot else ''}"
+                )
             raise
         record.image = reply.image
         record.stage = None

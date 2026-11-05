@@ -44,6 +44,10 @@ class FakeDocker:
     def stop_module(self, name):
         return self.running.pop(name, None) is not None
 
+    def snapshot_data(self, name, label):
+        self.calls.append(f"snapshot:{name}:{label}")
+        return None if name == "fresh" else f"mycelium-data-{name}-{label}"
+
     def logs(self, name, tail=100):
         return f"logs of {name} ({tail})"
 
@@ -424,3 +428,109 @@ async def test_list_names_every_module_folder_in_both_roots(tmp_path):
     )
     reply = await s.list({})
     assert reply.modules == [] and reply.folders == ["expenses", "hello"]
+    assert reply.grown == ["expenses"]  # what the builder can change: not hello, not a build in .staging
+
+
+async def test_a_snapshot_copies_a_modules_data_before_a_change(sup):
+    _, bus, docker, _ = sup
+    reply = await bus.request("rpc.sys.snapshot", {"name": "expenses", "label": "v0.1.0-001a2b"})
+    assert reply == {"ok": True, "name": "expenses", "volume": "mycelium-data-expenses-v0.1.0-001a2b"}
+    assert docker.calls[-1] == "snapshot:expenses:v0.1.0-001a2b"
+    fresh = await bus.request("rpc.sys.snapshot", {"name": "fresh", "label": "v0.1.0-001a2b"})
+    assert fresh["ok"] is True and fresh["volume"] is None  # no data yet: nothing to keep
+
+
+@pytest.mark.parametrize(
+    "data",
+    [{"name": "../etc", "label": "v1"}, {"name": "expenses", "label": "../x"}, {"name": "expenses", "label": "a b"}],
+)
+async def test_a_snapshot_takes_only_a_module_name_and_a_plain_label(sup, data):
+    _, bus, docker, _ = sup
+    assert (await bus.request("rpc.sys.snapshot", data))["ok"] is False
+    assert not any(c.startswith("snapshot:") for c in docker.calls)
+
+
+class VolumeClient:
+    """Docker's volumes and containers, as snapshot_data uses them: the module's volume, its container (running,
+    so it is paused while the copy runs), and the copy container's run."""
+
+    def __init__(self, has_data=True, copy_fails=False):
+        self.has_data, self.copy_fails = has_data, copy_fails
+        self.created: list[tuple[str, dict]] = []
+        self.removed: list[str] = []
+        self.runs: list[dict] = []
+        self.paused: list[str] = []
+        self.volumes = self
+        self.containers = self
+
+    # volumes.get / volumes.create, and the volume a get returns
+    def create(self, name, labels):
+        self.created.append((name, labels))
+
+    def get(self, name):
+        import docker
+
+        if name.startswith("mycelium-dev-mod-"):  # containers.get
+            client = self
+
+            class Running:
+                status = "running"
+
+                def pause(self):
+                    client.paused.append("pause")
+
+                def unpause(self):
+                    client.paused.append("unpause")
+
+            return Running()
+        if name == "mycelium-dev-data-expenses" and not self.has_data:
+            raise docker.errors.NotFound("no volume")
+        client = self
+
+        class Volume:
+            def remove(self, force=False):
+                client.removed.append(name)
+
+        return Volume()
+
+    def run(self, image, command, **kw):  # containers.run
+        self.runs.append({"image": image, "command": command, **kw})
+        if self.copy_fails:
+            raise RuntimeError("cp: no space left on device")
+
+
+def volume_ops(monkeypatch, client):
+    import docker
+
+    from supervisor.docker_ops import RealDockerOps
+
+    monkeypatch.setattr(docker, "from_env", lambda: client)
+    return RealDockerOps("nats://nats:4222", "bus", "internet", stack="mycelium-dev", tz="Asia/Taipei")
+
+
+def test_real_docker_copies_the_data_volume_with_the_module_paused(monkeypatch):
+    client = VolumeClient()
+    volume = volume_ops(monkeypatch, client).snapshot_data("expenses", "v0.1.0-001a2b")
+    assert volume == "mycelium-dev-data-expenses-v0.1.0-001a2b"
+    assert client.created == [(volume, {"mycelium.data": "expenses", "mycelium.stack": "mycelium-dev"})]
+    (run,) = client.runs
+    assert run["image"] == "mycelium-dev/module-base:latest" and run["command"] == ["sh", "-c", "cp -a /from/. /to/"]
+    assert run["volumes"] == {
+        "mycelium-dev-data-expenses": {"bind": "/from", "mode": "ro"},
+        volume: {"bind": "/to", "mode": "rw"},
+    }
+    assert run["network_mode"] == "none" and run["remove"] is True and run["user"] == "0"
+    assert client.paused == ["pause", "unpause"]
+
+
+def test_real_docker_keeps_no_half_copy_and_unpauses_the_module(monkeypatch):
+    client = VolumeClient(copy_fails=True)
+    with pytest.raises(RuntimeError, match="no space"):
+        volume_ops(monkeypatch, client).snapshot_data("expenses", "v0.1.0-001a2b")
+    assert client.removed == ["mycelium-dev-data-expenses-v0.1.0-001a2b"] and client.paused == ["pause", "unpause"]
+
+
+def test_real_docker_has_nothing_to_copy_for_a_module_without_data(monkeypatch):
+    client = VolumeClient(has_data=False)
+    assert volume_ops(monkeypatch, client).snapshot_data("expenses", "v0.1.0-001a2b") is None
+    assert client.created == [] and client.runs == []
