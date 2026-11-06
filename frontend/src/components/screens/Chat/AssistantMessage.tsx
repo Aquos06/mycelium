@@ -1,8 +1,9 @@
 "use client";
 
-// Main's reply: the mark, the text in paragraphs, the thumbs.
+// Main's reply: the mark, the text as markdown, the thumbs.
 
 import { Logo } from "@/components/ui/Logo";
+import { Markdown } from "@/components/ui/Markdown";
 import { Votes } from "./Votes";
 
 export function AssistantMessage({ text, vote, onVote }: { text: string; vote: number | undefined; onVote: (v: number) => void }) {
@@ -12,11 +13,7 @@ export function AssistantMessage({ text, vote, onVote }: { text: string; vote: n
         <Logo />
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-2.5 text-[15px] leading-relaxed text-pretty">
-        {text.split(/\n{2,}/).map((p, i) => (
-          <p key={i} className="m-0 wrap-break-word whitespace-pre-wrap">
-            {p}
-          </p>
-        ))}
+        <Markdown text={text} />
         <Votes value={vote} onVote={onVote} />
       </div>
     </div>

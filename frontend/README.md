@@ -44,7 +44,7 @@ sets it to the gateway's port instead (`PUBLIC_API_BASE` in the stack's `.env`, 
 ```
 src/app/            routes: (app) behind the token gate, (public)/login outside it
 src/components/
-  ui/               shared primitives: Button, Pill, Chip, Spark, Composer, Shell, Sidebar, TabBar, Topbar
+  ui/               shared primitives: Button, Pill, Chip, Spark, Composer, Markdown, Shell, Sidebar, TabBar, Topbar
   screens/          one folder per screen: Home, Chat, Modules, ModuleDetail, Settings, Voice, Login
 src/lib/
   api/              the ONLY place that touches the network, split by gateway domain

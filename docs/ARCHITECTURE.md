@@ -692,7 +692,12 @@ those frames live, and the app shows the reply being written under your message 
 whole. A planner round that ends in tool calls starts the text over. A reasoning model's thinking rides
 in the same frames (`thinking` next to `text`, read from the vendor's `reasoning_content` / `reasoning`):
 it is most of the wait before the first word, so the app shows it in place of "Planning…" and folds it
-away once the reply is being written. The app has Home (the live bus, what needs you, what is alive),
+away once the reply is being written. **Replies are markdown** (`components/ui/Markdown`: react-markdown,
+GitHub tables and task lists, line breaks kept, code blocks with a copy button, in the design tokens), and so
+are the reply being written (remend closes its open `**` and `` ` `` as they come, a caret after the last
+word) and an `out.ask` card. What a model writes is not trusted: raw HTML stays text, links keep a safe scheme
+and open without a referrer, and an image is a link to it, never fetched, so a page or a module that put a URL
+in front of the model cannot make the browser call it with what the model read. The app has Home (the live bus, what needs you, what is alive),
 Chat (a thread with Main, its plan under each reply, `out.ask` as a card), Modules and a module page
 (manifest wiring, ask it directly, logs, pause and rebuild), Settings (slots and providers from
 `rpc.llm.config`, key states, the builder's coders and the default one, chosen there, and the environment,

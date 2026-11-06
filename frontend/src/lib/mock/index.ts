@@ -174,7 +174,7 @@ export function mockSendChat(text: string, thread: string): Sent {
   mockBus.publish("sense.chat", { ...said, channel: "web", thread, text });
   const asksForModules = /running|alive|module/i.test(text);
   const answer = asksForModules
-    ? "Right now hello is running and counting messages; budget is still building, garden is paused."
+    ? "Right now:\n- **hello** is running and counting messages\n- **budget** is still building\n- **garden** is paused"
     : `Noted: “${text.slice(0, 80)}”. I remember it for you.`;
   const request = id();
   const words = answer.split(" ");

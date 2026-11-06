@@ -19,6 +19,18 @@ test.describe("chat", () => {
     await expect(page.getByRole("button", { name: "Good answer" }).first()).toHaveAttribute("aria-pressed", "true");
   });
 
+  test("a reply is markdown: a list with bold names, written as a list while it streams", async ({ page }) => {
+    await page.goto("/chat/web");
+    await page.getByRole("textbox", { name: "Message" }).fill("what is running?");
+    await page.keyboard.press("Enter");
+    const live = page.locator("[data-kind=stream]");
+    await expect(live.locator("strong").first()).toBeVisible();
+    const reply = page.locator("[data-kind=assistant]").last();
+    await expect(reply.getByRole("listitem")).toHaveCount(3, { timeout: 10_000 });
+    await expect(reply.locator("strong", { hasText: "hello" })).toBeVisible();
+    await expect(reply).not.toContainText("**");
+  });
+
   test("new chat starts a fresh thread and the rail remembers the old one", async ({ page }, info) => {
     test.skip(info.project.name === "mobile", "the rail with recent chats exists at md and up");
     await page.goto("/chat/web");
