@@ -19,6 +19,7 @@ import type {
   Json,
   ListReply,
   ModuleRow,
+  ModuleViews,
   Reply,
   Sent,
   StreamDelta,
@@ -284,6 +285,37 @@ export const MOCK_WATER_BLOCKS: Json[] = [
     text: "",
   },
 ];
+
+/** A module's page (GET /modules/{name}/views): hello declares its views; the others are not running. */
+export function mockModuleViews(name: string): ModuleViews {
+  if (name !== "hello") return { name, running: false, declared: false, views: [] };
+  const n = (v: number) => ({ v, s: v.toLocaleString("en-US") });
+  return {
+    name,
+    running: true,
+    declared: true,
+    views: [
+      { id: "today", title: "Messages", request: "stats", error: null, block: { kind: "stats", title: "Messages", stats: [{ label: "Today", value: n(14) }, { label: "In all", value: n(412) }], text: "" } },
+      {
+        id: "week",
+        title: "Last 7 days",
+        request: "stats",
+        error: null,
+        block: {
+          kind: "chart",
+          chart: "line",
+          title: "Last 7 days",
+          x: { key: "day", label: "Day", format: "date", prefix: "", suffix: "" },
+          series: [{ key: "count", label: "Messages", format: "number", prefix: "", suffix: "" }],
+          points: [9, 31, 12, 18, 25, 7, 14].map((c, i) => ({ x: day(`2026-11-0${i + 1}`), y: [n(c)] })),
+          total: 7,
+          text: "",
+        },
+      },
+      { id: "senders", title: "By channel", request: "senders", error: "hello.senders did not answer (TimeoutError)", block: null },
+    ],
+  };
+}
 
 /** A turn: what you said lands now, the reply is written in pieces, then the plan and the reply land whole. */
 export function mockSendChat(text: string, thread: string): Sent {

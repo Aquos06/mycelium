@@ -5,7 +5,17 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
-import { askModule, deployModule, describeError, listModules, moduleLogs, modulesHealth, probe, stopModule } from "@/lib/api";
+import {
+  askModule,
+  deployModule,
+  describeError,
+  fetchModuleViews,
+  listModules,
+  moduleLogs,
+  modulesHealth,
+  probe,
+  stopModule,
+} from "@/lib/api";
 import { useBus } from "@/lib/bus";
 import { useNow } from "@/lib/clock";
 import { CORE } from "@/lib/core";
@@ -14,6 +24,7 @@ import { queryKeys } from "./keys";
 
 export const MODULES_POLL_MS = 20_000;
 export const CORE_POLL_MS = 30_000;
+export const VIEWS_POLL_MS = 60_000;
 
 export interface ModulesState {
   modules: ModuleRow[];
@@ -136,4 +147,31 @@ export function useAskModule() {
   return useMutation({
     mutationFn: ({ name, action, args }: { name: string; action: string; args: Json }) => askModule(name, action, args),
   });
+}
+
+/** What a module's page shows of its data, read again every minute and as soon as the module says something on
+ *  the bus (an entry logged, a total changed): its own events are the sign its data moved. */
+export function useModuleViews(name: string) {
+  const qc = useQueryClient();
+  const { events } = useBus();
+  const views = useQuery({
+    queryKey: queryKeys.moduleViews(name),
+    queryFn: () => fetchModuleViews(name),
+    refetchInterval: VIEWS_POLL_MS,
+  });
+  const latest = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) if (events[i].subject.startsWith(`mod.${name}.`)) return events[i].seq;
+    return null;
+  }, [events, name]);
+  useEffect(() => {
+    if (latest === null) return;
+    const t = setTimeout(() => void qc.invalidateQueries({ queryKey: queryKeys.moduleViews(name) }), 400);
+    return () => clearTimeout(t);
+  }, [latest, name, qc]);
+  return views;
+}
+
+/** One sentence for a module page the gateway could not build, or null. */
+export function viewsError(e: Error | null): string | null {
+  return e ? describeError(e, "the gateway") : null;
 }

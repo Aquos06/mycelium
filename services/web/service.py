@@ -3,7 +3,8 @@
 Subscribes to every event prefix (never rpc.*), keeps the last few hundred events for a page that just
 opened, fans each new one out to the connected sockets, and turns what the app says into bus messages
 on channel "web": chat into sense.chat, an answer or a vote into sense.feedback. rpc() forwards a
-request/reply to any rpc.* subject and returns the responder's own reply. Live stream.* frames (a reply
+request/reply to any rpc.* subject and returns the responder's own reply; views() is a module's page (its views,
+built from what it answers now). Live stream.* frames (a reply
 as the model writes it) are fanned out the same way but never kept.
 """
 
@@ -16,12 +17,16 @@ from collections import deque
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from mycelium_sdk import Bus, Envelope, Message
+from mycelium_sdk.blocks import Formatter
 from mycelium_sdk.subjects import EVENT_PREFIXES, STREAM_PREFIX
 
 from .chat.schemas import ChatIn, FeedbackIn, Sent
 from .events.schemas import BusEvent, StreamEvent
+from .modules.schemas import ModuleViews
+from .modules.views import module_views
 from .rpc.schemas import RpcIn
 from .schemas import CHANNEL
 
@@ -37,9 +42,13 @@ Outgoing = BusEvent | StreamEvent
 
 
 class WebGateway:
-    def __init__(self, bus: Bus, *, buffer: int = 300, rpc_timeout: float = 10.0) -> None:
+    def __init__(
+        self, bus: Bus, *, buffer: int = 300, rpc_timeout: float = 10.0, currency: str = "TWD", tz: str = "UTC"
+    ) -> None:
         self.bus = bus
         self.rpc_timeout = rpc_timeout
+        self.currency = currency  # money in a module page's blocks, as Main writes it (MAIN_CURRENCY)
+        self.zone = ZoneInfo(tz)
         self.recent: deque[BusEvent] = deque(maxlen=buffer)
         self._seq = 0
         self._clients: set[asyncio.Queue[Outgoing | None]] = set()
@@ -114,3 +123,8 @@ class WebGateway:
         if subject in NOT_FORWARDED:
             raise ValueError(f"{subject} is not open to the web app")
         return await self.bus.request(subject, req.payload, timeout=req.timeout or self.rpc_timeout)
+
+    async def views(self, name: str) -> ModuleViews:
+        """A module's page: its views, each built from what the module answers now (modules/views.py)."""
+        fmt = Formatter(currency=self.currency, zone=self.zone, today=datetime.now(self.zone).date())
+        return await module_views(self.bus, name, fmt, self.rpc_timeout)

@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from pydantic import Field, field_validator
 from pydantic_settings import NoDecode
 
-from mycelium_sdk import ServiceSettings
+from mycelium_sdk import ServiceSettings, timezone
 
 DEV_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]  # `pnpm dev` in frontend/
 
@@ -27,6 +27,15 @@ class WebSettings(ServiceSettings):
         validation_alias="WEB_EVENT_BUFFER",
         description="bus events kept in memory for a page that just opened",
     )
+    currency: str = Field(
+        default="TWD",
+        pattern=r"^[A-Za-z]{3}$",
+        validation_alias="WEB_CURRENCY",
+        description="money on a module's page, as Main writes it (compose passes MAIN_CURRENCY)",
+    )
+    tz: str = Field(
+        default="Asia/Taipei", validation_alias="WEB_TZ", description="what 'today' means for a view's dates"
+    )
     rpc_timeout: float = Field(
         default=10.0, gt=0, validation_alias="WEB_RPC_TIMEOUT", description="seconds a /rpc call waits by default"
     )
@@ -36,6 +45,11 @@ class WebSettings(ServiceSettings):
         validation_alias="WEB_CORS_ORIGINS",
         description="browser origins the app is served from, comma separated; behind one Caddy host none is needed",
     )
+
+    @field_validator("tz")
+    @classmethod
+    def _tz(cls, v: str) -> str:
+        return timezone(v)
 
     @field_validator("token", mode="before")
     @classmethod

@@ -2,6 +2,8 @@
 
 The supervisor refuses to deploy anything whose manifest fails validate_manifest().
 
+`views` say how its data is seen: on its page, and when Main shows it (views.py).
+
 `requests` is a list of names, or described (docs/ARCHITECTURE.md §4), so Main knows what to send:
 
     requests:
@@ -24,6 +26,7 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from .subjects import MODULE_LISTENS
+from .views import View
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}\Z")  # \Z: `$` would also take a trailing newline
 FIELD_RE = re.compile(r"^[a-z_][a-z0-9_]{0,40}\Z")  # a param or return field
@@ -98,6 +101,7 @@ class Manifest(BaseModel):
     emits: list[str] = Field(default_factory=list)  # relative event names -> mod.<name>.<event>
     requests: list[str] = Field(default_factory=list)  # relative actions -> rpc.mod.<name>.<action>
     request_specs: dict[str, RequestSpec] = Field(default_factory=dict)  # what each takes; from described `requests`
+    views: dict[str, View] = Field(default_factory=dict)  # how its data is seen (views.py); none: suggested ones
     hooks: Hooks = Field(default_factory=Hooks)
     permissions: Permissions = Field(default_factory=Permissions)
     resources: Resources = Field(default_factory=Resources)

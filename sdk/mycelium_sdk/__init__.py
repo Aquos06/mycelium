@@ -14,6 +14,8 @@
 - build:     the builder's contract: BuildRequest, StartReply, BuildRef, BuildRecord and the build.* events, as the
              builder sends them and Main reads them (import mycelium_sdk.build)
 - text:      cut and one_line, text made to fit a card or a prompt
+- blocks:    a module's data as a table, a chart, stats, details or a meter: BlockSpec, build (import mycelium_sdk.blocks)
+- views:     a module's views, declared in its manifest or suggested from its requests (import mycelium_sdk.views)
 - notes:     NoteType, the kinds of note in memory's vault (memory files them, Main's remember offers them)
 - settings:  ServiceSettings, the base for each service's environment (pydantic-settings)
 - db:        the async SQLAlchemy engine, Alembic migrate(), the core tables (import mycelium_sdk.db)

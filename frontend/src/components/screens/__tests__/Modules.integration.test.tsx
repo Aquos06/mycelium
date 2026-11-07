@@ -46,6 +46,21 @@ describe("ModuleDetail", () => {
     expect(await screen.findByTestId("ask-result")).toHaveTextContent('"counted": 3');
   });
 
+  it("shows what the module has, each of its views, and says which could not be shown and why", async () => {
+    renderScreen(<ModuleDetail name="hello" />, mockBus.all());
+    const data = await screen.findByRole("region", { name: "Data" });
+    expect(await within(data).findByText("412")).toBeInTheDocument(); // Messages: In all
+    expect(within(data).getByRole("img", { name: /Last 7 days: line chart by Day/ })).toBeInTheDocument();
+    expect(within(data).getByText(/hello\.senders did not answer \(TimeoutError\)/)).toHaveTextContent("By channel: hello.senders");
+    expect(within(data).queryByText(/Made from its replies/)).not.toBeInTheDocument(); // hello declares its views
+  });
+
+  it("a module that is not running has no one to ask for its data", async () => {
+    renderScreen(<ModuleDetail name="garden" />, mockBus.all());
+    const data = await screen.findByRole("region", { name: "Data" });
+    expect(await within(data).findByText("garden is not running, so there is no one to ask for its data.")).toBeInTheDocument();
+  });
+
   it("a core service gets the same page from its description", async () => {
     renderScreen(<ModuleDetail name="memory" />, mockBus.all());
     expect(await screen.findByRole("heading", { level: 1, name: "memory" })).toBeInTheDocument();

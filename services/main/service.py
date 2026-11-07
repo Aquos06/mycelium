@@ -41,6 +41,7 @@ from mycelium_sdk import (
     CompletionReply,
     CompletionRequest,
     Envelope,
+    Manifest,
     Message,
     NoAnswer,
     Refused,
@@ -53,6 +54,7 @@ from mycelium_sdk import (
     now_iso,
     validation_message,
 )
+from mycelium_sdk.blocks import Formatter
 from mycelium_sdk.build import (
     BuildDone,
     BuildFailed,
@@ -64,8 +66,9 @@ from mycelium_sdk.build import (
     Stage,
     StartReply,
 )
+from mycelium_sdk.views import View, views_of
 
-from .blocks import Formatter, TurnData
+from .blocks import TurnData
 from .progress import as_text, ended, running
 from .prompt import planner_prompt
 from .proposals import Proposal, ProposalKind, ProposalStatus, ProposalStore
@@ -471,7 +474,10 @@ class MainService:
             self._recall(text), self._modules(), self._offered()
         )
         # the tools see this turn's modules: a call to one that is not running is refused at once
-        turn = TurnData(formatter=Formatter(currency=self.currency, zone=self.zone, today=self.today()))
+        turn = TurnData(
+            formatter=Formatter(currency=self.currency, zone=self.zone, today=self.today()),
+            views={m.name: m.views for m in modules or [] if m.status == "running" and m.views},
+        )
         ctx = self.ctx.model_copy(
             update={
                 "modules": None if modules is None else {m.name: _actions(m) for m in modules if m.status == "running"},
@@ -669,6 +675,7 @@ class MainService:
                     status=str(row.get("status") or "running"),
                     version=str(row.get("version") or manifest.get("version") or ""),
                     grown=name in grown,
+                    views=_views(name, manifest),
                 )
             )
         return out
@@ -684,6 +691,16 @@ def _specs(name: str, raw: Any) -> dict[str, RequestSpec]:
         except ValueError:
             log.info("module %s: request %s has a description Main cannot read", name, action)
     return out
+
+
+def _views(name: str, manifest: Any) -> dict[str, View]:
+    """A manifest's declared views that can be shown; a manifest that does not read, or a view that cannot be shown
+    (a request it lacks, one that writes), is left out: Main shows its data by source instead."""
+    try:
+        m = Manifest.model_validate({**manifest, "name": name}) if isinstance(manifest, dict) else None
+    except ValueError:
+        return {}
+    return views_of(m) if m is not None else {}
 
 
 def _failed_reply(error: str, tools: list[ToolOutcome]) -> str:

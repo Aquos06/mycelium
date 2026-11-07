@@ -45,6 +45,9 @@ def render_modules(modules: list[ModuleInfo]) -> str:
                 continue
             returns = f" Returns {{{', '.join(f'{k}: {t}' for k, t in spec.returns.items())}}}." if spec.returns else ""
             lines.append(f"  - {r} {spec.signature()}: {spec.description.strip()}{returns}")
+        if m.views:
+            views = ", ".join(f"{m.name}.{vid} ({v.title or vid}, {v.kind})" for vid, v in m.views.items())
+            lines.append(f"  Views (`show` one by name): {views}")
     if gone:
         names = ", ".join(f"{m.name} ({m.status})" for m in gone)
         lines.append(f"Not running now (an earlier message may say otherwise; do not call them): {names}")
@@ -150,7 +153,7 @@ How you work:
 - Only the modules listed under Modules are running now; an earlier message about another module may be out of date.
 - Modules hold exact data. Use `ask_module` instead of estimating numbers, lists or history. Send a request the fields its line shows, in `args`; for "how much" or "what did I" with no dates, ask for all of it, not only today.
 - When Hansen logs something a module takes through a request like `add` (money spent, for expenses), send it there with `ask_module`, one call per entry, with the day it happened: that is where it belongs, not in memory.
-- When a module's answer is something Hansen should see rather than read (a list of entries, totals by category or by day, a few figures, one record, a number against a goal), call `show` after `ask_module`: a table, a chart, stats, details or a meter goes under your reply, made from the module's own data. Then say in a line or two what it means, and do not write out again what it shows. `show` uses only what a module answered in this turn, so ask it first.
+- When a module's answer is something Hansen should see rather than read (a list of entries, totals by category or by day, a few figures, one record, a number against a goal), call `show`: a table, a chart, stats, details or a meter goes under your reply, made from the module's own data. A view listed under a module is the easy way (`show` with `view`: Main gets its data); otherwise call `ask_module` first and point `show` at its reply. Then say in a line or two what it means, and do not write out again what it shows.
 - A module that listens to sense.chat hears Hansen's messages itself: when he logs something it tracks (dinner 350 for expenses), acknowledge it without logging it again.
 - Use `change_module` when a module marked grown does something wrong, should work differently, or cannot do what Hansen asks of it (take an entry out, keep one more field, a total it does not give): say what it should do after the change. Saying it cannot is not enough: send the card that makes it able to. It keeps its data, and nothing changes until he chooses Change it. Offer a change only by calling `change_module`, never in words: its card is the only way he can make it. Do not `propose_module` a second module for what a running one should do; a module not marked grown cannot be changed, so say so.
 - Use `propose_module` when Hansen wants something ongoing that no module above does: tracking or logging things over time, counts, totals, history. Draft it from his words; nothing is built until he chooses Build it. Offer a module only by calling `propose_module`: its card is the only way he can build it, so never offer to build or rebuild one in words.

@@ -1,14 +1,17 @@
-// The supervisor's rpc.sys.* and a module's own rpc.mod.<name>.<action>.
+// The supervisor's rpc.sys.*, a module's own rpc.mod.<name>.<action>, and a module's page (its views).
 
+import { API, apiFetch } from "./client";
 import { rpc } from "./rpc";
 import {
   healthReplySchema,
   listReplySchema,
   logsReplySchema,
+  moduleViewsSchema,
   type HealthReply,
   type Json,
   type ListReply,
   type LogsReply,
+  type ModuleViews,
   type Reply,
 } from "@/lib/schemas";
 
@@ -46,4 +49,12 @@ export async function probe(subject: string, payload: Json = {}): Promise<boolea
   } catch {
     return false;
   }
+}
+
+/** What a module's page shows of its data: each view, built by the gateway from what the module answers now. */
+export function fetchModuleViews(name: string): Promise<ModuleViews> {
+  return apiFetch<ModuleViews>(`${API}/modules/${encodeURIComponent(name)}/views`, {
+    parse: { schema: moduleViewsSchema, what: `${name}'s views` },
+    mock: async () => (await import("@/lib/mock")).mockModuleViews(name),
+  });
 }
