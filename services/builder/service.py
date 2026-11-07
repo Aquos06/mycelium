@@ -9,6 +9,7 @@ Each handler returns a model; it goes back as Answer.of(it) ({"ok": true, ...}),
 Events, each with the thread that asked (channel, thread):
     build.started / build.stage (each step it enters) / build.progress (each round's end) / build.done / build.failed
     build.stage, build.done and build.failed carry every finished round in a line (`history`) and a `seq`
+    build.coder: the default coder changed (CoderChosen)
 
 A build starts by request, not by event: an event would vanish while the builder is down (core NATS has no
 durable consumers here), a request gets an answer or an error. A name that exists (a change: one the builder
@@ -64,6 +65,7 @@ from .schemas import (
     BuildStatus,
     BuildSummary,
     CoderChoice,
+    CoderChosen,
     CoderInfo,
     CoderList,
     CoderSetting,
@@ -234,10 +236,14 @@ class BuilderService:
     async def choose_coder(self, req: CoderChoice) -> CoderList:
         if req.coder not in self.coders:
             raise ValueError(f"no coder {req.coder!r}; one of {', '.join(self.coders)}")
-        await self.kv.put(CODER_KEY, CoderSetting(coder=req.coder))
-        if req.coder != self.default_coder:
-            log.info("default coder: %s (was %s)", req.coder, self.default_coder)
-        self.default_coder = req.coder
+        if req.coder == self.seed:  # back to BUILDER_CODER: kept nowhere, so a later change to it takes effect
+            await self.kv.delete(CODER_KEY)
+        else:
+            await self.kv.put(CODER_KEY, CoderSetting(coder=req.coder))
+        previous, self.default_coder = self.default_coder, req.coder
+        if req.coder != previous:
+            log.info("default coder: %s (was %s)", req.coder, previous)
+            await self.bus.publish("build.coder", CoderChosen(coder=req.coder, previous=previous, seed=self.seed))
         return await self.list_coders()
 
     @staticmethod
@@ -257,6 +263,12 @@ class BuilderService:
             return
         if choice.coder in self.coders:
             self.default_coder = choice.coder
+            if choice.coder != self.seed:
+                log.info(
+                    "default coder %s, chosen in Settings → Builder; BUILDER_CODER=%s is not used",
+                    choice.coder,
+                    self.seed,
+                )
         else:
             log.warning(
                 "the chosen coder %r is not configured any more, keeping BUILDER_CODER=%s", choice.coder, self.seed

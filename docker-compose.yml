@@ -313,6 +313,8 @@ services:
       EXAMPLE_DIR: /workspace/example
       BUILDER_CODER: ${BUILDER_CODER:-mycelium}
       BUILDER_AGENTS: ${BUILDER_AGENTS:-opencode,claude_code,codex,aider}
+      BUILD_MAX_ROUNDS: ${BUILD_MAX_ROUNDS:-6}     # coder -> checks -> verify passes, at most
+      BUILD_TIMEOUT: ${BUILD_TIMEOUT:-3600}        # seconds for a whole build
     volumes:
       - ${GROWN_DIR:-./grown}:/workspace/grown     # writes .staging/<name>, then commits <name>; never runs it
       - ./template:/workspace/template:ro

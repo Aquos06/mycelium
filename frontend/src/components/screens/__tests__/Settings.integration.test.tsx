@@ -1,6 +1,6 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.hoisted(() => {
   process.env.NEXT_PUBLIC_MOCK = "1";
@@ -11,10 +11,19 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { Settings } from "@/components/screens/Settings";
-import { mockBus } from "@/lib/mock";
+import { mockBus, resetMockCoders } from "@/lib/mock";
 import { renderScreen } from "./support";
 
 describe("Settings → Builder", () => {
+  afterEach(resetMockCoders); // a test that chooses a coder leaves the next one at BUILDER_CODER again
+
+  it("has one top-level heading: the variables below are a section of it", async () => {
+    renderScreen(<Settings tab="builder" />, mockBus.all());
+    await screen.findByRole("region", { name: "Coders" });
+    expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Builder"]);
+    expect(screen.getByRole("heading", { level: 2, name: "Set at start" })).toBeInTheDocument();
+  });
+
   it("lists every coder, which can build now and why not, and the default", async () => {
     renderScreen(<Settings tab="builder" />, mockBus.all());
     const coders = await screen.findByRole("region", { name: "Coders" });

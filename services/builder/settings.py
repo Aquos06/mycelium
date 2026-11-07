@@ -22,7 +22,9 @@ class BuilderSettings(ServiceSettings):
         description="the hand-written module every coder is shown as the example (hello)",
     )
     coder: str = Field(
-        default="mycelium", validation_alias="BUILDER_CODER", description="the coder a build gets by default"
+        default="mycelium",
+        validation_alias="BUILDER_CODER",
+        description="the first default coder: a choice in Settings → Builder (rpc.build.default) replaces it",
     )
     max_rounds: int = Field(
         default=6, ge=1, le=20, validation_alias="BUILD_MAX_ROUNDS", description="coder -> checks -> verify passes"

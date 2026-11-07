@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from mycelium_sdk import now_iso
 from mycelium_sdk.build import SPEC_MAX, BuildRef, BuildRequest, BuildSummary, StartReply
 
 __all__ = [
@@ -59,7 +58,7 @@ class CoderChoice(BaseModel):
 
 
 class CoderSetting(BaseModel):
-    """The chosen default as the `builder` KV bucket keeps it, so a restart keeps the choice."""
+    """The chosen default as the `builder` KV bucket keeps it, so a restart keeps the choice. When and by whom it
+    changed is on the bus (build.coder), not here."""
 
     coder: str
-    chosen: str = Field(default_factory=now_iso)

@@ -3,6 +3,7 @@
     rpc.build.start   BuildRequest -> StartReply: a new module from a spec, or a change to one the builder grew
     rpc.build.get     BuildRef     -> BuildRecord
     build.started / build.stage / build.progress / build.done / build.failed: the BuildEvent kinds below
+    build.coder       CoderChosen: the default coder changed (not about one build)
 
 One definition for both sides, like llm.py for rpc.llm.*: the builder validates what arrives with the same model
 Main fills, and builds each event with the model Main reads it back with, so the contract cannot drift between them.
@@ -359,3 +360,13 @@ class BuildFailed(BuildEnded):
     @classmethod
     def of(cls, record: BuildRecord, seconds: float) -> BuildFailed:
         return cls.ended(record, seconds, stage=record.stage, error=record.error, output=record.output)
+
+
+class CoderChosen(Envelope):
+    """build.coder: the coder a build gets when it names none changed (the web app's Settings → Builder, mctl
+    coders --use). Not about one build, so not a BuildEvent: it is the record of who switched it, and when."""
+
+    source: str = "builder"
+    coder: str
+    previous: str
+    seed: str  # BUILDER_CODER: choosing it again clears the choice

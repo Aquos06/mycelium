@@ -47,11 +47,11 @@ export interface EnvRow {
 export const ENV: Partial<Record<SettingsTab, { title: string; desc: string; rows: EnvRow[] }>> = {
   builder: {
     title: "Set at start",
-    desc: "The rest of the builder and its agents, read by services/builder and the supervisor when they start.",
+    desc: "Read when they start: the builder (its coder, its agents, the limits), the supervisor (the agents' model) and the gateway (our coder's model).",
     rows: [
       { label: "First default", desc: "The coder until one is chosen above.", env: "BUILDER_CODER" },
       { label: "Coding agents", desc: "Which agents the builder offers.", env: "BUILDER_AGENTS" },
-      { label: "Our coder's model", desc: "The provider of the gateway's coder slot (Models).", env: "CODER_PROVIDER" },
+      { label: "Our coder's model", desc: "Which provider the gateway's coder slot uses (Models). Read by the gateway.", env: "CODER_PROVIDER" },
       { label: "Agents' model", desc: "An OpenAI-compatible address the agents' containers reach: the GPU box by IP, not a compose name.", env: "AGENT_ENDPOINT" },
       { label: "Agents' model name", desc: "The model the agents ask for there.", env: "AGENT_MODEL" },
       { label: "Rounds", desc: "Coder, checks and the sealed tests, at most this many times.", env: "BUILD_MAX_ROUNDS", unit: "rounds" },

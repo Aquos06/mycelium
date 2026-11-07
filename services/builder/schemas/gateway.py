@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 class ProviderState(BaseModel):
     key_state: str  # ok | missing | not-needed
+    model: str = ""  # what it serves: shown in Settings → Builder for our coder
 
 
 class SlotState(BaseModel):

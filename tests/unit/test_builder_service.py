@@ -174,14 +174,17 @@ async def test_a_commit_that_fails_puts_the_module_back_in_staging(tmp_path, mon
 # ---- the service --------------------------------------------------------------------------------------
 
 
-async def service(tmp_path, coder=None, modules=None, verify=None, **kw):
+async def service(tmp_path, coder=None, modules=None, verify=None, coders=None, kv=None, **kw):
+    """A builder on a fake supervisor. `coders` replaces the one `fake` coder (BUILDER_CODER is still `fake`);
+    `kv` is the bucket of a builder before a restart."""
     bus = InMemoryBus()
-    kv = InMemoryKV()
+    kv = kv or InMemoryKV()
     grown = tmp_path / "grown"
     sup = FakeSupervisor(bus, grown, modules=modules, verify=verify)
     await sup.start()
     coder = coder or FakeCoder([GOOD])
-    svc = BuilderService(bus, kv, make_pipeline(bus, grown), Workspace(grown, TEMPLATE), {"fake": coder}, "fake", **kw)
+    coders = coders or {"fake": coder}
+    svc = BuilderService(bus, kv, make_pipeline(bus, grown), Workspace(grown, TEMPLATE), coders, "fake", **kw)
     await svc.start()
     return svc, bus, kv, coder, grown
 
@@ -540,19 +543,12 @@ async def test_growing_a_name_again_moves_its_tag_and_a_failed_tag_keeps_the_com
     assert third == git(tmp_path, "rev-parse", "--short=12", "HEAD").strip()  # committed, though untagged
 
 
-async def two_coders(tmp_path, kv=None):
-    bus, kv = InMemoryBus(), kv or InMemoryKV()
-    grown = tmp_path / "grown"
-    sup = FakeSupervisor(bus, grown)
-    await sup.start()
-    coders = {"fake": FakeCoder([GOOD]), "other": FakeCoder([GOOD], reason="its model is down")}
-    svc = BuilderService(bus, kv, make_pipeline(bus, grown), Workspace(grown, TEMPLATE), coders, "fake")
-    await svc.start()
-    return svc, bus, kv
+def fake_and_other(other_reason=None):
+    return {"fake": FakeCoder([GOOD]), "other": FakeCoder([GOOD], reason=other_reason)}
 
 
 async def test_the_default_coder_is_chosen_and_kept_across_a_restart(tmp_path):
-    svc, bus, kv = await two_coders(tmp_path)
+    svc, bus, kv, *_ = await service(tmp_path, coders=fake_and_other("its model is down"))
     chosen = await bus.request("rpc.build.default", {"coder": "other"})
     await svc.stop()
     assert chosen["ok"] and chosen["default"] == "other" and chosen["seed"] == "fake"
@@ -561,25 +557,49 @@ async def test_the_default_coder_is_chosen_and_kept_across_a_restart(tmp_path):
         ("other", False, "its model is down"),  # chosen all the same: the build is what waits for its model
     ]
 
-    again, bus, _ = await two_coders(tmp_path, kv)  # a restart: the same KV, BUILDER_CODER still "fake"
+    again, bus, *_ = await service(tmp_path, coders=fake_and_other(), kv=kv)  # a restart: BUILDER_CODER still fake
     listed = await bus.request("rpc.build.coders", {})
     await again.stop()
     assert listed["default"] == "other" and listed["seed"] == "fake"
 
 
+async def test_a_build_that_names_no_coder_gets_the_chosen_one(tmp_path):
+    coders = fake_and_other()
+    svc, bus, kv, *_ = await service(tmp_path, coders=coders)
+    await bus.request("rpc.build.default", {"coder": "other"})
+    reply = await bus.request("rpc.build.start", {"name": "notes", "spec": SPEC})
+    await until(lambda: bus.events("build.done") or bus.events("build.failed"))
+    await svc.stop()
+    record = BuildRecord.model_validate(await kv.get(kv_key("builds", reply["build_id"])))
+    assert record.coder == "other" and coders["other"].seen and not coders["fake"].seen
+
+
+async def test_choosing_builder_coder_again_clears_the_choice_and_every_change_is_an_event(tmp_path):
+    svc, bus, kv, *_ = await service(tmp_path, coders=fake_and_other())
+    await bus.request("rpc.build.default", {"coder": "other"})
+    await bus.request("rpc.build.default", {"coder": "other"})  # no change: no event
+    back = await bus.request("rpc.build.default", {"coder": "fake"})
+    await svc.stop()
+    assert back["default"] == "fake"
+    assert await kv.get(kv_key("settings", "coder")) is None  # a later BUILDER_CODER takes effect again
+    events = [(d["coder"], d["previous"], d["seed"], d["source"]) for _, d in bus.events("build.coder")]
+    assert events == [("other", "fake", "fake", "builder"), ("fake", "other", "fake", "builder")]
+
+
 async def test_choosing_a_coder_that_does_not_exist_is_refused(tmp_path):
-    svc, bus, _ = await two_coders(tmp_path)
+    svc, bus, *_ = await service(tmp_path, coders=fake_and_other())
     unknown = await bus.request("rpc.build.default", {"coder": "goose"})
     empty = await bus.request("rpc.build.default", {})
     await svc.stop()
     assert unknown == {"ok": False, "error": "no coder 'goose'; one of fake, other"}
     assert empty["ok"] is False and empty["error"].startswith("coder: ")
+    assert bus.events("build.coder") == []
 
 
 async def test_a_chosen_coder_no_longer_configured_falls_back_to_builder_coder(tmp_path):
     kv = InMemoryKV()
-    await kv.put(kv_key("settings", "coder"), {"coder": "aider", "chosen": "2026-11-01T00:00:00+00:00"})
-    svc, bus, _ = await two_coders(tmp_path, kv)
+    await kv.put(kv_key("settings", "coder"), {"coder": "aider", "chosen": "2026-11-01T00:00:00+00:00"})  # as of old
+    svc, bus, *_ = await service(tmp_path, coders=fake_and_other(), kv=kv)
     listed = await bus.request("rpc.build.coders", {})
     await svc.stop()
     assert listed["default"] == "fake"

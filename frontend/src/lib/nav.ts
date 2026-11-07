@@ -1,7 +1,7 @@
 // Every route, in one place, and the tabs the shell draws from them.
 //   /                 home            /chat/<thread>       a conversation (default thread "web")
 //   /modules          all modules     /modules/<name>      one module or core service
-//   /settings/<tab>   models | keys | memory | assistant | system | web
+//   /settings/<tab>   models | keys | builder | memory | assistant | system | web
 //   /voice            the voice screen (⌘J)    /login     the token
 
 import { Boxes, House, MessageCircle, SlidersHorizontal, type LucideIcon } from "lucide-react";
