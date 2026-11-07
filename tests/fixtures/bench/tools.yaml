@@ -75,6 +75,57 @@ modules:
         params: {year: optional number}
         returns: {books: list}
     reply: {id: 3, books: [{title: Project Hail Mary, author: Andy Weir, finished: "2026-10-12"}]}
+  spending:  # a grown tracker whose replies are worth looking at: entries, totals by category and by day
+    purpose: Tracks Hansen's spending, one entry per expense, with totals by category and by day.
+    grown: true
+    requests:
+      history:
+        description: Every expense in a date range, newest first.
+        params: {from: optional date, to: optional date}
+        returns: {expenses: list}
+      summary:
+        description: Totals for a date range, by category and by day.
+        params: {from: optional date, to: optional date}
+        returns: {total: number, count: number, by_category: map, by_day: list}
+    reply:
+      total: 3420
+      count: 6
+      by_category: {food: 1820, coffee: 740, transport: 520, other: 340}
+      by_day:
+        - {day: "2026-10-28", total: 320}
+        - {day: "2026-10-29", total: 610}
+        - {day: "2026-10-30", total: 240}
+        - {day: "2026-10-31", total: 980}
+        - {day: "2026-11-01", total: 450}
+        - {day: "2026-11-02", total: 820}
+      expenses:
+        - {day: "2026-11-02", amount: 350, category: food, description: dinner}
+        - {day: "2026-11-02", amount: 470, category: food, description: groceries}
+        - {day: "2026-11-01", amount: 85, category: coffee, description: latte}
+        - {day: "2026-10-31", amount: 520, category: transport, description: taxi}
+        - {day: "2026-10-31", amount: 460, category: food, description: hotpot}
+        - {day: "2026-10-30", amount: 240, category: other, description: haircut}
+  water:
+    purpose: Logs the water Hansen drinks, in ml, against his daily goal, and answers today and the last days.
+    grown: true
+    requests:
+      today:
+        description: Today's water so far and the daily goal.
+        returns: {ml: number, goal_ml: number}
+      week:
+        description: Water per day for the last seven days.
+        returns: {by_day: list}
+    reply:
+      ml: 1500
+      goal_ml: 2000
+      by_day:
+        - {day: "2026-10-28", ml: 1800}
+        - {day: "2026-10-29", ml: 2100}
+        - {day: "2026-10-30", ml: 1200}
+        - {day: "2026-10-31", ml: 2000}
+        - {day: "2026-11-01", ml: 900}
+        - {day: "2026-11-02", ml: 1700}
+        - {day: "2026-11-03", ml: 1500}
 default_modules: [hello, expenses, climbing]
 
 notes:
@@ -926,3 +977,125 @@ cases:
     msg: what can my expense module do?
     expect: none
     modules: [hello, ledger, books]
+
+  # ---- show: a module's data on screen, after asking the module for it -----------------------------------
+  - id: show-expenses-week
+    msg: show me my expenses this week
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: table, source: {has: [spending.history, spending.summary]}}
+  - id: show-table-asked
+    msg: list everything I spent since last tuesday in a table
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: table, source: {has: [spending]}}
+  - id: show-chart-category
+    msg: chart my spending by category
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: chart, source: {has: [spending]}}
+  - id: show-where-money-went
+    msg: where did my money go this week?
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {source: {has: [spending]}}
+  - id: show-day-by-day
+    msg: how has my spending gone day by day this week? a graph please
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: chart, source: {has: [spending]}}
+  - id: show-quick-numbers
+    msg: quick numbers on my spending this week, total and how many
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: [stats, details], source: {has: [spending]}}
+  - id: show-water-today
+    msg: how am I doing on water today? show me
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: [meter, stats], source: {has: [water]}}
+  - id: show-water-week
+    msg: graph my water for the week
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: chart, source: {has: [water]}}
+  - id: show-climbing-log
+    msg: show me my climbing log
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: table, source: {has: [climbing]}}
+  - id: show-biggest-category
+    msg: which category did I spend the most on? show me the breakdown
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: [chart, table], source: {has: [spending]}}
+  - id: show-last-expense
+    msg: show me the details of my last expense
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {source: {has: [spending]}}
+  - id: show-zh-table
+    msg: 給我看這週的花費明細
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: table, source: {has: [spending]}}
+  - id: show-zh-chart
+    msg: 用圖表看我這週每天花多少錢
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: chart, source: {has: [spending]}}
+  - id: show-messages-per-day
+    msg: plot how many messages I sent per day
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: chart, source: {has: [hello]}}
+  - id: show-water-goal
+    msg: am I close to my water goal today?
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: [meter, stats], source: {has: [water]}}
+  - id: show-overview
+    msg: spending overview for this week please
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {source: {has: [spending]}}
+  - id: show-all-expenses
+    msg: show all my expenses
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: table, source: {has: [spending.history]}}
+  - id: show-top-categories-table
+    msg: top spending categories this week, as a table
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: table, source: {has: [spending]}}
+  - id: show-water-numbers
+    msg: water stats for today?
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: [stats, meter, details], source: {has: [water]}}
+  - id: show-sessions-table
+    msg: put my climbing sessions in a table
+    expect: show
+    also: [ask_module]
+    modules: [hello, spending, water, climbing]
+    args: {kind: table, source: {has: [climbing]}}

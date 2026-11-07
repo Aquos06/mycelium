@@ -16,6 +16,12 @@ class MainSettings(ServiceSettings):
         validation_alias="MAIN_LLM_TIMEOUT",
         description="seconds per planner round; raise it for a cold local model",
     )
+    currency: str = Field(
+        default="TWD",
+        pattern=r"^[A-Za-z]{3}$",
+        validation_alias="MAIN_CURRENCY",
+        description="money in what Main shows (a table's amounts): an ISO code, TWD, USD, EUR",
+    )
 
     @field_validator("tz")
     @classmethod

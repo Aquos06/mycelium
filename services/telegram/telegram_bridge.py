@@ -2,8 +2,9 @@
 
   text from the allowed chat        -> sense.chat     {id, ts, source, channel: telegram, thread, text}
   button tap                        -> sense.feedback {id, ts, ref, answer, channel, thread}
-  out.say  {channel: telegram, thread, text}      -> message to that chat
-  out.ask  {channel?, thread?, text, choices, ref} -> message with one button per choice
+  out.say  {channel: telegram, thread, text, blocks?} -> message to that chat, then each block (a table, a chart,
+                                                    ...) as its own monospace message
+  out.ask  {channel?, thread?, text, choices, ref} -> its blocks first, then the message with one button per choice
   out.notify {text}                               -> message (unaddressed notifications reach the phone)
   out.progress {channel: telegram, thread, ref, seq, state, text}
                                                   -> one message per ref, edited in place as it changes
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import logging
 from typing import Any
 
@@ -169,9 +171,28 @@ class TelegramBridge:
         await self.api.call("sendMessage", chat_id=self.chat_id, text=parts[-1], **extra)
 
     async def on_say(self, msg: Message) -> None:
+        if not self._addressed(msg.data, default=False):
+            return
         text = str(msg.data.get("text") or "").strip()
-        if text and self._addressed(msg.data, default=False):
+        if text:
             await self.send(text)
+        await self.send_blocks(msg.data)
+
+    async def send_blocks(self, data: dict[str, Any]) -> None:
+        """Each block Main put under a reply, as Main wrote it in text: its title, then its lines in monospace, so a
+        table's columns line up. Telegram refusing the HTML sends it plain instead."""
+        for block in data.get("blocks") or []:
+            if not isinstance(block, dict) or not str(block.get("text") or "").strip():
+                continue
+            title, body = str(block.get("title") or "").strip(), str(block["text"]).rstrip()[:MAX_CHARS]
+            head = f"<b>{html.escape(title)}</b>\n" if title else ""
+            try:
+                await self.api.call(
+                    "sendMessage", chat_id=self.chat_id, text=f"{head}<pre>{html.escape(body)}</pre>", parse_mode="HTML"
+                )
+            except TelegramError as e:
+                log.info("a block went out plain: %s", e.description)
+                await self.send(f"{title}\n{body}" if title else body)
 
     async def on_notify(self, msg: Message) -> None:
         text = str(msg.data.get("text") or "").strip()
@@ -181,6 +202,7 @@ class TelegramBridge:
     async def on_ask(self, msg: Message) -> None:
         if not self._addressed(msg.data, default=True):
             return
+        await self.send_blocks(msg.data)  # what the question is about, above it
         ref = str(msg.data.get("ref") or msg.data.get("id") or "")
         choices = [str(c) for c in msg.data.get("choices") or []]
         if ref and choices:

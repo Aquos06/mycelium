@@ -76,6 +76,7 @@ export const ENV: Partial<Record<SettingsTab, { title: string; desc: string; row
       { label: "Timezone", desc: "What “today” means in the prompt.", env: "MAIN_TZ" },
       { label: "Thread memory", desc: "Turns kept per thread in KV.", env: "MAIN_MAX_TURNS", unit: "turns" },
       { label: "Model timeout", desc: "Seconds per planner round. Raise it for a cold local model.", env: "MAIN_LLM_TIMEOUT", unit: "sec" },
+      { label: "Currency", desc: "Money in the tables and charts Main shows (an ISO code).", env: "MAIN_CURRENCY" },
     ],
   },
   system: {

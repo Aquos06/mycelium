@@ -184,4 +184,17 @@ describe("Chat", () => {
     expect(card).toHaveAttribute("data-state", "failed");
     expect([...card.querySelectorAll("li")].map((li) => li.getAttribute("data-state"))).toEqual(["failed", "pending"]);
   });
+
+  it("shows what Main showed from a module under its reply, and a question's blocks above its buttons", () => {
+    const stats = { kind: "stats", title: "This week", stats: [{ label: "Total", value: { v: 3420, s: "NT$3,420" } }] };
+    renderScreen(<Chat thread="web" />, [
+      event("out.say", { ...envelope("a1"), channel: "web", thread: "web", text: "Food was most of it.", blocks: [stats, { kind: "hologram" }] }),
+      event("out.ask", { ...envelope("q1"), channel: "web", thread: "web", text: "Delete the taxi?", choices: ["Yes", "No"], ref: "q1", blocks: [stats] }),
+    ]);
+    const reply = document.querySelector("[data-kind=assistant]")!;
+    expect(within(reply as HTMLElement).getByText("NT$3,420")).toBeInTheDocument();
+    expect(reply.querySelectorAll("figure")).toHaveLength(1); // a kind the app does not know is left out
+    const ask = screen.getByRole("group", { name: "Delete the taxi?" });
+    expect(within(ask).getByText("NT$3,420")).toBeInTheDocument();
+  });
 });

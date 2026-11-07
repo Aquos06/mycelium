@@ -1,6 +1,7 @@
 """Main on the bus.
 
-    sense.chat      {id, channel, thread, text}            -> recall, plan, reply on out.say (or out.ask)
+    sense.chat      {id, channel, thread, text}            -> recall, plan, reply on out.say (or out.ask), with
+                                                              the blocks `show` made from a module's data
     sense.feedback  {ref, answer} | {ref, vote}            -> an answer continues the thread; a vote is traced
     brain.observe                                          -> v0: logged only (the gate comes with the snapshot)
     build.stage                                            -> out.progress in the thread that asked: one message
@@ -64,6 +65,7 @@ from mycelium_sdk.build import (
     StartReply,
 )
 
+from .blocks import Formatter, TurnData
 from .progress import as_text, ended, running
 from .prompt import planner_prompt
 from .proposals import Proposal, ProposalKind, ProposalStatus, ProposalStore
@@ -143,6 +145,7 @@ class MainService:
         build_timeout: float = 30.0,
         tools: ToolRegistry | None = None,
         proposals: ProposalStore | None = None,
+        currency: str = "TWD",
     ) -> None:
         self.bus = bus
         self.store = store
@@ -154,6 +157,7 @@ class MainService:
         except (ZoneInfoNotFoundError, ValueError):
             log.warning("unknown time zone %r: the thread's dates are in UTC", tz)
             self.zone = ZoneInfo("UTC")
+        self.currency = currency  # money in the blocks `show` puts under a reply
         self.max_rounds = max_rounds
         self.recall_budget = recall_budget
         self.llm_timeout = llm_timeout
@@ -467,9 +471,11 @@ class MainService:
             self._recall(text), self._modules(), self._offered()
         )
         # the tools see this turn's modules: a call to one that is not running is refused at once
+        turn = TurnData(formatter=Formatter(currency=self.currency, zone=self.zone, today=self.today()))
         ctx = self.ctx.model_copy(
             update={
-                "modules": None if modules is None else {m.name: _actions(m) for m in modules if m.status == "running"}
+                "modules": None if modules is None else {m.name: _actions(m) for m in modules if m.status == "running"},
+                "turn": turn,  # its own: what this turn's modules answered, and what `show` put on screen
             }
         )
         modules = modules or []
@@ -541,6 +547,7 @@ class MainService:
 
         out = Envelope.child_of(data, "main")
         output: SayOutput | AskOutput
+        blocks = [] if error else turn.blocks  # a turn that failed says so, without half its answer
         if proposed and not error:  # stored before its card goes out: the tap finds it by the card's id
             proposal = Proposal(
                 id=out.id, name=proposed.name, purpose="", channel=channel, thread=thread_id, cause=cause
@@ -571,14 +578,24 @@ class MainService:
             question = "\n\n".join(s for s in (reply_text, asked.text) if s)
             await self.bus.publish(
                 "out.ask",
-                out.into(Ask, channel=channel, thread=thread_id, text=question, choices=asked.choices, ref=out.id),
+                out.into(
+                    Ask,
+                    channel=channel,
+                    thread=thread_id,
+                    text=question,
+                    choices=asked.choices,
+                    ref=out.id,
+                    blocks=blocks,
+                ),
             )
             saved = f"{question}\n[choices: {' / '.join(asked.choices)}]"
             output = AskOutput(ask=asked)
         else:
             if error or not reply_text:
                 reply_text = _failed_reply(error, tool_log) if error else "(no reply)"
-            await self.bus.publish("out.say", out.into(Say, channel=channel, thread=thread_id, text=reply_text))
+            await self.bus.publish(
+                "out.say", out.into(Say, channel=channel, thread=thread_id, text=reply_text, blocks=blocks)
+            )
             saved = reply_text
             output = SayOutput(say=reply_text)
 

@@ -126,6 +126,54 @@ async def test_say_goes_only_to_this_channel_and_thread(bridge):
     assert bridge.api.calls == [("sendMessage", {"chat_id": CHAT, "text": "hello"})]
 
 
+TABLE = {"kind": "table", "title": "This <week>", "text": "Day    Amount\n─────  ──────\nNov 2  NT$350"}
+
+
+async def test_a_reply_s_blocks_follow_it_in_monospace(bridge):
+    await bridge.bus.publish(
+        "out.say", {"channel": "telegram", "thread": "4242", "text": "Food is most of it.", "blocks": [TABLE]}
+    )
+    assert bridge.api.calls == [
+        ("sendMessage", {"chat_id": CHAT, "text": "Food is most of it."}),
+        (
+            "sendMessage",
+            {
+                "chat_id": CHAT,
+                "text": "<b>This &lt;week&gt;</b>\n<pre>Day    Amount\n─────  ──────\nNov 2  NT$350</pre>",
+                "parse_mode": "HTML",
+            },
+        ),
+    ]
+
+
+async def test_a_block_telegram_will_not_take_as_html_goes_plain(bridge):
+    class NoHtml(FakeAPI):
+        async def call(self, method, **params):
+            if params.get("parse_mode") == "HTML":
+                raise TelegramError("sendMessage", "Bad Request: can't parse entities")
+            return await super().call(method, **params)
+
+    bridge.api = NoHtml()
+    await bridge.bus.publish("out.say", {"channel": "telegram", "thread": "4242", "text": "ok", "blocks": [TABLE]})
+    assert [p["text"] for _, p in bridge.api.calls] == ["ok", f"This <week>\n{TABLE['text']}"]
+
+
+async def test_a_question_s_blocks_come_before_its_buttons(bridge):
+    await bridge.bus.publish(
+        "out.ask",
+        {
+            "channel": "telegram",
+            "thread": "4242",
+            "text": "Delete it?",
+            "choices": ["Yes", "No"],
+            "ref": "r1",
+            "blocks": [TABLE],
+        },
+    )
+    assert [p.get("parse_mode", "") for _, p in bridge.api.calls] == ["HTML", ""]
+    assert "reply_markup" in bridge.api.calls[1][1]
+
+
 async def test_notify_reaches_the_phone_even_unaddressed(bridge):
     await bridge.bus.publish("out.notify", {"text": "someone at the door"})
     await bridge.bus.publish("out.notify", {"channel": "cli", "text": "not here"})

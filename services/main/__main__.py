@@ -25,9 +25,16 @@ async def main() -> None:
     await bus.connect()
     kv = await NatsKV(bus.nc, "main").open()
     store = ThreadStore(kv, max_turns=s.max_turns)
-    service = MainService(bus, store, today=lambda: datetime.now(zone).date(), tz=s.tz, llm_timeout=s.llm_timeout)
+    service = MainService(
+        bus,
+        store,
+        today=lambda: datetime.now(zone).date(),
+        tz=s.tz,
+        llm_timeout=s.llm_timeout,
+        currency=s.currency.upper(),
+    )
     await service.start()
-    log.info("main ready: tz=%s llm_timeout=%ss", s.tz, s.llm_timeout)
+    log.info("main ready: tz=%s llm_timeout=%ss currency=%s", s.tz, s.llm_timeout, s.currency.upper())
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

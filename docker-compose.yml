@@ -164,6 +164,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       MAIN_TZ: ${MAIN_TZ:-${MEMORY_TZ:-Asia/Taipei}}   # one TZ for memory and Main unless MAIN_TZ is set
       MAIN_LLM_TIMEOUT: ${MAIN_LLM_TIMEOUT:-90}        # raise for a cold local model (ollama first load)
+      MAIN_CURRENCY: ${MAIN_CURRENCY:-TWD}              # money in what Main shows: an ISO code
     networks: [mesh]
     depends_on:
       nats: { condition: service_healthy }

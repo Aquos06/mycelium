@@ -60,6 +60,8 @@ async def converse(bus: NatsBus, subject: str, payload: dict, thread: str, timeo
         print(f"no reply within {timeout:.0f}s (is `main` running?)", file=sys.stderr)
         return 1
     print(data.get("text", ""))
+    for block in data.get("blocks") or []:  # a table, a chart, ... as Main wrote it in text
+        print(f"\n{block.get('title') or block.get('kind')}\n{block.get('text', '')}")
     if out_subject == "out.ask":
         print(
             f"\n[choices: {' / '.join(data.get('choices') or [])}]  answer with: mctl answer {data.get('ref')} <choice>"
