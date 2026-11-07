@@ -4,7 +4,7 @@
 // Mounted with `key={thread}` by its page, so a new thread is a fresh component: no state to reset.
 //
 // The state lives in useConversation; every piece on screen is its own component in this folder:
-// ChatHeader · Messages (UserBubble, TraceRow, AssistantMessage + Votes, AskCard) · Thinking · Writing ·
+// ChatHeader · Messages (UserBubble, TraceRow, AssistantMessage + Votes, AskCard, ProgressCard) · Thinking · Writing ·
 // Planning · EmptyThread, and the Composer from ui.
 
 import { useRouter } from "next/navigation";
@@ -27,10 +27,12 @@ export function Chat({ thread }: { thread: string }) {
   const { items, pendingId, live, votes, say, vote, answer } = useConversation(thread);
   const scroller = useRef<HTMLDivElement>(null);
 
+  // a job's card grows in place (a round's line, its end) without adding an item: its seq and state count too
+  const cards = items.reduce((k, i) => (i.kind === "progress" ? `${k}|${i.seq}${i.state}` : k), "");
   useEffect(() => {
     const el = scroller.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [items.length, live?.text.length, live?.thinking.length]);
+  }, [items.length, cards, live?.text.length, live?.thinking.length]);
 
   const title = list.find((t) => t.id === thread)?.title ?? (thread === "web" ? "Here" : thread);
   const busy = pendingId !== null;

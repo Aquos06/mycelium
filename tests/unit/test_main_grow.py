@@ -50,9 +50,12 @@ class Builder:
             return
         self.started.append(msg.data)
         build_id = f"b{len(self.started)}"
-        self.records[build_id] = {
+        self.records[build_id] = {  # a BuildRecord, as rpc.build.get answers it
             "id": build_id,
             "name": msg.data["name"],
+            "spec": msg.data.get("spec") or msg.data.get("change") or "",
+            "coder": "fake",
+            "mode": "change" if msg.data.get("change") else "new",
             "status": "queued",
             "channel": msg.data.get("channel"),
             "thread": msg.data.get("thread"),

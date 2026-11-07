@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from datetime import date
 
 from mycelium_sdk import Prompt
+from mycelium_sdk.text import one_line
 
 from ..schemas import Event, FactRecord, Note, SummaryRecord
 
@@ -43,18 +44,13 @@ How to write:
 # ---- renderers --------------------------------------------------------------------------------------
 
 
-def _clip(text: str, n: int) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= n else text[: n - 1] + "…"
-
-
 def describe(event: Event) -> str:
     """One line for one event: what was said or summarised, else the compact payload."""
     for key in ("text", "summary"):
         v = event.payload.get(key)
         if isinstance(v, str) and v.strip():
-            return _clip(v, MAX_LINE)
-    return _clip(json.dumps(event.payload, ensure_ascii=False, default=str), MAX_LINE)
+            return one_line(v, MAX_LINE)
+    return one_line(json.dumps(event.payload, ensure_ascii=False, default=str), MAX_LINE)
 
 
 def render_events(events: Iterable[Event], max_chars: int) -> str:
@@ -74,7 +70,7 @@ def render_notes(notes: Iterable[Note], limit: int = MAX_NOTES) -> str:
     rows = []
     for n in sorted(notes, key=lambda n: n.name)[:limit]:
         aliases = f"; aliases: {', '.join(n.aliases)}" if n.aliases else ""
-        rows.append(f"- {n.name} ({n.type}{aliases}): {_clip(n.summary, 120)}".rstrip(": "))
+        rows.append(f"- {n.name} ({n.type}{aliases}): {one_line(n.summary, 120)}".rstrip(": "))
     return "\n".join(rows) or "(none yet)"
 
 

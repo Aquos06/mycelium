@@ -68,7 +68,8 @@ async def converse(bus: NatsBus, subject: str, payload: dict, thread: str, timeo
 
 
 async def follow_build(bus: NatsBus, args) -> int:
-    """rpc.build.start, then each round as it ends until build.done or build.failed (--wait)."""
+    """rpc.build.start, then each step as it begins and each round as it ends, until build.done or build.failed
+    (--wait)."""
     events: asyncio.Queue = asyncio.Queue()
     if args.wait:
 
@@ -94,14 +95,23 @@ async def follow_build(bus: NatsBus, args) -> int:
             continue
         if subject == "build.started":
             print(f"started: {data['name']} with the {data['coder']} coder")
+        elif subject == "build.stage":
+            where = (
+                f"round {data['round']}/{data['max_rounds']}: "
+                if data["stage"] in ("coder", "checks", "verify")
+                else ""
+            )
+            print(f"{where}{data['stage']}")
         elif subject == "build.progress":
-            print(f"round {data['round']}: {data['stage']} {'passed' if data['passed'] else 'failed'}")
+            line = data.get("summary") or f"{data['stage']} {'passed' if data['passed'] else 'failed'}"
+            print(f"round {data['round']} ended: {line}")
         elif subject in ("build.done", "build.failed"):
             record = await bus.request("rpc.build.get", {"build_id": build_id}, timeout=10)
             last = (record.get("rounds") or [{}])[-1]
             if subject == "build.failed" and (record.get("output") or last.get("output")):
                 print(record.get("output") or last.get("output"))
             data.pop("output", None)
+            data.pop("history", None)  # printed round by round above
             print(json.dumps(data, indent=2, ensure_ascii=False))
             return 0 if subject == "build.done" else 1
 

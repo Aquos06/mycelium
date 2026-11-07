@@ -1,10 +1,11 @@
 "use client";
 
-// The thread's items, each as its own piece: your bubble, the plan row, Main's reply, a question.
+// The thread's items, each as its own piece: your bubble, the plan row, Main's reply, a question, a job's progress.
 
 import type { ChatItem } from "@/lib/chat";
 import { AskCard } from "./AskCard";
 import { AssistantMessage } from "./AssistantMessage";
+import { ProgressCard } from "./ProgressCard";
 import { TraceRow } from "./TraceRow";
 import { UserBubble } from "./UserBubble";
 
@@ -31,6 +32,8 @@ export function Messages({
             return <AssistantMessage key={m.id} text={m.text} vote={votes[m.id]} onVote={(v) => onVote(m.id, v)} />;
           case "ask":
             return <AskCard key={m.id} text={m.text} answered={m.answered} choices={m.choices} onAnswer={(c) => onAnswer(m.ref, c)} />;
+          case "progress":
+            return <ProgressCard key={m.id} item={m} />;
         }
       })}
     </>

@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo
 
 from ..schemas import Event
 
-NOT_MATERIAL = ("trace.", "rpc.", "_INBOX", "$")
+# not what the day was: traces, requests, and how a build went step by step (its build.done / build.failed say it)
+NOT_MATERIAL = ("trace.", "rpc.", "_INBOX", "$", "build.stage", "build.progress", "out.progress")
 
 
 def is_memory_material(subject: str, is_request: bool) -> bool:

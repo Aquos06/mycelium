@@ -16,6 +16,16 @@ export function ago(iso: string, now = Date.now()): string {
   return hhmm(iso);
 }
 
+/** How long something took or has been going: "42 s", "3 min", "1 h 5 min". Rounded half up and once, so 59.5
+ *  minutes is "1 h", never "60 min", and it says what Main's duration() says (services/main/progress.py). */
+export function took(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds + 0.5));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60 + 0.5);
+  if (m < 60) return `${m} min`;
+  return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`;
+}
+
 /** The timeline's group label for a timestamp: Just now, This morning, This afternoon, This evening, Yesterday, Earlier. */
 export function groupOf(iso: string, now = new Date()): string {
   const d = new Date(iso);

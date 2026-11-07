@@ -5,9 +5,10 @@
     rpc.build.list    BuildListRequest   -> BuildList (newest first)
     rpc.build.coders  {}                 -> CoderList
     rpc.build.default CoderChoice        -> CoderList
-The handler adds ok=true; errors are {"ok": false, "error"}.
-Events:
-    build.started / build.progress (one per round) / build.done / build.failed
+Each handler returns a model; it goes back as Answer.of(it) ({"ok": true, ...}), or Refusal ({"ok": false, "error"}).
+Events, each with the thread that asked (channel, thread):
+    build.started / build.stage (each step it enters) / build.progress (each round's end) / build.done / build.failed
+    build.stage, build.done and build.failed carry every finished round in a line (`history`) and a `seq`
 
 A build starts by request, not by event: an event would vanish while the builder is down (core NATS has no
 durable consumers here), a request gets an answer or an error. A name that exists (a change: one the builder
@@ -22,16 +23,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
 from mycelium_sdk import (
     KV,
+    Answer,
     Bus,
     ManifestError,
     Message,
     NoAnswer,
+    Refusal,
     Refused,
     ask,
     kv_key,
@@ -39,12 +43,14 @@ from mycelium_sdk import (
     now_iso,
     validation_message,
 )
+from mycelium_sdk.bus import Handler
 
 from .coders import Coder, CoderUnavailable
 from .pipeline import Pipeline, PipelineError, change_spec, next_version
 from .schemas import (
     SPEC_MAX,
     BuildDone,
+    BuildEvent,
     BuildFailed,
     BuildList,
     BuildListRequest,
@@ -53,6 +59,7 @@ from .schemas import (
     BuildRecord,
     BuildRef,
     BuildRequest,
+    BuildStage,
     BuildStarted,
     BuildStatus,
     BuildSummary,
@@ -105,15 +112,11 @@ class BuilderService:
     async def start(self) -> None:
         await self.recover()  # before the first request: a build started now must not be recovered twice
         await self._load_choice()
-        handlers = {
-            "start": self.start_build,
-            "get": self.get,
-            "list": self.list,
-            "coders": self.list_coders,
-            "default": self.choose_coder,
-        }
-        for action, fn in handlers.items():
-            await self.bus.subscribe(f"rpc.build.{action}", self._wrap(fn), queue="builder")
+        await self.bus.subscribe("rpc.build.start", self._wrap(self.start_build, BuildRequest), queue="builder")
+        await self.bus.subscribe("rpc.build.get", self._wrap(self.get, BuildRef), queue="builder")
+        await self.bus.subscribe("rpc.build.list", self._wrap(self.list, BuildListRequest), queue="builder")
+        await self.bus.subscribe("rpc.build.coders", self._wrap(self.list_coders), queue="builder")
+        await self.bus.subscribe("rpc.build.default", self._wrap(self.choose_coder, CoderChoice), queue="builder")
         self._worker = asyncio.create_task(self._work())
 
     async def stop(self) -> None:
@@ -121,27 +124,28 @@ class BuilderService:
             self._worker.cancel()
             await asyncio.gather(self._worker, return_exceptions=True)
 
-    def _wrap(self, fn):
+    def _wrap(self, fn: Callable[..., Awaitable[BaseModel]], request: type[BaseModel] | None = None) -> Handler:
+        """A bus handler for `fn`: the message read as `request` (none: `fn` takes nothing), its result answered."""
+
         async def handler(msg: Message) -> None:
+            reply: Answer | Refusal
             try:
-                result: BaseModel = await fn(msg.data)
-                payload = {"ok": True, **result.model_dump(mode="json")}
+                reply = Answer.of(await (fn(request.model_validate(msg.data)) if request else fn()))
             except ValidationError as e:
-                payload = {"ok": False, "error": validation_message(e)}
+                reply = Refusal(error=validation_message(e))
             except ValueError as e:
-                payload = {"ok": False, "error": str(e)}
+                reply = Refusal(error=str(e))
             except Exception as e:  # one bad request never stops the builder
                 log.exception("unexpected error")
-                payload = {"ok": False, "error": f"internal: {e}"}
+                reply = Refusal(error=f"internal: {e}")
             if msg.reply:
-                await msg.respond(payload)
+                await msg.respond(reply)
 
         return handler
 
     # ---- requests ------------------------------------------------------------------------------------
 
-    async def start_build(self, data: dict[str, Any]) -> StartReply:
-        req = BuildRequest.model_validate(data)
+    async def start_build(self, req: BuildRequest) -> StartReply:
         coder_name = req.coder or self.default_coder
         coder = self.coders.get(coder_name)
         if coder is None:
@@ -170,9 +174,7 @@ class BuilderService:
         reason = await coder.ready()
         if reason:
             raise ValueError(f"the {coder_name} coder cannot build now: {reason}")
-        record = record.model_copy(
-            update={"cause": req.cause, "hops": req.hops, "channel": req.channel, "thread": req.thread}
-        )
+        record.cause, record.hops, record.channel, record.thread = req.cause, req.hops, req.channel, req.thread
         await self._save(record)
         position = len(self._waiting) + (1 if self._current else 0)
         self._waiting.append(record)
@@ -212,32 +214,31 @@ class BuilderService:
             base_commit=await self.pipeline.repo.last_commit(name),
         )
 
-    async def get(self, data: dict[str, Any]) -> BuildRecord:
-        build_id = BuildRef.model_validate(data).build_id
+    async def get(self, ref: BuildRef) -> BuildRecord:
+        build_id = ref.build_id
         raw = await self.kv.get(kv_key(PREFIX, build_id))
         if raw is None:
             raise ValueError(f"no build {build_id!r}")
         return BuildRecord.model_validate(raw)
 
-    async def list(self, data: dict[str, Any]) -> BuildList:
-        limit = max(1, min(BuildListRequest.model_validate(data).limit, 100))
+    async def list(self, req: BuildListRequest) -> BuildList:
+        limit = max(1, min(req.limit, 100))
         keys = sorted(await self.kv.keys(f"{PREFIX}/"), reverse=True)[:limit]  # ids sort by time
         records = await asyncio.gather(*(self.kv.get(k) for k in keys))
         return BuildList(builds=[s for r in records if r and (s := _summary(r))])
 
-    async def list_coders(self, _data: dict[str, Any]) -> CoderList:
+    async def list_coders(self) -> CoderList:
         coders = await asyncio.gather(*(self._info(name, coder) for name, coder in self.coders.items()))
         return CoderList(default=self.default_coder, seed=self.seed, coders=list(coders))
 
-    async def choose_coder(self, data: dict[str, Any]) -> CoderList:
-        req = CoderChoice.model_validate(data)
+    async def choose_coder(self, req: CoderChoice) -> CoderList:
         if req.coder not in self.coders:
             raise ValueError(f"no coder {req.coder!r}; one of {', '.join(self.coders)}")
-        await self.kv.put(CODER_KEY, CoderSetting(coder=req.coder).model_dump())
+        await self.kv.put(CODER_KEY, CoderSetting(coder=req.coder))
         if req.coder != self.default_coder:
             log.info("default coder: %s (was %s)", req.coder, self.default_coder)
         self.default_coder = req.coder
-        return await self.list_coders({})
+        return await self.list_coders()
 
     @staticmethod
     async def _info(name: str, coder: Coder) -> CoderInfo:
@@ -291,9 +292,7 @@ class BuilderService:
                 continue
             if record.status == BuildStatus.BUILDING:
                 self._fail(record, Stage.RESTART, "the builder restarted during this build; start it again")
-                record.finished = now_iso()
-                await self._save(record)
-                await self._announce(record, 0.0)
+                await self._end(record, 0.0)
             elif record.status == BuildStatus.QUEUED:
                 self._waiting.append(record)
             elif key in old:
@@ -322,14 +321,9 @@ class BuilderService:
         deadline = None
         try:
             await self._save(record)
-            await self.bus.publish(
-                "build.started",
-                record.envelope().into(
-                    BuildStarted, build_id=record.id, name=record.name, coder=record.coder, mode=record.mode
-                ),
-            )
+            await self.bus.publish("build.started", BuildStarted.of(record, self.pipeline.max_rounds))
             async with asyncio.timeout(self.build_timeout) as deadline:
-                await self.pipeline.run(record, self.coders[record.coder], self._on_round)
+                await self.pipeline.run(record, self.coders[record.coder], self._on_round, self._on_stage)
             record.status = BuildStatus.DONE
         except PipelineError as e:
             self._fail(record, e.stage, e.error, e.output)
@@ -344,57 +338,42 @@ class BuilderService:
         except Exception as e:
             log.exception("build %s failed", record.id)
             self._fail(record, record.stage or Stage.CODER, f"internal: {e}")
-        finally:
-            record.finished = now_iso()
-        await self._save(record)
-        await self._announce(record, round(time.monotonic() - t0, 1))
+        await self._end(record, round(time.monotonic() - t0, 1))
         log.info("build %s %s: %s", record.id, record.status, record.error or record.commit)
 
+    async def _on_stage(self, record: BuildRecord, n: int) -> None:
+        """A step begins: stored (rpc.build.get says where it is) and announced with the rounds so far."""
+        record.seq += 1
+        await self._as_it_goes(record, "build.stage", BuildStage.of(record, n, self.pipeline.max_rounds))
+
     async def _on_round(self, record: BuildRecord, rnd: Round) -> None:
-        await self._save(record)
-        await self.bus.publish(
-            "build.progress",
-            record.envelope().into(
-                BuildProgress,
-                build_id=record.id,
-                name=record.name,
-                coder=record.coder,
-                mode=record.mode,
-                round=rnd.n,
-                stage=rnd.stage,
-                passed=rnd.passed,
-            ),
-        )
+        await self._as_it_goes(record, "build.progress", BuildProgress.of(record, rnd, self.pipeline.max_rounds))
+
+    async def _as_it_goes(self, record: BuildRecord, subject: str, event: BuildEvent) -> None:
+        """Stored and announced during the build, but never at its cost: the KV or the bus failing for a moment
+        must not stop a build that works (at deploy, one already committed). Its end is stored and told anyway."""
+        try:
+            await self._save(record)
+            await self.bus.publish(subject, event)
+        except Exception as e:
+            log.warning("build %s: could not store or announce %s: %s", record.id, subject, e)
 
     @staticmethod
     def _fail(record: BuildRecord, stage: Stage, error: str, output: str = "") -> None:
         record.status, record.stage, record.error, record.output = BuildStatus.FAILED, stage, error, output[-4000:]
 
-    async def _announce(self, record: BuildRecord, seconds: float) -> None:
-        common = {
-            "build_id": record.id,
-            "name": record.name,
-            "coder": record.coder,
-            "mode": record.mode,
-            "rounds": len(record.rounds),
-            "seconds": seconds,
-            "cost_usd": record.cost_usd,
-            "channel": record.channel,
-            "thread": record.thread,
-        }
+    async def _end(self, record: BuildRecord, seconds: float) -> None:
+        """Stored as it ended, then told: build.done or build.failed, with the same seq the record keeps."""
+        record.finished, record.since = now_iso(), None
+        record.seq += 1
+        await self._save(record)
         if record.status == BuildStatus.DONE:
-            event = record.envelope().into(
-                BuildDone, version=record.version, commit=record.commit, image=record.image, **common
-            )
-            await self.bus.publish("build.done", event)
+            await self.bus.publish("build.done", BuildDone.of(record, seconds))
         else:
-            event = record.envelope().into(
-                BuildFailed, stage=record.stage, error=record.error, output=record.output, **common
-            )
-            await self.bus.publish("build.failed", event)
+            await self.bus.publish("build.failed", BuildFailed.of(record, seconds))
 
     async def _save(self, record: BuildRecord) -> None:
-        await self.kv.put(kv_key(PREFIX, record.id), record.model_dump())
+        await self.kv.put(kv_key(PREFIX, record.id), record)
 
 
 def _summary(raw: dict[str, Any]) -> BuildSummary | None:

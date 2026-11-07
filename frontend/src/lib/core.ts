@@ -60,8 +60,8 @@ export const CORE: CoreService[] = [
     name: "main",
     purpose: "The judgment: on every message, recall, plan with tools, answer or ask.",
     need: "Core service: everything that decides, nothing that stores.",
-    listens: ["sense.chat", "sense.feedback", "brain.observe"],
-    emits: ["out.say", "out.ask", "trace.plan", "trace.feedback"],
+    listens: ["sense.chat", "sense.feedback", "brain.observe", "build.stage", "build.done", "build.failed"],
+    emits: ["out.say", "out.ask", "out.progress", "trace.plan", "trace.feedback"],
     answers: [],
     probe: null,
     evidence: (e) => e.subject === "trace.plan" || e.subject === "out.say",
@@ -78,9 +78,10 @@ export const CORE: CoreService[] = [
   },
   {
     name: "telegram",
-    purpose: "Your phone on the bus: messages in become sense.chat, out.say and out.notify go back, out.ask as buttons.",
+    purpose:
+      "Your phone on the bus: messages in become sense.chat, out.say and out.notify go back, out.ask as buttons, out.progress as one message edited in place.",
     need: "Core service, optional (compose profile telegram).",
-    listens: ["out.say", "out.ask", "out.notify"],
+    listens: ["out.say", "out.ask", "out.notify", "out.progress"],
     emits: ["sense.chat", "sense.feedback"],
     answers: [],
     probe: null,

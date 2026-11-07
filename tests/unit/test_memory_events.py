@@ -16,6 +16,9 @@ def test_is_memory_material():
     assert is_memory_material("out.notify", is_request=False)  # what the system said is worth remembering
     assert not is_memory_material("rpc.memory.remember", is_request=True)
     assert not is_memory_material("trace.gate", is_request=False)
+    # how a build went step by step is not the day: its end is (and carries every round in a line)
+    assert is_memory_material("build.done", is_request=False) and is_memory_material("build.failed", is_request=False)
+    assert not any(is_memory_material(s, False) for s in ("build.stage", "build.progress", "out.progress"))
 
 
 async def test_jsonl_events_for_day_in_local_timezone():

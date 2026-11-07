@@ -5,8 +5,9 @@ Events (fire-and-forget, recorded in the JetStream EVENTS stream):
     brain.observe               every module publishes a summary envelope here
     mod.<module>.<event>        module events, e.g. mod.finance.expense.logged
     sys.<event>                 supervisor events, e.g. sys.module.deployed
-    build.<event>               builder events, e.g. build.done
-    out.<kind>                  outputs: out.say (reply on a thread), out.notify, out.ask (choices), out.ha
+    build.<event>               builder events: build.started, build.stage, build.progress, build.done, build.failed
+    out.<kind>                  outputs: out.say (reply on a thread), out.notify, out.ask (choices), out.ha,
+                                out.progress (a job in a thread, one message changed in place)
     trace.<kind>                decision traces: trace.plan, trace.llm, trace.consolidate, trace.rollup, trace.embed, trace.decide, trace.feedback
 
 Live (fire-and-forget, NOT an event: not in the stream, the tracer skips it, nobody keeps it):
@@ -14,7 +15,7 @@ Live (fire-and-forget, NOT an event: not in the stream, the tracer skips it, nob
 
 Requests (request/reply, NOT stored in the stream so JetStream never answers them):
     rpc.sys.<action>            supervisor: deploy, verify, agent, agents, stop, logs, list, health
-    rpc.build.<action>          builder: start, get, list, coders
+    rpc.build.<action>          builder: start, get, list, coders, default
     rpc.mod.<module>.<action>   ask a module something
     rpc.memory.<action>         memory service: remember, lookup, recall, reindex
     rpc.llm.<action>            model gateway: complete, usage

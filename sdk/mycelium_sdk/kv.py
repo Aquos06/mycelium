@@ -14,6 +14,8 @@ import json
 import re
 from typing import Any, Protocol
 
+from .bus import Payload, as_dict
+
 _BAD = re.compile(r"[^-/_=.a-zA-Z0-9]")
 _DOTS = re.compile(r"\.{2,}")
 
@@ -32,7 +34,7 @@ def kv_key(*parts: str) -> str:
 
 class KV(Protocol):
     async def get(self, key: str) -> dict[str, Any] | None: ...
-    async def put(self, key: str, value: dict[str, Any]) -> None: ...
+    async def put(self, key: str, value: Payload) -> None: ...  # a model is stored as its JSON
     async def delete(self, key: str) -> None: ...
     async def keys(self, prefix: str = "") -> list[str]: ...
 
@@ -45,8 +47,8 @@ class InMemoryKV:
         v = self._data.get(key)
         return copy.deepcopy(v) if v is not None else None
 
-    async def put(self, key: str, value: dict[str, Any]) -> None:
-        self._data[key] = copy.deepcopy(value)
+    async def put(self, key: str, value: Payload) -> None:
+        self._data[key] = copy.deepcopy(as_dict(value))
 
     async def delete(self, key: str) -> None:
         self._data.pop(key, None)
@@ -92,8 +94,8 @@ class NatsKV:
         value = json.loads(entry.value)
         return value if isinstance(value, dict) else {"value": value}
 
-    async def put(self, key: str, value: dict[str, Any]) -> None:
-        await self.kv.put(key, json.dumps(value, default=str).encode())
+    async def put(self, key: str, value: Payload) -> None:
+        await self.kv.put(key, json.dumps(as_dict(value), default=str).encode())
 
     async def delete(self, key: str) -> None:
         from nats.js.errors import KeyNotFoundError

@@ -1,9 +1,22 @@
 // A conversation, assembled from the bus: what you said (sense.chat), what Main planned (trace.plan),
 // what it said back (out.say) or asked (out.ask), and your answers (sense.feedback). Everything on
 // channel "web" for one thread. The gateway only buffers the recent past, so each thread is also kept in
-// localStorage and merged back in.
+// localStorage and merged back in. A job Main follows for you (a build) is one item that changes in place.
 
-import { askSchema, planTraceSchema, saySchema, senseChatSchema, type BusEvent, type Json, type PlanTrace } from "@/lib/schemas";
+import {
+  askSchema,
+  planTraceSchema,
+  progressSchema,
+  saySchema,
+  senseChatSchema,
+  type BusEvent,
+  type Json,
+  type BuildRecord,
+  type PlanTrace,
+  type Progress,
+  type ProgressStep,
+} from "@/lib/schemas";
+import { hhmm } from "@/lib/format";
 import { readStored, writeStored } from "@/lib/storage";
 
 export type ChatItem =
@@ -19,7 +32,52 @@ export type ChatItem =
       cause: string | null;
       answered: string | null;
     }
-  | { kind: "trace"; id: string; ts: string; cause: string | null; trace: PlanTrace };
+  | { kind: "trace"; id: string; ts: string; cause: string | null; trace: PlanTrace }
+  | {
+      kind: "progress";
+      id: string; // "progress:<ref>": one item per job, whatever the updates' own ids
+      ts: string; // when it first showed: the card stays where the job began
+      updated?: string; // when its newest update was sent (none in a thread stored before it was kept)
+      cause: string | null;
+      title: string;
+      state: Progress["state"];
+      steps: ProgressStep[];
+      seq: number;
+      note?: string; // how it ended, when the app missed its last update and asked the builder (settle)
+    };
+
+export type ProgressItem = Extract<ChatItem, { kind: "progress" }>;
+
+/** The job a card follows: a build's id. */
+export const jobOf = (p: ProgressItem): string => p.id.replace(/^progress:/, "");
+
+/** When a card last changed. */
+export const updatedAt = (p: ProgressItem): string => p.updated ?? p.ts;
+
+/** Of two versions of one job's card, the one to show: a finished one, else the higher seq, else the later. */
+export function newer(a: ProgressItem, b: ProgressItem): ProgressItem {
+  const rank = (p: ProgressItem) => (p.state === "running" ? 0 : 1);
+  const pick = rank(b) !== rank(a) ? (rank(b) > rank(a) ? b : a) : b.seq >= a.seq ? b : a;
+  const [ua, ub] = [updatedAt(a), updatedAt(b)];
+  return { ...pick, ts: a.ts < b.ts ? a.ts : b.ts, updated: ua > ub ? ua : ub };
+}
+
+/** A running card whose end the app missed (its last update left the gateway's buffer while the app was shut),
+ *  ended the way the builder's record says the build did. The step it was on ends with it; the ones still to
+ *  come are done if it was built, and stay to come if it failed. A build still going leaves the card as it is. */
+export function settle(item: ProgressItem, build: BuildRecord): ProgressItem {
+  if (item.state !== "running" || (build.status !== "done" && build.status !== "failed")) return item;
+  const done = build.status === "done";
+  const steps = item.steps.map((s): ProgressStep => {
+    if (s.state === "active") return { ...s, state: done ? "done" : "failed", since: null };
+    return s.state === "pending" && done ? { ...s, state: "done" } : s;
+  });
+  const when = build.finished ? ` at ${hhmm(build.finished)}` : "";
+  const note = done
+    ? `Finished${when}${build.version ? `: v${build.version} is running` : ""}.`
+    : `Stopped${when}${build.stage ? ` (${build.stage})` : ""}: ${build.error ?? "no reason given"}`;
+  return { ...item, state: build.status, steps, note };
+}
 
 export interface Thread {
   id: string;
@@ -67,6 +125,7 @@ const onThread = (d: Json, thread: string) => d.channel === CHANNEL && String(d.
 export function fromEvents(events: BusEvent[], thread: string): ChatItem[] {
   const items: ChatItem[] = [];
   const answers = new Map<string, string>(); // ask ref -> answer
+  const jobs = new Map<string, ProgressItem>(); // progress ref -> its card, newest content
   for (const e of events) {
     const d = e.data;
     if (!onThread(d, thread)) continue;
@@ -99,6 +158,25 @@ export function fromEvents(events: BusEvent[], thread: string): ChatItem[] {
           });
         break;
       }
+      case "out.progress": {
+        const m = progressSchema.safeParse(d);
+        if (!m.success) break;
+        const p = m.data;
+        const item: ProgressItem = {
+          kind: "progress",
+          id: `progress:${p.ref}`,
+          ts: p.ts ?? e.received,
+          updated: p.ts ?? e.received,
+          cause: p.cause,
+          title: p.title,
+          state: p.state,
+          steps: p.steps,
+          seq: p.seq,
+        };
+        const seen = jobs.get(item.id);
+        jobs.set(item.id, seen ? newer(seen, item) : item);
+        break;
+      }
       case "trace.plan": {
         const m = planTraceSchema.safeParse(d);
         if (m.success) items.push({ kind: "trace", id: m.data.id, ts: m.data.ts ?? e.received, cause: m.data.cause, trace: m.data });
@@ -107,20 +185,22 @@ export function fromEvents(events: BusEvent[], thread: string): ChatItem[] {
     }
   }
   for (const i of items) if (i.kind === "ask" && answers.has(i.ref)) i.answered = answers.get(i.ref)!;
-  return order(items);
+  return order([...items, ...jobs.values()]);
 }
 
-/** Stored items and bus items as one list, by id; the newest version of an item wins (an ask gets answered). */
+/** Stored items and bus items as one list, by id; the newest version of an item wins (an ask gets answered, a
+ *  job's card moves on). */
 export function merge(a: ChatItem[], b: ChatItem[]): ChatItem[] {
   const byId = new Map<string, ChatItem>();
   for (const i of [...a, ...b]) {
     const prev = byId.get(i.id);
-    byId.set(i.id, prev && prev.kind === "ask" && i.kind === "ask" ? { ...i, answered: i.answered ?? prev.answered } : i);
+    if (prev?.kind === "progress" && i.kind === "progress") byId.set(i.id, newer(prev, i));
+    else byId.set(i.id, prev && prev.kind === "ask" && i.kind === "ask" ? { ...i, answered: i.answered ?? prev.answered } : i);
   }
   return order([...byId.values()]);
 }
 
-const RANK: Record<ChatItem["kind"], number> = { user: 0, trace: 1, assistant: 2, ask: 2 };
+const RANK: Record<ChatItem["kind"], number> = { user: 0, trace: 1, assistant: 2, ask: 2, progress: 2 };
 
 /** Conversation order: chronological, with a turn's plan and reply kept right after the message they answer. */
 export function order(items: ChatItem[]): ChatItem[] {

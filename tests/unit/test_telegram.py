@@ -1,9 +1,21 @@
 """The Telegram channel: updates -> bus events, bus outputs -> API calls. No network."""
 
+import asyncio
+
 import pytest
 
+import telegram_bridge
 from mycelium_sdk import InMemoryBus
-from telegram_bridge import ChatIn, Feedback, TelegramAPI, TelegramBridge, chunks, keyboard, parse_update
+from telegram_bridge import (
+    ChatIn,
+    Feedback,
+    TelegramAPI,
+    TelegramBridge,
+    TelegramError,
+    chunks,
+    keyboard,
+    parse_update,
+)
 
 CHAT = 4242
 
@@ -194,3 +206,111 @@ async def test_tap_becomes_feedback_and_the_buttons_are_closed(bridge):
 async def test_updates_from_strangers_do_nothing(bridge):
     await bridge.handle_update(text_update("hi", chat=1))
     assert bridge.bus.published == [] and bridge.api.calls == []
+
+
+# ---- out.progress: one message per job, edited in place ------------------------------------------------
+
+
+def progress(seq, text, state="running", ref="b1", thread="4242"):
+    return {"channel": "telegram", "thread": thread, "ref": ref, "seq": seq, "state": state, "text": text}
+
+
+async def test_progress_is_one_message_edited_as_it_changes(bridge):
+    await bridge.bus.publish("out.progress", progress(1, "Building expenses\n⏳ Round 1 of 6: writing the module"))
+    await bridge.bus.publish("out.progress", progress(3, "Building expenses\n⏳ Round 1 of 6: running its tests"))
+    await bridge.bus.publish(
+        "out.progress", progress(2, "Building expenses\n⏳ Round 1 of 6: checking the files")
+    )  # late
+    await bridge.bus.publish(
+        "out.progress", progress(3, "Building expenses\n⏳ Round 1 of 6: running its tests")
+    )  # same
+    await bridge.bus.publish("out.progress", progress(9, "Built expenses v0.1.0\n✅ Start it", state="done"))
+    await bridge.bus.publish("out.progress", progress(4, "Building expenses\n⏳ Save it"))  # after the end
+    assert [(m, p.get("message_id"), p["text"].splitlines()[-1]) for m, p in bridge.api.calls] == [
+        ("sendMessage", None, "⏳ Round 1 of 6: writing the module"),
+        ("editMessageText", 1, "⏳ Round 1 of 6: running its tests"),
+        ("editMessageText", 1, "✅ Start it"),
+    ]
+
+
+async def test_progress_for_another_chat_or_without_a_ref_is_not_shown(bridge):
+    await bridge.bus.publish("out.progress", progress(1, "x", thread="999"))
+    await bridge.bus.publish("out.progress", {**progress(1, "x"), "channel": "web"})
+    await bridge.bus.publish("out.progress", progress(1, "x", ref=""))
+    assert bridge.api.calls == []
+
+
+class Refusing(FakeAPI):
+    """Answers sendMessage with a new message id each time; editMessageText fails with `errors`, in turn."""
+
+    def __init__(self, *errors):
+        super().__init__()
+        self.errors = list(errors)
+
+    async def call(self, method, **params):
+        if method == "editMessageText" and self.errors:
+            raise self.errors.pop(0)
+        self.calls.append((method, params))
+        return {"message_id": len(self.calls)}
+
+
+def gone():
+    return TelegramError("editMessageText", "Bad Request: message to edit not found")
+
+
+async def test_progress_whose_message_is_gone_goes_out_again(bridge):
+    bridge.api = Refusing(gone(), gone())
+    await bridge.bus.publish("out.progress", progress(1, "one"))
+    await bridge.bus.publish("out.progress", progress(2, "two"))
+    await bridge.bus.publish("out.progress", progress(3, "three"))
+    assert [(m, p["text"]) for m, p in bridge.api.calls] == [
+        ("sendMessage", "one"),
+        ("sendMessage", "two"),
+        ("sendMessage", "three"),
+    ]
+    assert bridge._progress["b1"].message_id == 3  # the next update edits the newest message
+
+
+async def test_progress_telegram_already_shows_is_not_sent_again(bridge):
+    bridge.api = Refusing(TelegramError("editMessageText", "Bad Request: message is not modified: specified new ..."))
+    await bridge.bus.publish("out.progress", progress(1, "one"))
+    await bridge.bus.publish("out.progress", progress(2, "two "))
+    assert [m for m, _ in bridge.api.calls] == ["sendMessage"]
+    assert (bridge._progress["b1"].seq, bridge._progress["b1"].text) == (2, "two")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TelegramError("editMessageText", "Too Many Requests: retry after 0.01", retry_after=0.01),
+        TimeoutError("no answer"),
+    ],
+)
+async def test_progress_telegram_did_not_take_is_tried_again_not_duplicated(bridge, monkeypatch, error):
+    monkeypatch.setattr(telegram_bridge, "RETRY_S", 0.01)
+    bridge.api = Refusing(error)
+    await bridge.bus.publish("out.progress", progress(1, "one"))
+    await bridge.bus.publish("out.progress", progress(9, "done", state="done"))  # refused for now
+    assert [m for m, _ in bridge.api.calls] == ["sendMessage"]
+    await asyncio.sleep(0.05)
+    assert [(m, p["text"]) for m, p in bridge.api.calls] == [("sendMessage", "one"), ("editMessageText", "done")]
+    assert bridge._progress["b1"].final
+
+
+async def test_a_retry_that_a_newer_update_overtook_is_dropped(bridge, monkeypatch):
+    monkeypatch.setattr(telegram_bridge, "RETRY_S", 0.02)
+    bridge.api = Refusing(TimeoutError("no answer"))
+    await bridge.bus.publish("out.progress", progress(1, "one"))
+    await bridge.bus.publish("out.progress", progress(2, "two"))  # refused for now: tried again in 0.02 s
+    await bridge.bus.publish("out.progress", progress(3, "three"))
+    await asyncio.sleep(0.06)
+    assert [p["text"] for _, p in bridge.api.calls] == ["one", "three"]
+
+
+async def test_progress_stops_trying_after_a_few_times(bridge, monkeypatch):
+    monkeypatch.setattr(telegram_bridge, "RETRY_S", 0.01)
+    bridge.api = Refusing(*[TimeoutError("no answer")] * 10)
+    await bridge.bus.publish("out.progress", progress(1, "one"))
+    await bridge.bus.publish("out.progress", progress(2, "two"))
+    await asyncio.sleep(0.1)
+    assert len(bridge.api.errors) == 10 - 1 - telegram_bridge.RETRIES and not bridge._retries

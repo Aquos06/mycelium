@@ -1,6 +1,7 @@
 """Main's messages and records: what it sends, what it publishes, what it holds while planning.
 
 Say, Ask                 -> out.say, out.ask        (envelopes; `ref` on Ask is its own id)
+Progress                 -> out.progress            (one message per job that changes in place: a build Main started)
 PlanTrace                -> trace.plan              (one per handled message; votes attach by reply_id)
 FeedbackTrace            -> trace.feedback
 ModuleInfo, PackSummary, LlmCall: what the planner was given and what it cost, kept for the trace
@@ -12,11 +13,13 @@ What it sends the planner model is the SDK's CompletionRequest (mycelium_sdk.llm
 from __future__ import annotations
 
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from mycelium_sdk import Envelope, RequestSpec, Usage
+from mycelium_sdk.build import BuildDone, BuildFailed
 
 from .tools import AskArgs, ToolOutcome
 
@@ -37,6 +40,41 @@ class Ask(Envelope):
     text: str
     choices: list[str] = Field(min_length=2)
     ref: str  # what sense.feedback answers refer to: this message's own id
+
+
+class StepState(StrEnum):
+    DONE = "done"
+    FAILED = "failed"
+    ACTIVE = "active"
+    PENDING = "pending"
+
+
+class ProgressState(StrEnum):
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class ProgressStep(BaseModel):
+    text: str
+    state: StepState
+    since: str | None = None  # an active step: when it began, so a reader can show how long it has taken
+
+
+class Progress(Envelope):
+    """out.progress: a job Hansen is waiting on, as one message that changes in place. Every update of a job
+    carries the same `ref` and the whole picture, and replaces the one before: a reader keeps the one that is
+    finished, else the highest `seq` (two updates can arrive in either order)."""
+
+    source: str = "main"
+    channel: str
+    thread: str
+    ref: str  # the job: a build's id
+    seq: int = 0
+    title: str
+    state: ProgressState
+    steps: list[ProgressStep] = Field(default_factory=list)
+    text: str  # the same in plain lines, for a channel that shows only text
 
 
 # ---- what the planner was given --------------------------------------------------------------------
@@ -124,7 +162,8 @@ class PlanTrace(Envelope):
 
 
 class BuildOutcome(BaseModel):
-    """How a build ended, from build.done / build.failed or from rpc.build.get on start."""
+    """How a build ended, as Main tells it: from build.done / build.failed, or from its record (rpc.build.get) when
+    Main missed the event, or "unknown" when the builder lost it."""
 
     build_id: str
     done: bool
@@ -133,27 +172,10 @@ class BuildOutcome(BaseModel):
     error: str | None = None
 
     @classmethod
-    def from_event(cls, subject: str, data: Mapping[str, Any]) -> BuildOutcome:
-        return cls(
-            build_id=str(data.get("build_id") or ""),
-            done=subject == "build.done",
-            version=data.get("version"),
-            stage=data.get("stage"),
-            error=data.get("error"),
-        )
-
-    @classmethod
-    def from_record(cls, record: Mapping[str, Any]) -> BuildOutcome | None:
-        """A record of rpc.build.get; None while it is still queued or building."""
-        if record.get("status") not in ("done", "failed"):
-            return None
-        return cls(
-            build_id=str(record.get("id") or ""),
-            done=record.get("status") == "done",
-            version=record.get("version"),
-            stage=record.get("stage"),
-            error=record.get("error"),
-        )
+    def of(cls, ev: BuildDone | BuildFailed) -> BuildOutcome:
+        if isinstance(ev, BuildDone):
+            return cls(build_id=ev.build_id, done=True, version=ev.version)
+        return cls(build_id=ev.build_id, done=False, stage=ev.stage.value, error=ev.error)
 
 
 class FeedbackTrace(Envelope):

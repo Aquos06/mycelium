@@ -139,7 +139,7 @@ flowchart TB
     W <==> BR
 
     CH -->|"sense.chat · sense.feedback"| BUS
-    BUS -->|"out.notify · out.say · out.ask"| CH
+    BUS -->|"out.notify · out.say · out.ask · out.progress"| CH
     BR -->|"sense.iot · sense.cam · sense.screen · sense.voice · sense.mail · sense.calendar · sense.files"| BUS
     BUS -->|"out.ha · out.mail · out.calendar"| BR
     BUS -.->|"rpc.connect.*"| BR
@@ -152,7 +152,7 @@ flowchart TB
     MEM -.->|"rpc.llm.embed"| BUS
 
     BUS -.->|"rpc.build.*"| BLD
-    BLD -->|"build.started / progress / done / failed"| BUS
+    BLD -->|"build.started / stage / progress / done / failed"| BUS
     BLD -.->|"rpc.sys.verify · rpc.sys.snapshot · rpc.sys.deploy · rpc.llm.complete"| BUS
 
     BUS -.->|"rpc.sys.*"| SUP
@@ -196,6 +196,7 @@ flowchart TB
 | Channel | bus | `sense.feedback` | event | 👍/👎 or an approval answer, with the trace it belongs to |
 | Main | channel | `out.notify`, `out.say` | event | a message; policy picks the channel |
 | Main | channel | `out.ask` | event | a question with choices; answer returns as `sense.feedback` |
+| Main | channel | `out.progress` | event | a job Hansen waits on (a build he approved), one message per `ref` that changes in place: title, steps, plain text |
 | Bridge | bus | `sense.iot`, `sense.cam`, `sense.screen`, `sense.voice` | event | text summaries only |
 | Connector | bus | `sense.mail`, `sense.calendar`, `sense.files` | event | metadata and a text summary per new item; bodies and attachments stay in the connector's own db and blobs |
 | Main / module | connector | `rpc.connect.<service>.<action>` | request | on-demand reads: search mail, list events, find a file, fetch one body |
@@ -207,7 +208,7 @@ flowchart TB
 | Main | memory | `rpc.memory.recall / remember / lookup` | request | notes, summaries, fuzzy matches |
 | Main, memory, bridges, modules | gateway | `rpc.llm.complete / embed / decide / transcribe` | request | prompt → completion; keys never leave the gateway |
 | Main | builder | `rpc.build.start` | request | `{name, spec, coder?}` after Hansen approved the spec, or `{name, change, coder?}` after he approved a change to a grown module; answers `{build_id, position}` or why not |
-| Builder | bus | `build.started / progress / done / failed` | event | each round, then the commit or where it stopped and the output |
+| Builder | bus | `build.started / stage / progress / done / failed` | event | each step as it begins, each round as it ends (in a line), then the commit or where it stopped; all with the thread that asked |
 | Builder | gateway | `rpc.llm.complete` (slot `coder`) | request | our coder: one forced tool call per file, `cause` = the build id |
 | Builder | supervisor | `rpc.sys.verify` | request | the staged build's tests in the sealed container |
 | Builder | supervisor | `rpc.sys.snapshot` | request | a change build: a copy of the module's data volume before the new version deploys |
@@ -437,8 +438,9 @@ down or refuses (busy, name taken, coder not ready) is said as it is, on a fresh
 proposal, since the apps take the buttons off a card once it is answered. `build.done` and
 `build.failed` carry the channel and thread back; Main tells that thread, once. On start it asks
 `rpc.build.get` about proposals still building, for builds that ended while it was down, and tries again
-every 30 s until the builder answers (compose starts them together). The `rpc.build.start / get` contract
-is the SDK's (`mycelium_sdk.build`), shared by Main and the builder. The prompt lists the latest proposals
+every 30 s until the builder answers (compose starts them together). The builder's contract is the SDK's
+(`mycelium_sdk.build`): `rpc.build.start / get`, the build record and every `build.*` event, so Main reads each
+event with the model the builder made it with, and an event that does not read is logged and left alone. The prompt lists the latest proposals
 that are not running modules (waiting, building, declined, failed), so the planner does not offer the same
 module again while one waits or after Hansen chose Not now.
 
@@ -473,7 +475,7 @@ gets its 20 cases there before it ships, so a regression on the old ones shows.
 | | |
 |---|---|
 | Listens | `sense.*`, `brain.observe`, `sys.*`, `build.*`, `sense.feedback` from channels |
-| Publishes | `out.notify`, `out.say`, `trace.gate / plan / notify` |
+| Publishes | `out.notify`, `out.say`, `out.ask`, `out.progress` (a build it started, followed in the thread that asked), `trace.gate / plan / notify` |
 | Calls | `rpc.mod.*` (ask a module), `rpc.memory.*` (recall, remember), `rpc.sys.list`, `rpc.build.start / get / list` |
 | Owns | `<stack>_main` (§12): policy and trust levels. The snapshot is a projection it can rebuild from `events`, cached in NATS KV |
 
@@ -521,7 +523,7 @@ the code it builds: the supervisor verifies every round in its sealed container.
 | | |
 |---|---|
 | Answers | `rpc.build.start {name, spec, coder?}` → `{build_id, position}` or the reason it will not (the name exists, the queue is full, the coder cannot work, the supervisor is down); `rpc.build.get`, `rpc.build.list`, `rpc.build.coders`; `rpc.build.default {coder}` chooses the coder a build gets when it names none (the web app's Settings → Builder, `mctl coders --use`), kept in KV across restarts, `BUILDER_CODER` until then |
-| Publishes | `build.started`, `build.progress` (each round), `build.done` (version, commit, image), `build.failed` (stage, error, output) |
+| Publishes | `build.started`, `build.stage` (each step as it begins: a round's coder, checks, verify, then snapshot, promote, deploy), `build.progress` (each round as it ends, with a one-line summary: "tests failed: 1 failed, 5 passed; test_add: KeyError: 'day'"), `build.done` (version, commit, image), `build.failed` (stage, error, output). Each carries the thread that asked (`channel`, `thread`); `build.stage`, `done` and `failed` carry every finished round in a line (`history`) and a `seq`, so a reader that comes in late needs only the last one. A step is stored and announced as it begins, but never at the build's cost: the KV or the bus failing for a moment there is logged, and the build goes on (at deploy, the module is committed already) |
 | Keeps | one record per build in the `builder` KV bucket; one build runs at a time, the rest wait in line; a restart fails the running build and puts the waiting ones back |
 | Modes | **new** (a module from a spec) and **change** (a module the builder grew, edited as it is: below); **wrap** (module + pinned backend) later |
 | Coders | who writes the files, chosen per build (`--coder`; `BUILDER_CODER` is the default): **`mycelium`**, ours, through the gateway's `coder` slot (§11), so any model there, local by default; or a coding agent, **`opencode`**, **`codex`**, **`aider`** (on `AGENT_ENDPOINT` / `AGENT_MODEL`, your vLLM by default) or **`claude_code`** (`ANTHROPIC_API_KEY`), each run by the supervisor in a container of its own (§3) on a copy of the build. |
@@ -599,7 +601,7 @@ knows which one it is talking to.
 | | |
 |---|---|
 | Publishes | `sense.chat {channel, thread, text}`, `sense.feedback` (👍/👎 or an approval answer, mapped to its trace) |
-| Listens | `out.notify`, `out.say`, `out.ask` (a question with choices) |
+| Listens | `out.notify`, `out.say`, `out.ask` (a question with choices), `out.progress` (one message per job, changed in place: Telegram edits it, sends it anew only when the message is gone, and tries an update it did not take again a little later; the web app keeps one card, and one that has been quiet for 5 minutes asks `rpc.build.get` how the build stands, for an end it missed while shut; a finished one is never replaced by an older update) |
 | Rule | Channels carry messages, they never decide. All judgment is in Main. |
 | Rule | A reply goes back on the channel the message came from. For unprompted notifications, Main's policy picks the channel (urgent → phone, otherwise the one Hansen used last). |
 | Extend: **approvals** | One mechanism for every yes/no the system needs: approve a spec, a real-world action, third-party software. Main publishes `out.ask`; each channel renders it its own way (buttons in Telegram, a card in the web app, a spoken yes/no by voice); the answer comes back as `sense.feedback` and is recorded in `traces` with the thing it approved. A timeout applies the policy default. |
@@ -692,7 +694,13 @@ those frames live, and the app shows the reply being written under your message 
 whole. A planner round that ends in tool calls starts the text over. A reasoning model's thinking rides
 in the same frames (`thinking` next to `text`, read from the vendor's `reasoning_content` / `reasoning`):
 it is most of the wait before the first word, so the app shows it in place of "Planning…" and folds it
-away once the reply is being written. **Replies are markdown** (`components/ui/Markdown`: react-markdown,
+away once the reply is being written. **A build Hansen approved is followed in his thread**: Main turns each
+`build.stage` into one `out.progress` card (the rounds so far, each with why it failed or that it passed, the step
+it is on with how long it has taken, the steps to come), changed in place until `build.done` / `build.failed`;
+it says how it ended in the thread, then closes the card, whatever became of the proposal, so no card spins for
+good. Telegram edits one message the same way, and Home reads the `build.*` events as plain sentences. How a
+build went step by step (`build.stage`, `build.progress`, `out.progress`) is not memory's material for the day:
+its end is. **Replies are markdown** (`components/ui/Markdown`: react-markdown,
 GitHub tables and task lists, line breaks kept, code blocks with a copy button, in the design tokens), and so
 are the reply being written (remend closes its open `**` and `` ` `` as they come, a caret after the last
 word) and an `out.ask` card. What a model writes is not trusted: raw HTML stays text, links keep a safe scheme

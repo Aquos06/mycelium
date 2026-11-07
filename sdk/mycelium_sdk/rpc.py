@@ -2,21 +2,40 @@
 
     reply = await ask(bus, "rpc.sys.verify", VerifyCall(name=name), VerifyReply, timeout=900)
 
-Every rpc.* handler answers {"ok": true, ...} or {"ok": false, "error"}. NoAnswer when nobody answers in time,
-Refused when the answer is {"ok": false} or does not read as the reply model; each caller turns them into its
-own error.
+Every rpc.* handler answers {"ok": true, ...} or {"ok": false, "error"}: a responder sends Answer.of(result) or
+Refusal(error=...). NoAnswer when nobody answers in time, Refused when the answer is {"ok": false} or does not
+read as the reply model; each caller turns them into its own error.
 """
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import Literal, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .bus import Bus
 from .validation import validation_message
 
 R = TypeVar("R", bound=BaseModel)
+
+
+class Answer(BaseModel):
+    """{"ok": true, ...}: a responder's result as it goes back, its own fields next to `ok`."""
+
+    model_config = ConfigDict(extra="allow")
+
+    ok: Literal[True] = True
+
+    @classmethod
+    def of(cls, result: BaseModel) -> Answer:
+        return cls.model_validate(result.model_dump(mode="json"))
+
+
+class Refusal(BaseModel):
+    """{"ok": false, "error"}: a responder that will not, and why."""
+
+    ok: Literal[False] = False
+    error: str
 
 
 class NoAnswer(Exception):

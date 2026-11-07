@@ -74,6 +74,8 @@ export function isNoise(e: BusEvent): boolean {
       return d.ok !== false && !num(d.facts);
     case "trace.llm":
       return typeof d.op === "string" && d.op !== "complete"; // the embed and decide sweeps have their own rows
+    case "out.progress":
+      return true; // the chat's card for a build: the build.* rows say the same
     default:
       return false;
   }
@@ -148,7 +150,7 @@ export function read(e: BusEvent, raw = false): Reading {
     case sub.startsWith("sys."):
       return { text: str(d.text ?? d.summary ?? payload(d)), meta: sub };
     case sub.startsWith("build."):
-      return { text: str(d.text ?? d.summary ?? d.name ?? payload(d)), meta: `${sub} · ${source}` };
+      return readBuild(sub, d, source);
     case sub.startsWith("mod."): {
       const what = parts.slice(2).join(" ");
       const f = figures(d);
@@ -156,5 +158,42 @@ export function read(e: BusEvent, raw = false): Reading {
     }
     default:
       return { text: payload(d), meta: sub };
+  }
+}
+
+const STAGE_WORDS: Record<string, string> = {
+  coder: "the coder is writing",
+  checks: "checking the files",
+  verify: "building it and running its tests",
+  snapshot: "copying its data",
+  promote: "saving the new version",
+  deploy: "starting it",
+};
+
+/** A build event in words: which module, where it is, how a round ended, how the build ended. */
+function readBuild(sub: string, d: Json, source: string): Reading {
+  const name = str(d.name, 40);
+  const change = d.mode === "change";
+  const of = d.max_rounds ? ` of ${num(d.max_rounds)}` : "";
+  const meta = [sub, str(d.coder, 20) || source].filter(Boolean).join(" · ");
+  switch (sub) {
+    case "build.started":
+      return { text: `Started ${change ? "changing" : "building"} ${name}`, meta };
+    case "build.stage": {
+      const inRound = ["coder", "checks", "verify"].includes(String(d.stage));
+      const where = inRound ? `round ${num(d.round)}${of}, ` : "";
+      return { text: `${name}: ${where}${STAGE_WORDS[String(d.stage)] ?? str(d.stage)}`, meta };
+    }
+    case "build.progress":
+      return {
+        text: `${name}: round ${num(d.round)}${of} ${d.passed ? "passed" : "failed"}${d.summary ? ` (${str(d.summary, 140)})` : ""}`,
+        meta,
+      };
+    case "build.done":
+      return { text: `${change ? "Changed" : "Built"} ${name}${d.version ? ` v${str(d.version, 20)}` : ""}`, meta };
+    case "build.failed":
+      return { text: `${change ? "Changing" : "Building"} ${name} failed at ${str(d.stage)}: ${str(d.error, 140)}`, meta };
+    default:
+      return { text: str(d.text ?? d.summary ?? d.name ?? payload(d)), meta };
   }
 }

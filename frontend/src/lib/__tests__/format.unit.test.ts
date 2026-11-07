@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ago, compact, dayPart, greeting, groupOf, hhmm, initials, plural, sparkline, usd } from "@/lib/format";
+import { ago, compact, dayPart, greeting, groupOf, hhmm, initials, plural, sparkline, took, usd } from "@/lib/format";
 
 const T = new Date("2026-10-26T14:30:00");
 
@@ -7,6 +7,14 @@ describe("format", () => {
   it("hhmm reads the local clock and tolerates garbage", () => {
     expect(hhmm(T.toISOString())).toBe("14:30");
     expect(hhmm("nope")).toBe("");
+  });
+
+  it("took says seconds, minutes, then hours and minutes", () => {
+    expect([took(42), took(190), took(3900), took(-3)]).toEqual(["42 s", "3 min", "1 h 5 min", "0 s"]);
+  });
+
+  it("took rounds half up, once, and carries into hours: as Main's duration() says it", () => {
+    expect([took(59.6), took(150), took(3570), took(7170)]).toEqual(["1 min", "3 min", "1 h", "2 h"]);
   });
 
   it("ago says now, minutes, hours, then the clock", () => {

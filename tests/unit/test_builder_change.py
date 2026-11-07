@@ -9,7 +9,7 @@ import pytest
 from builder.coders import MyceliumCoder
 from builder.pipeline import change_spec, next_version
 from builder.prompts.agent import agent_prompt
-from builder.schemas import CoderContext, CoderResult, Feedback
+from builder.schemas import BuildRef, BuildRequest, CoderContext, CoderResult, Feedback
 from builder.service import BuilderService
 from builder.workspace import Workspace
 from mycelium_sdk import InMemoryBus, InMemoryKV
@@ -71,7 +71,7 @@ async def grown_notes(tmp_path, changer):
     coders = {"fake": FakeCoder([GOOD]), "changer": changer}
     svc = BuilderService(bus, InMemoryKV(), make_pipeline(bus, grown), Workspace(grown, TEMPLATE), coders, "fake")
     await svc.start()
-    first = await finished(svc, await svc.start_build({"name": "notes", "spec": SPEC}))
+    first = await finished(svc, await svc.start_build(BuildRequest(name="notes", spec=SPEC)))
     assert first.status == "done", first.error
     return svc, bus, sup, grown
 
@@ -80,7 +80,7 @@ async def finished(svc, reply, timeout=60.0):
     loop = asyncio.get_running_loop()
     end = loop.time() + timeout
     while True:
-        record = await svc.get({"build_id": reply.build_id})
+        record = await svc.get(BuildRef(build_id=reply.build_id))
         if record.status in ("done", "failed"):
             return record
         if loop.time() > end:
@@ -93,7 +93,7 @@ def files(d) -> dict[str, str]:
 
 
 async def change(svc, text=CHANGE, coder="changer"):
-    return await finished(svc, await svc.start_build({"name": "notes", "change": text, "coder": coder}))
+    return await finished(svc, await svc.start_build(BuildRequest(name="notes", change=text, coder=coder)))
 
 
 # ---- a change that works -----------------------------------------------------------------------------
