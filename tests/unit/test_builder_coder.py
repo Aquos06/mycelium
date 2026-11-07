@@ -1,6 +1,7 @@
 """Ours, the default coder, against a scripted gateway: the stages, the forced tools, what goes back to the
 model when a call is wrong, retries and caps, and prompts rebuilt from disk."""
 
+import asyncio
 import copy
 from collections.abc import Callable
 
@@ -47,6 +48,7 @@ class ScriptedGateway:
         self.bus = bus
         self.script = list(script)
         self.requests: list[dict] = []
+        self.config_asked = 0
         self.config = config or {
             "slots": {"coder": {"active": "vllm", "providers": {"vllm": {"key_state": "none"}}}},
         }
@@ -63,6 +65,7 @@ class ScriptedGateway:
         await msg.respond(step(msg.data) if callable(step) else step)
 
     async def _config(self, msg) -> None:
+        self.config_asked += 1
         await msg.respond({"ok": True, **self.config})
 
 
@@ -289,3 +292,16 @@ async def test_a_long_reply_without_a_tool_call_goes_back_trimmed(staged):
     await coder.write(ctx(staged))
     echoed = gw.requests[1]["messages"][1]["content"]
     assert len(echoed) < 500 and echoed.endswith("[...]")
+
+
+async def test_ours_says_which_model_it_writes_with_and_asks_the_gateway_once():
+    bus = InMemoryBus()
+    slot = {"active": "vllm", "providers": {"vllm": {"key_state": "not-needed", "model": "/model"}}}
+    gw = ScriptedGateway(bus, [], config={"slots": {"coder": slot}})
+    await gw.start()
+    coder = MyceliumCoder(bus)
+    reason, description = await asyncio.gather(coder.ready(), coder.describe())
+    assert reason is None and description.endswith("through the gateway's coder slot, now vllm (/model)")
+    assert gw.config_asked == 1
+    nobody = MyceliumCoder(InMemoryBus())  # no gateway: it still says what it is
+    assert await nobody.describe() == "Ours: writes the module file by file through the gateway's coder slot"

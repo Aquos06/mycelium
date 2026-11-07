@@ -48,6 +48,7 @@ from mycelium_sdk import (
 
 from ..checks import relative_names
 from ..prompts.mycelium import change_prompt, code_prompt, fix_prompt, manifest_prompt, retry_text, tests_prompt
+from ..recent import Recent
 from ..schemas import CoderContext, CoderResult, ConfigReply, ManifestDraft, Spend, Stage, WriteFiles
 from ..workspace import coder_may_write, read_files, write_file
 from .base import CoderError, CoderUnavailable
@@ -94,14 +95,20 @@ class MyceliumCoder:
         self.attempts = attempts
         self.backoff = backoff
         self._spend = Spend(build_id="")
+        self._config = Recent(self._ask_config, ttl=5.0)  # ready() and describe() ask it together
+
+    async def _ask_config(self) -> ConfigReply:
+        return await ask(self.bus, "rpc.llm.config", None, ConfigReply, timeout=5)
 
     async def ready(self) -> str | None:
         try:
-            config = await ask(self.bus, "rpc.llm.config", None, ConfigReply, timeout=5)
+            config = await self._config.get()
         except NoAnswer:
             return "the gateway is not answering"
         except Refused as e:
             return f"the gateway could not say how it is set up: {e}"
+        if config is None:  # _ask_config answers or raises; never kept as None
+            return "the gateway is not answering"
         slot = config.slots.get(self.slot)
         if slot is None:
             return f"the gateway has no {self.slot!r} slot (services/gateway/providers.yaml)"
@@ -111,7 +118,14 @@ class MyceliumCoder:
         return None
 
     async def describe(self) -> str:
-        return f"Ours: writes the module file by file through the gateway's {self.slot} slot, on whichever model it has"
+        what = f"Ours: writes the module file by file through the gateway's {self.slot} slot"
+        try:
+            config = await self._config.get()
+        except (NoAnswer, Refused):
+            return what
+        slot = config.slots.get(self.slot) if config else None
+        provider = slot.providers.get(slot.active) if slot else None
+        return f"{what}, now {slot.active} ({provider.model})" if slot and provider and provider.model else what
 
     async def write(self, ctx: CoderContext) -> CoderResult:
         if self._spend.build_id != ctx.build_id:

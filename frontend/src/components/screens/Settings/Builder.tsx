@@ -22,7 +22,7 @@ export function Builder() {
         lead="Who writes a module when a build names none. Ours writes it file by file through the gateway's coder slot; a coding agent works in a container of its own. Every coder's module is judged the same way: the checks, then its tests in the sealed box."
       />
       {error && <ErrorLine>{error}</ErrorLine>}
-      {choose.error && <ErrorLine>{choose.error.message}</ErrorLine>}
+      {choose.error && <ErrorLine>{builderError(choose.error)}</ErrorLine>}
       {list && (
         <section className="flex flex-col gap-2.5" aria-label="Coders">
           <Card className="overflow-hidden">

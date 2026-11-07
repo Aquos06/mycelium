@@ -488,6 +488,11 @@ const MOCK_CODERS = [
 ];
 let mockDefaultCoder = "mycelium";
 
+/** The default back to BUILDER_CODER: tests that choose one start from the same place. */
+export function resetMockCoders(): void {
+  mockDefaultCoder = "mycelium";
+}
+
 export function mockCoders(): CoderList {
   return { ok: true, default: mockDefaultCoder, seed: "mycelium", coders: MOCK_CODERS };
 }
@@ -519,7 +524,9 @@ export function mockRpc(subject: string, payload: Json): Reply {
     case subject === "rpc.build.default": {
       const coder = String(payload.coder ?? "");
       if (!MOCK_CODERS.some((c) => c.name === coder)) return { ok: false, error: `no coder '${coder}'; one of ${MOCK_CODERS.map((c) => c.name).join(", ")}` };
+      const previous = mockDefaultCoder;
       mockDefaultCoder = coder;
+      if (coder !== previous) setTimeout(() => mockBus.publish("build.coder", { ...env("builder"), coder, previous, seed: "mycelium" }), 300);
       return mockCoders();
     }
     case subject === "rpc.memory.lookup":

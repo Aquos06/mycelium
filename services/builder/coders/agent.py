@@ -13,11 +13,10 @@ The agents share one AgentRoster, so asking which of them can run is one rpc.sys
 
 from __future__ import annotations
 
-import time
-
 from mycelium_sdk import Bus, NoAnswer, Refused, ask
 
 from ..prompts.agent import agent_prompt
+from ..recent import Recent
 from ..schemas import AgentCall, AgentInfo, AgentReply, AgentsReply, CoderContext, CoderResult
 from ..workspace import CONTRACT, coder_may_write, read_files, write_file
 from .base import CoderError, CoderUnavailable
@@ -26,24 +25,23 @@ LOG_MAX = 2000
 
 
 class AgentRoster:
-    """rpc.sys.agents, asked once for every agent coder and kept a few seconds."""
+    """rpc.sys.agents, asked once for every agent coder (and for both of what each is asked: ready, describe)
+    and kept a few seconds."""
 
     def __init__(self, bus: Bus, ttl: float = 10.0) -> None:
         self.bus = bus
-        self.ttl = ttl
-        self._at = 0.0
-        self._agents: dict[str, AgentInfo] | None = None
+        self._agents = Recent(self._ask, ttl)
 
     async def get(self) -> dict[str, AgentInfo] | None:
         """{name: info}, or None when the supervisor does not answer."""
-        if self._agents is None or time.monotonic() - self._at > self.ttl:
-            try:
-                reply = await ask(self.bus, "rpc.sys.agents", None, AgentsReply, timeout=5)
-            except (NoAnswer, Refused):
-                return None
-            self._agents = {a.name: a for a in reply.agents}
-            self._at = time.monotonic()
-        return self._agents
+        return await self._agents.get()
+
+    async def _ask(self) -> dict[str, AgentInfo] | None:
+        try:
+            reply = await ask(self.bus, "rpc.sys.agents", None, AgentsReply, timeout=5)
+        except (NoAnswer, Refused):
+            return None
+        return {a.name: a for a in reply.agents}
 
 
 class AgentCoder:

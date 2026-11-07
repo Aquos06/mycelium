@@ -193,6 +193,8 @@ function readBuild(sub: string, d: Json, source: string): Reading {
       return { text: `${change ? "Changed" : "Built"} ${name}${d.version ? ` v${str(d.version, 20)}` : ""}`, meta };
     case "build.failed":
       return { text: `${change ? "Changing" : "Building"} ${name} failed at ${str(d.stage)}: ${str(d.error, 140)}`, meta };
+    case "build.coder": // not about one build: the default coder changed
+      return { text: `Builds now use ${str(d.coder, 20)}${d.previous ? ` instead of ${str(d.previous, 20)}` : ""}`, meta: sub };
     default:
       return { text: str(d.text ?? d.summary ?? d.name ?? payload(d)), meta };
   }
