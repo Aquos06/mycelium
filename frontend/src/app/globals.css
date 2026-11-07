@@ -69,6 +69,14 @@
   --color-voice-chip: #1c2340;
   --color-voice-chip-text: #8fa6f0;
 
+  /* chart series: a series' identity in a chart with two to four of them, in this order, never a place on the bus.
+     Validated as a set on the card surface (dataviz validate_palette: CVD and normal-vision separation pass; aqua
+     and yellow are under 3:1, so every chart has its table view). A chart of one series is moss. */
+  --color-series-1: #2a78d6;
+  --color-series-2: #eb6834;
+  --color-series-3: #1baf7a;
+  --color-series-4: #eda100;
+
   /* radius ladder: row · button · card · composer */
   --radius-row: 6px;
   --radius-btn: 8px;

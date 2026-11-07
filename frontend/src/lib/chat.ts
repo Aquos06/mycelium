@@ -9,6 +9,7 @@ import {
   progressSchema,
   saySchema,
   senseChatSchema,
+  type Block,
   type BusEvent,
   type Json,
   type BuildRecord,
@@ -21,7 +22,7 @@ import { readStored, writeStored } from "@/lib/storage";
 
 export type ChatItem =
   | { kind: "user"; id: string; ts: string; text: string; pending?: boolean }
-  | { kind: "assistant"; id: string; ts: string; text: string; cause: string | null }
+  | { kind: "assistant"; id: string; ts: string; text: string; cause: string | null; blocks?: Block[] }
   | {
       kind: "ask";
       id: string;
@@ -31,6 +32,7 @@ export type ChatItem =
       ref: string;
       cause: string | null;
       answered: string | null;
+      blocks?: Block[]; // what the question is about: a module's data (none in a thread stored before blocks)
     }
   | { kind: "trace"; id: string; ts: string; cause: string | null; trace: PlanTrace }
   | {
@@ -140,7 +142,7 @@ export function fromEvents(events: BusEvent[], thread: string): ChatItem[] {
         break;
       case "out.say": {
         const m = saySchema.safeParse(d);
-        if (m.success) items.push({ kind: "assistant", id: m.data.id, ts: m.data.ts ?? e.received, text: m.data.text, cause: m.data.cause });
+        if (m.success) items.push({ kind: "assistant", id: m.data.id, ts: m.data.ts ?? e.received, text: m.data.text, cause: m.data.cause, blocks: m.data.blocks });
         break;
       }
       case "out.ask": {
@@ -155,6 +157,7 @@ export function fromEvents(events: BusEvent[], thread: string): ChatItem[] {
             ref: m.data.ref ?? m.data.id,
             cause: m.data.cause,
             answered: null,
+            blocks: m.data.blocks,
           });
         break;
       }

@@ -43,7 +43,10 @@ async def ask_module(args: AskModuleArgs, ctx: ToolContext) -> dict[str, Any]:
         if args.action not in ctx.modules[args.module]:
             actions = ", ".join(ctx.modules[args.module]) or "none"
             return {"ok": False, "error": f"{args.module} has no request {args.action!r}; its requests: {actions}"}
-    return await ctx.bus.request(f"rpc.mod.{args.module}.{args.action}", args.args, timeout=10.0)
+    reply = await ctx.bus.request(f"rpc.mod.{args.module}.{args.action}", args.args, timeout=10.0)
+    if reply.get("ok") is not False:
+        ctx.turn.replies[f"{args.module}.{args.action}"] = reply  # what `show` may put on screen
+    return reply
 
 
 ASK_MODULE = Tool(

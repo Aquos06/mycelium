@@ -65,4 +65,37 @@ test.describe("chat", () => {
     await page.goto("/chat");
     await expect(page).toHaveURL(/\/chat\/web$/);
   });
+
+  test("a question about spending is answered with the module's data: stats, a chart and a table", async ({ page, isMobile }) => {
+    await page.goto("/chat/spend-e2e");
+    await page.getByRole("textbox", { name: "Message" }).fill("how much did I spend this week?");
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Food was most of it this week")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator("[data-kind=block-stats]")).toContainText("NT$3,420");
+    const bars = page.getByRole("list", { name: "By category" });
+    await expect(bars.getByRole("listitem").first()).toHaveText("foodNT$1,820");
+    // the chart as a table (on a phone, a card per row), then the entries sorted by amount
+    const chart = page.locator("[data-kind=block-chart]");
+    await chart.getByRole("button", { name: "Table" }).click();
+    const entries = page.locator("[data-kind=block-table]");
+    if (isMobile) {
+      await expect(chart.getByRole("listitem").first()).toHaveText("foodNT$1,820");
+      await expect(entries.getByRole("listitem").first()).toContainText("dinnerNT$350");
+    } else {
+      await expect(chart.getByRole("table", { name: "By category" })).toContainText("NT$1,820");
+      await entries.getByRole("button", { name: "Amount" }).click();
+      await expect(entries.getByRole("row").nth(1)).toContainText("taxi");
+    }
+  });
+
+  test("a question about water gets a meter and a chart you can read with the keyboard", async ({ page }) => {
+    await page.goto("/chat/water-e2e");
+    await page.getByRole("textbox", { name: "Message" }).fill("water today?");
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("meter", { name: "Water today" })).toHaveAttribute("aria-valuetext", "1,500 ml of 2,000 ml, 75%", { timeout: 10_000 });
+    const chart = page.getByRole("img", { name: /Water, last 7 days: area chart by Day/ });
+    await chart.focus();
+    await page.keyboard.press("Home");
+    await expect(page.locator("[data-kind=chart-tip]")).toContainText("1,800 ml");
+  });
 });

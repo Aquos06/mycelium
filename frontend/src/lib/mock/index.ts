@@ -230,6 +230,61 @@ function mockBuild(thread: string, cause: string) {
   }, STREAM_STEP_MS * 2 * (frames.length + 1));
 }
 
+// ---- what Main shows under a reply (services/main/blocks.py), for a question about spending or water ----------
+
+const money = (n: number) => ({ v: n, s: `NT$${n.toLocaleString("en-US")}` });
+const day = (iso: string) => ({ v: iso, s: new Date(`${iso}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }) });
+const txt = (s: string) => ({ v: s, s });
+const col = (key: string, label: string, format: string, prefix = "") => ({ key, label, format, prefix, suffix: "" });
+
+export const MOCK_SPENDING_BLOCKS: Json[] = [
+  { kind: "stats", title: "This week", stats: [{ label: "Total", value: money(3420) }, { label: "Entries", value: { v: 6, s: "6" } }, { label: "Biggest day", value: txt("Oct 31") }], text: "" },
+  {
+    kind: "chart",
+    chart: "bar",
+    title: "By category",
+    x: col("category", "Category", "text"),
+    series: [col("total", "Total", "money", "NT$")],
+    points: [
+      ["food", 1820],
+      ["coffee", 740],
+      ["transport", 520],
+      ["other", 340],
+    ].map(([c, n]) => ({ x: txt(String(c)), y: [money(Number(n))] })),
+    total: 4,
+    text: "",
+  },
+  {
+    kind: "table",
+    title: "Entries",
+    columns: [col("day", "Day", "date"), col("description", "What", "text"), col("category", "Category", "text"), col("amount", "Amount", "money", "NT$")],
+    rows: [
+      ["2026-11-02", "dinner", "food", 350],
+      ["2026-11-02", "groceries", "food", 470],
+      ["2026-11-01", "latte", "coffee", 85],
+      ["2026-10-31", "taxi", "transport", 520],
+      ["2026-10-31", "hotpot", "food", 460],
+      ["2026-10-30", "haircut", "other", 240],
+    ].map(([d, w, c, a]) => [day(String(d)), txt(String(w)), txt(String(c)), money(Number(a))]),
+    total: 6,
+    text: "",
+  },
+];
+
+export const MOCK_WATER_BLOCKS: Json[] = [
+  { kind: "meter", title: "", label: "Water today", value: { v: 1500, s: "1,500 ml" }, max: { v: 2000, s: "2,000 ml" }, text: "" },
+  {
+    kind: "chart",
+    chart: "area",
+    title: "Water, last 7 days",
+    x: col("day", "Day", "date"),
+    series: [{ key: "ml", label: "Water", format: "number", prefix: "", suffix: " ml" }],
+    points: [1800, 2100, 1200, 2000, 900, 1700, 1500].map((ml, i) => ({ x: day(`2026-11-0${i + 1}`), y: [{ v: ml, s: `${ml.toLocaleString("en-US")} ml` }] })),
+    total: 7,
+    text: "",
+  },
+];
+
 /** A turn: what you said lands now, the reply is written in pieces, then the plan and the reply land whole. */
 export function mockSendChat(text: string, thread: string): Sent {
   const said = env("web");
@@ -240,9 +295,14 @@ export function mockSendChat(text: string, thread: string): Sent {
     return { ok: true, id: cause, thread };
   }
   const asksForModules = /running|alive|module/i.test(text);
-  const answer = asksForModules
-    ? "Right now:\n- **hello** is running and counting messages\n- **budget** is still building\n- **garden** is paused"
-    : `Noted: “${text.slice(0, 80)}”. I remember it for you.`;
+  const shows = /\bspen[dt]|expense|money/i.test(text) ? "spending" : /\bwater\b/i.test(text) ? "water" : null;
+  const answer = shows === "spending"
+    ? "Food was most of it this week, mostly two dinners and groceries."
+    : shows === "water"
+      ? "500 ml to go today; Nov 5 was your low day."
+      : asksForModules
+        ? "Right now:\n- **hello** is running and counting messages\n- **budget** is still building\n- **garden** is paused"
+        : `Noted: “${text.slice(0, 80)}”. I remember it for you.`;
   const request = id();
   const words = answer.split(" ");
   const pieces = [0, 1, 2, 3].map((i) => words.slice(Math.ceil((words.length * i) / 4), Math.ceil((words.length * (i + 1)) / 4)).join(" "));
@@ -265,15 +325,16 @@ export function mockSendChat(text: string, thread: string): Sent {
       channel: "web",
       thread,
       input: text,
-      modules: asksForModules ? ["hello"] : [],
-      tools: asksForModules ? [{ name: "sys.list", ok: true }] : [],
+      modules: shows ? [shows] : asksForModules ? ["hello"] : [],
+      tools: shows ? [{ name: "ask_module", ok: true }, { name: "show", ok: true }] : asksForModules ? [{ name: "sys.list", ok: true }] : [],
       cost_usd: 0.0018,
       rounds: 1,
       reply_id: reply.id,
       error: null,
       latency_ms: STREAM_STEP_MS * 5,
     });
-    mockBus.publish("out.say", { ...reply, channel: "web", thread, text: answer });
+    const blocks = shows === "spending" ? MOCK_SPENDING_BLOCKS : shows === "water" ? MOCK_WATER_BLOCKS : [];
+    mockBus.publish("out.say", { ...reply, channel: "web", thread, text: answer, blocks });
   }, STREAM_STEP_MS * 5);
   return { ok: true, id: cause, thread };
 }

@@ -402,7 +402,7 @@ undeclared events today.
 The judgment. Everything that decides, nothing that stores.
 
 **v0** (`services/main/`): `sense.chat` → recall pack from memory + the thread from NATS KV → planner
-through the gateway with six tools (`remember`, `recall`, `ask_module`, `ask`, `propose_module`,
+through the gateway with seven tools (`remember`, `recall`, `ask_module`, `show`, `ask`, `propose_module`,
 `change_module`) →
 `out.say`, or `out.ask` when the planner needs Hansen's choice → one `trace.plan` with the pack, the
 tool calls, usage and cost, linked by `cause`. `sense.feedback` answers continue the thread; votes are
@@ -419,6 +419,17 @@ date in Main's time zone, so a "today" in an old message, or a date an old reply
 A reply that still says something was saved, logged or noted when no `remember` went through in the turn,
 and names no module that hears the chat (one may have logged it itself), is not sent: Main asks the planner
 once more, and it either calls `remember` or says it plainly. The trace marks such a turn (`claim_check`).
+
+**Showing a module's data.** When a module's answer is something to see rather than read (its entries, totals
+by category or by day, a few figures, one record, a number against a goal), the planner calls `show` after
+`ask_module`: a **table** (sortable; a card per row in a narrow chat), a **chart** (bars ranked largest first,
+or a line or area over time, up to four series, each with its table view), **stats**, **details** or a
+**meter**, sent with the reply as `blocks` on `out.say` / `out.ask` (`services/main/blocks.py`). `show` names
+the request it called this turn and where in the reply the data is; Main builds the block from the module's own
+reply, so no number on screen was written by the model, and tells the planner what it showed so the reply says
+what it means instead of repeating it. Main formats every value once (money in `MAIN_CURRENCY`, dates in its
+zone) and sends each as data and as it reads; the web app places them, Telegram gets each block's monospace
+text as its own message after the reply, and `mctl chat` prints it.
 
 **Growing a module.** When Hansen wants something ongoing that no module does ("track my expenses"),
 or logs something no module tracks ("spent 85 on breakfast": remembered first, since a proposal ends the
@@ -601,7 +612,7 @@ knows which one it is talking to.
 | | |
 |---|---|
 | Publishes | `sense.chat {channel, thread, text}`, `sense.feedback` (👍/👎 or an approval answer, mapped to its trace) |
-| Listens | `out.notify`, `out.say`, `out.ask` (a question with choices), `out.progress` (one message per job, changed in place: Telegram edits it, sends it anew only when the message is gone, and tries an update it did not take again a little later; the web app keeps one card, and one that has been quiet for 5 minutes asks `rpc.build.get` how the build stands, for an end it missed while shut; a finished one is never replaced by an older update) |
+| Listens | `out.notify`, `out.say` (its `blocks` after it, each in monospace), `out.ask` (a question with choices, its blocks above it), `out.progress` (one message per job, changed in place: Telegram edits it, sends it anew only when the message is gone, and tries an update it did not take again a little later; the web app keeps one card, and one that has been quiet for 5 minutes asks `rpc.build.get` how the build stands, for an end it missed while shut; a finished one is never replaced by an older update) |
 | Rule | Channels carry messages, they never decide. All judgment is in Main. |
 | Rule | A reply goes back on the channel the message came from. For unprompted notifications, Main's policy picks the channel (urgent → phone, otherwise the one Hansen used last). |
 | Extend: **approvals** | One mechanism for every yes/no the system needs: approve a spec, a real-world action, third-party software. Main publishes `out.ask`; each channel renders it its own way (buttons in Telegram, a card in the web app, a spoken yes/no by voice); the answer comes back as `sense.feedback` and is recorded in `traces` with the thing it approved. A timeout applies the policy default. |
@@ -705,7 +716,11 @@ GitHub tables and task lists, line breaks kept, code blocks with a copy button, 
 are the reply being written (remend closes its open `**` and `` ` `` as they come, a caret after the last
 word) and an `out.ask` card. What a model writes is not trusted: raw HTML stays text, links keep a safe scheme
 and open without a referrer, and an image is a link to it, never fetched, so a page or a module that put a URL
-in front of the model cannot make the browser call it with what the model read. The app has Home (the live bus, what needs you, what is alive),
+in front of the model cannot make the browser call it with what the model read. **What Main shows from a
+module** sits under its reply (`components/ui/blocks`): tables, charts, stats, details and meters in the design
+tokens, a chart's series in a fixed palette of four that stays apart under colour blindness (moss when there is
+one), every chart with a table view and a keyboard-readable crosshair; a block of a kind the app does not know
+is left out, never the reply. The app has Home (the live bus, what needs you, what is alive),
 Chat (a thread with Main, its plan under each reply, `out.ask` as a card), Modules and a module page
 (manifest wiring, ask it directly, logs, pause and rebuild), Settings (slots and providers from
 `rpc.llm.config`, key states, the builder's coders and the default one, chosen there, and the environment,

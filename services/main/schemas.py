@@ -1,6 +1,6 @@
 """Main's messages and records: what it sends, what it publishes, what it holds while planning.
 
-Say, Ask                 -> out.say, out.ask        (envelopes; `ref` on Ask is its own id)
+Say, Ask                 -> out.say, out.ask        (envelopes; `ref` on Ask is its own id; `blocks`: blocks.py)
 Progress                 -> out.progress            (one message per job that changes in place: a build Main started)
 PlanTrace                -> trace.plan              (one per handled message; votes attach by reply_id)
 FeedbackTrace            -> trace.feedback
@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from mycelium_sdk import Envelope, RequestSpec, Usage
 from mycelium_sdk.build import BuildDone, BuildFailed
 
+from .blocks import Block
 from .tools import AskArgs, ToolOutcome
 
 # ---- what Main sends ---------------------------------------------------------------------------------
@@ -31,6 +32,7 @@ class Say(Envelope):
     channel: str
     thread: str
     text: str
+    blocks: list[Block] = Field(default_factory=list)  # a module's data under the text (blocks.py), in order
 
 
 class Ask(Envelope):
@@ -40,6 +42,7 @@ class Ask(Envelope):
     text: str
     choices: list[str] = Field(min_length=2)
     ref: str  # what sense.feedback answers refer to: this message's own id
+    blocks: list[Block] = Field(default_factory=list)
 
 
 class StepState(StrEnum):

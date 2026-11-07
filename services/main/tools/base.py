@@ -15,11 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field, SkipValidation, ValidationErr
 
 from mycelium_sdk import Bus, ToolResult, ToolSpec, input_schema, llm, validation_message
 
+from ..blocks import TurnData
+
 __all__ = ["Tool", "ToolContext", "ToolOutcome", "ToolRegistry", "ToolSpec", "input_schema", "validation_message"]
 
 
 class ToolContext(BaseModel):
-    """What a handler may use: the bus and Main's settings. Built once per service."""
+    """What a handler may use: the bus and Main's settings, built once per service, and what this turn has gathered
+    (copied for each turn with its own `modules` and `turn`)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -28,6 +31,7 @@ class ToolContext(BaseModel):
     source: str = "hansen"  # who the facts come from when the planner writes memory
     # the running modules and their requests, for this turn; None when the supervisor did not say
     modules: dict[str, list[str]] | None = None
+    turn: TurnData = Field(default_factory=TurnData)  # this turn's module replies and blocks (`show`); Main renews it
 
 
 Handler = Callable[[Any, ToolContext], Awaitable[dict[str, Any]]]
