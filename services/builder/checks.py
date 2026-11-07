@@ -1,6 +1,8 @@
 """What the builder checks before anything runs: the manifest it pins, the files' sizes, the code's imports.
 
-The manifest's name, version, permissions and resources are the builder's, set from what Hansen approved, so a
+Every view the manifest declares must be one a page can show: a request it has, that only reads, with the arguments
+it takes and a path its reply has (mycelium_sdk.views). The manifest's name, version, permissions and resources are
+the builder's, set from what Hansen approved, so a
 coder cannot grant its module the internet or real-world actions. `emits` and `requests` are relative names
 (the SDK prefixes them), so `mod.`, `rpc.` or the module's own name in front is a mistake caught here.
 
@@ -18,6 +20,7 @@ from typing import Any
 import yaml
 
 from mycelium_sdk import Manifest, ManifestError, validate_manifest
+from mycelium_sdk.views import problems as view_problems
 
 FILE_MAX = 40_000  # bytes per file: one module, one job
 TOTAL_MAX = 100_000  # bytes for all of a coder's files: they go back into the next round's prompt
@@ -64,6 +67,7 @@ def pin_manifest(module_dir: Path, name: str, version: str) -> tuple[Manifest | 
             f"not described: {', '.join(missing)}. E.g. requests: {{add: {{description: Store one expense., "
             f"params: {{amount: number, day: optional date}}, returns: {{id: number}}}}}}"
         )
+    problems += [f"manifest.yaml: {p}" for p in view_problems(manifest)]  # a page or Main would refuse it later
     return (None if problems else manifest), problems
 
 

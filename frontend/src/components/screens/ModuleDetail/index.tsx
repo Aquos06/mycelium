@@ -1,6 +1,7 @@
 "use client";
 
-// One module: what it is, how it is wired, ask it directly, what it did lately, its properties.
+// One module: what it is, what it has (its views of its data), how it is wired, ask it directly, what it did
+// lately, its properties.
 // A core service gets the same page from its description in lib/core.ts.
 
 import { useMemo } from "react";
@@ -17,6 +18,7 @@ import { Crumb, Page, PageInner, Right, Sep, Title, Topbar } from "@/components/
 import { coreKind } from "@/components/screens/Modules/coreKind";
 import { AskIt } from "./AskIt";
 import { Controls } from "./Controls";
+import { Data } from "./Data";
 import { Wiring } from "./Wiring";
 import { coreProps, moduleProps } from "./props";
 
@@ -70,6 +72,8 @@ export function ModuleDetail({ name }: { name: string }) {
               {need && <span className="max-w-[600px] text-[13px] text-pretty text-ink3">Why it exists: {need}</span>}
               {unhealthy && <ErrorLine>Health check: {health?.error ?? health?.status ?? "not ok"}</ErrorLine>}
             </div>
+
+            {m && <Data key={m.name} name={m.name} />}
 
             <div className="flex flex-col gap-3">
               <Label>Wiring</Label>

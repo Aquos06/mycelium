@@ -89,6 +89,7 @@ class FixtureModule(BaseModel):
     reply: dict[str, Any] = Field(default_factory=dict)  # what every request of the module answers
     grown: bool = False  # the builder grew it: listed under rpc.sys.list `grown`, so change_module can change it
     version: str = "0.1.0"
+    views: dict[str, Any] = Field(default_factory=dict)  # as a manifest declares them: `show` can name one
 
     def manifest(self, name: str) -> dict[str, Any]:
         """What the supervisor would serve for it: the SDK's manifest, described requests in `request_specs`."""
@@ -98,6 +99,7 @@ class FixtureModule(BaseModel):
             "purpose": self.purpose,
             "requests": self.requests,
             "subscribes": self.subscribes,
+            "views": self.views,
         }
         return Manifest.model_validate(data).model_dump()
 

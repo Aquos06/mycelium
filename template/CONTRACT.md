@@ -36,6 +36,25 @@ Do not create files outside this folder. Do not edit CONTRACT.md.
          params: {amount: number, description: string, day: optional date}
          returns: {id: number}
      ```
+   - `views`: how Hansen sees the module's data, on its page in the web app and when Main shows it in the chat.
+     Each names a request that **only reads** (never `add`, `delete`, ...: opening a page changes nothing), the
+     `args` it sends (a `$` word is a date worked out when the view is shown: `$today`, `$yesterday`,
+     `$week_start`, `$month_start`, `$year_start`, `$7_days_ago`), and the block it makes: `show: table` (a list
+     of entries), `chart` (numbers by a name, `chart: line` or `area` over time), `stats` (a few headline numbers),
+     `details` (one record) or `meter` (a number against a goal); `path` is where in the reply the data is, and
+     `fields` which ones, in order (`{key: amount, format: money}` for money). Two to four views, the most useful
+     first:
+     ```yaml
+     views:
+       week: {title: This week, request: summary, args: {from: $week_start}, show: stats}
+       by_category: {title: By category, request: summary, args: {from: $month_start}, path: by_category, show: chart}
+       entries:
+         title: Entries
+         request: history
+         path: expenses
+         show: table
+         fields: [day, description, {key: amount, format: money}]
+     ```
    - `hooks.interval_seconds`: list of intervals (>= 10s)
 3. **Never subscribe to your own events** (loops). Subscribe only to events: `sense.*`, `brain.*`, `mod.*`, `sys.*`,
    `build.*`, `out.*`. A module's bus login cannot send requests, read `rpc.*`, `trace.*` or `stream.*`.

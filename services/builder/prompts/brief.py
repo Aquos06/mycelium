@@ -55,6 +55,9 @@ RULES = """\
 - The builder sets the manifest's name, version, permissions (no network, no actuation) and resources.
 - Every request is described in manifest.yaml: `description`, `params` and `returns`, each field `name: type`
   (`optional <type>` when it may be left out). Main calls the module from these alone; the build fails without.
+- Declare two to four `views` in manifest.yaml (CONTRACT.md): how Hansen sees the data on the module's page and in
+  the chat. Each reads with a request that only reads, takes only the args that request takes, and its `path` is a
+  field that request returns; the build fails on one that does not fit.
 - Not allowed in the code: subprocess, socket, http/urllib and other network libraries, raw nats, the
   module's `.bus`, eval/exec, dynamic imports. A module talks to the world only through `mod`.
 - tests/test_contract.py (the builder's) checks that the module starts, answers health, answers every

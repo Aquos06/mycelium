@@ -9,6 +9,12 @@ requests:                 # described, so Main knows what to send and what comes
     description: Messages counted on one day, and in all.
     params: {day: optional date}    # YYYY-MM-DD; today when left out
     returns: {day: date, count: number, total: number}
+views:                    # how its data is seen, on its page and in the chat: a request that only reads, and the block
+  today:
+    title: Messages
+    request: stats
+    show: stats
+    fields: [{key: count, label: Today}, {key: total, label: In all}]
 hooks:
   interval_seconds: [3600]
 permissions:

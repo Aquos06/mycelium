@@ -1,6 +1,6 @@
 """Main's messages and records: what it sends, what it publishes, what it holds while planning.
 
-Say, Ask                 -> out.say, out.ask        (envelopes; `ref` on Ask is its own id; `blocks`: blocks.py)
+Say, Ask                 -> out.say, out.ask        (envelopes; `ref` on Ask is its own id; `blocks`: mycelium_sdk.blocks)
 Progress                 -> out.progress            (one message per job that changes in place: a build Main started)
 PlanTrace                -> trace.plan              (one per handled message; votes attach by reply_id)
 FeedbackTrace            -> trace.feedback
@@ -19,9 +19,10 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from mycelium_sdk import Envelope, RequestSpec, Usage
+from mycelium_sdk.blocks import Block
 from mycelium_sdk.build import BuildDone, BuildFailed
+from mycelium_sdk.views import View
 
-from .blocks import Block
 from .tools import AskArgs, ToolOutcome
 
 # ---- what Main sends ---------------------------------------------------------------------------------
@@ -32,7 +33,7 @@ class Say(Envelope):
     channel: str
     thread: str
     text: str
-    blocks: list[Block] = Field(default_factory=list)  # a module's data under the text (blocks.py), in order
+    blocks: list[Block] = Field(default_factory=list)  # a module's data under the text (mycelium_sdk.blocks), in order
 
 
 class Ask(Envelope):
@@ -92,6 +93,7 @@ class ModuleInfo(BaseModel):
     status: str = "running"  # the supervisor's: a stopped or retired module is listed as not running, never called
     version: str = ""
     grown: bool = False  # the builder grew it (GROWN_DIR), so `change_module` can change it
+    views: dict[str, View] = Field(default_factory=dict)  # its declared views that can be shown (`show` by name)
 
 
 class PackItem(BaseModel):

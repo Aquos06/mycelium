@@ -127,6 +127,17 @@ def test_pin_manifest_sets_the_builders_fields(tmp_path):
         ("purpose: Keeps notes for the user.\nrequests: [rpc.mod.notes.last]\n", "write 'last'"),
         ("purpose: Keeps notes for the user.\nsubscribes: [rpc.sys.deploy]\n", "may not subscribe"),
         ("purpose: Keeps notes for the user.\nrequests: [last]\n", "not described: last"),  # Main would guess
+        (  # a page that opens must never write
+            "purpose: Keeps notes for the user.\nrequests: {add: {description: Keep one note.}}\n"
+            "views: {notes: {request: add, show: table}}\n",
+            "manifest.yaml: view 'notes': 'add' changes data; a view only reads",
+        ),
+        (
+            "purpose: Keeps notes for the user.\n"
+            "requests: {last: {description: The last note kept., returns: {note: string}}}\n"
+            "views: {last: {request: last, path: text, show: details}}\n",
+            "last returns no 'text'; it returns note",
+        ),
     ],
 )
 def test_pin_manifest_problems(tmp_path, text, expect):

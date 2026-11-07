@@ -4,6 +4,7 @@ so this file is the one place the whole URL surface can be read:
     POST /api/v1/chat              say something to Main
     POST /api/v1/chat/feedback     answer an out.ask, vote on an out.say
     GET  /api/v1/events            the recent bus events
+    GET  /api/v1/modules/{name}/views   a module's page: its views, built from what it answers now
     WS   /api/v1/events/ws         every new bus event
     POST /api/v1/rpc/{subject}     request/reply on any rpc.* subject
     GET  /api/v1/system/health     the gateway's state (and the app's login check)
@@ -17,6 +18,7 @@ from fastapi import APIRouter
 
 from ..chat.router import router as chat_router
 from ..events.router import router as events_router
+from ..modules.router import router as modules_router
 from ..rpc.router import router as rpc_router
 from ..system.router import router as system_router
 from .schemas import ErrorResponse
@@ -36,5 +38,6 @@ api_router = APIRouter(
 
 api_router.include_router(chat_router, prefix="/chat", tags=["chat"])
 api_router.include_router(events_router, prefix="/events", tags=["events"])
+api_router.include_router(modules_router, prefix="/modules", tags=["modules"])
 api_router.include_router(rpc_router, prefix="/rpc", tags=["rpc"])
 api_router.include_router(system_router, prefix="/system", tags=["system"])

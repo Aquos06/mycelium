@@ -1,7 +1,8 @@
-// The modules domain: what the supervisor answers on rpc.sys.* (services/supervisor).
+// The modules domain: what the supervisor answers on rpc.sys.* (services/supervisor), and a module's page: its
+// views, built by the web gateway from what the module answers (services/web/modules).
 
 import { z } from "zod";
-import { replySchema } from "./vocabulary";
+import { blockSchema, replySchema } from "./vocabulary";
 
 export const manifestSchema = z.looseObject({
   name: z.string(),
@@ -52,3 +53,29 @@ export const logsReplySchema = replySchema.extend({
   logs: z.string().optional(),
 });
 export type LogsReply = z.infer<typeof logsReplySchema>;
+
+/** One of a module's views: its block, or why it could not be shown. A block this app cannot read becomes that. */
+export const moduleViewSchema = z
+  .object({
+    id: z.string(),
+    title: z.string().default(""),
+    request: z.string().default(""),
+    block: z.unknown().optional(),
+    error: z.string().nullable().default(null),
+  })
+  .transform(({ block, ...v }) => {
+    if (block === null || block === undefined) return { ...v, block: null };
+    const b = blockSchema.safeParse(block);
+    return b.success ? { ...v, block: b.data } : { ...v, block: null, error: v.error ?? "this app cannot show this kind of view yet" };
+  });
+export type ModuleView = z.infer<typeof moduleViewSchema>;
+
+/** GET /modules/{name}/views: what a module's page shows of its data. `declared`: the module's own views; else made
+ *  from the replies of its requests that need nothing and only read. */
+export const moduleViewsSchema = z.object({
+  name: z.string(),
+  running: z.boolean(),
+  declared: z.boolean().default(false),
+  views: z.array(moduleViewSchema).default([]),
+});
+export type ModuleViews = z.infer<typeof moduleViewsSchema>;

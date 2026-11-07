@@ -13,6 +13,7 @@ export const queryKeys = {
   // a module named "health".
   modulesHealth: () => ["modules-health"] as const,
   moduleLogs: (name: string) => ["module-logs", name] as const,
+  moduleViews: (name: string) => ["module-views", name] as const,
   core: () => ["core-probes"] as const,
   config: () => ["gateway-config"] as const,
   usage: () => ["gateway-usage"] as const,

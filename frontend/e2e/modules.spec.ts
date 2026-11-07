@@ -14,9 +14,12 @@ test.describe("modules", () => {
     await expect(grown).toHaveCount(0);
   });
 
-  test("a module's page: wiring, ask it directly, logs, pause asks twice", async ({ page }) => {
+  test("a module's page: its data, wiring, ask it directly, logs, pause asks twice", async ({ page }) => {
     await page.goto("/modules/hello");
     await expect(page.getByRole("heading", { level: 1, name: "hello" })).toBeVisible();
+    const data = page.getByRole("region", { name: "Data" });
+    await expect(data.locator("[data-kind=block-stats]")).toContainText("412");
+    await expect(data.getByRole("img", { name: /Last 7 days/ })).toBeVisible();
     await expect(page.getByLabel("Wiring")).toContainText("mod.hello.message.counted");
     await page.getByRole("button", { name: /Run/ }).click();
     await expect(page.getByTestId("ask-result")).toContainText('"counted": 3');

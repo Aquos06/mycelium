@@ -21,7 +21,8 @@ def app() -> FastAPI:
     s = WebSettings()
     logging.basicConfig(level=s.log_level)
     bus = NatsBus(s.nats_url, name="web")
-    return create_app(WebGateway(bus, buffer=s.buffer, rpc_timeout=s.rpc_timeout), s)
+    gateway = WebGateway(bus, buffer=s.buffer, rpc_timeout=s.rpc_timeout, currency=s.currency.upper(), tz=s.tz)
+    return create_app(gateway, s)
 
 
 def main() -> None:

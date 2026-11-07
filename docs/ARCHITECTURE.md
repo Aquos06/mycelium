@@ -371,6 +371,22 @@ fails the round otherwise. `hello` is described the same way, as the example eve
 come:** described `emits` with payloads checked by the SDK, `storage`, and `rpc.sys.catalog` (today
 `rpc.sys.list` carries the same manifests).
 
+**Views: built.** A manifest may say how its data is seen (`views`, `mycelium_sdk/views.py`): each view names a
+request that only reads, the `args` it sends (a `$` word is a date worked out when it is shown: `$today`,
+`$week_start`, `$month_start`, `$7_days_ago`) and the block it makes (`show: table`, `chart`, `stats`, `details`,
+`meter`, with `path` and `fields`):
+
+    views:
+      week: {title: This week, request: summary, args: {from: $week_start}, show: stats}
+      entries: {title: Entries, request: history, path: expenses, show: table, fields: [day, description, {key: amount, format: money}]}
+
+A view is never a request that writes (`add`, `delete`, ...): opening a page changes nothing. The module's page in
+the web app shows its views, each built by the web gateway from what the module answers now; Main's prompt lists
+them and `show` takes one by name (Main asks the module itself); the builder asks every coder for two to four and
+fails a round on one that cannot be shown (a request it lacks or that writes, an argument it does not take, a path
+its reply does not have). A module that declares none is shown on its page from the replies of its requests that
+need nothing and only read, each made into blocks by the reply's own shape.
+
 The design, with events described too:
 
 ```yaml
@@ -421,11 +437,11 @@ and names no module that hears the chat (one may have logged it itself), is not 
 once more, and it either calls `remember` or says it plainly. The trace marks such a turn (`claim_check`).
 
 **Showing a module's data.** When a module's answer is something to see rather than read (its entries, totals
-by category or by day, a few figures, one record, a number against a goal), the planner calls `show` after
-`ask_module`: a **table** (sortable; a card per row in a narrow chat), a **chart** (bars ranked largest first,
+by category or by day, a few figures, one record, a number against a goal), the planner calls `show`, with a
+view the module declares (Main asks the module) or after `ask_module`: a **table** (sortable; a card per row in a narrow chat), a **chart** (bars ranked largest first,
 or a line or area over time, up to four series, each with its table view), **stats**, **details** or a
-**meter**, sent with the reply as `blocks` on `out.say` / `out.ask` (`services/main/blocks.py`). `show` names
-the request it called this turn and where in the reply the data is; Main builds the block from the module's own
+**meter**, sent with the reply as `blocks` on `out.say` / `out.ask` (`mycelium_sdk/blocks.py`). `show` names a
+view, or the request it called this turn and where in the reply the data is; Main builds the block from the module's own
 reply, so no number on screen was written by the model, and tells the planner what it showed so the reply says
 what it means instead of repeating it. Main formats every value once (money in `MAIN_CURRENCY`, dates in its
 zone) and sends each as data and as it reads; the web app places them, Telegram gets each block's monospace
@@ -696,7 +712,9 @@ whole app from fixtures and is what Playwright drives.
 *Built (v0): the gateway is one package per domain with a router that only routes, under `/api/v1`:
 `chat` (say something, answer an `out.ask`, vote) publishes on channel `web`; `events` is the recent
 buffer over REST and every new bus event over `/api/v1/events/ws`; `rpc/<subject>` forwards any `rpc.*`
-request and returns the responder's own reply; `system/health` is the state and the login check. One
+request and returns the responder's own reply; `modules/<name>/views` is a module's page, each view built from
+what the module answers now (a view that cannot be shown says why, the others still show); `system/health` is the
+state and the login check. One
 bearer token (`WEB_TOKEN`) is a default-deny gate on the whole surface, CORS admits the app's origin,
 every refusal is `{ok: false, error}`. **The chat streams**: Main asks the model gateway for the text as
 it is written, the gateway publishes it in small batches on `stream.llm` keyed by the message's id (not
@@ -722,7 +740,8 @@ tokens, a chart's series in a fixed palette of four that stays apart under colou
 one), every chart with a table view and a keyboard-readable crosshair; a block of a kind the app does not know
 is left out, never the reply. The app has Home (the live bus, what needs you, what is alive),
 Chat (a thread with Main, its plan under each reply, `out.ask` as a card), Modules and a module page
-(manifest wiring, ask it directly, logs, pause and rebuild), Settings (slots and providers from
+(its data as its views show it, refreshed every minute and when the module says something on the bus; manifest
+wiring, ask it directly, logs, pause and rebuild), Settings (slots and providers from
 `rpc.llm.config`, key states, the builder's coders and the default one, chosen there, and the environment,
 read-only), the Voice screen as a placeholder until a
 `sense.voice` bridge exists, and Login. Tests: a unit test per helper and per gateway function, an

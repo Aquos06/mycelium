@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from mycelium_sdk import InMemoryBus
+from mycelium_sdk import InMemoryBus, validate_manifest
 from web.api.server import create_app
 from web.events.router import WS_FORBIDDEN, WS_UNAUTHORIZED
 from web.service import WebGateway
@@ -135,6 +135,121 @@ def test_post_rpc_refuses_a_non_rpc_subject_and_reports_silence_as_504():
         assert r.status_code == 504 and r.json() == {"ok": False, "error": "no reply from rpc.nobody.home within 0.2s"}
 
 
+# ---- a module's page: its views ------------------------------------------------------------------------------
+
+SPENDING = {
+    "name": "spending",
+    "purpose": "Tracks spending, with totals by category.",
+    "requests": {
+        "summary": {
+            "description": "Totals since a day, all time without one.",
+            "params": {"from": "optional date"},
+            "returns": {"total": "number", "count": "number", "by_category": "map"},
+        },
+        "add": {"description": "Store one expense.", "params": {"amount": "number"}, "returns": {"id": "number"}},
+        "broken": {"description": "A request that refuses.", "returns": {"x": "number"}},
+    },
+}
+SUMMARY = {"ok": True, "total": 3420, "count": 6, "by_category": {"food": 1820, "coffee": 740}}
+
+
+def _module(client, bus, manifest, status="running"):
+    """The supervisor's list and the module's own requests, as they answer on the bus; returns what was asked."""
+    asked = []
+
+    async def list_modules(msg):
+        await msg.respond(
+            {
+                "ok": True,
+                "modules": [
+                    {
+                        "name": manifest["name"],
+                        "status": status,
+                        "manifest": validate_manifest(manifest).model_dump(mode="json"),
+                    }
+                ],
+            }
+        )
+
+    async def answer(msg):
+        asked.append((msg.subject, msg.data))
+        if msg.subject.endswith(".broken"):
+            await msg.respond({"ok": False, "error": "database is locked"})
+        else:
+            await msg.respond(SUMMARY if msg.subject.endswith(".summary") else {"ok": True, "id": 1})
+
+    client.portal.call(bus.subscribe, "rpc.sys.list", list_modules)
+    for action in manifest["requests"]:
+        client.portal.call(bus.subscribe, f"rpc.mod.{manifest['name']}.{action}", answer)
+    return asked
+
+
+def test_a_module_page_shows_each_declared_view_from_what_the_module_answers():
+    views = {
+        "week": {
+            "title": "This week",
+            "request": "summary",
+            "args": {"from": "$week_start"},
+            "show": "stats",
+            "fields": [{"key": "total", "format": "money"}, "count"],
+        },
+        "by_category": {
+            "title": "By category",
+            "request": "summary",
+            "args": {"from": "$week_start"},
+            "path": "by_category",
+            "show": "chart",
+        },
+        "sneaky": {"title": "Sneaky", "request": "add", "show": "stats"},
+        "broken": {"title": "Broken", "request": "broken", "show": "stats"},
+    }
+    with _client() as (client, gw, bus):
+        asked = _module(client, bus, {**SPENDING, "views": views})
+        r = client.get(f"{API}/modules/spending/views")
+        assert r.status_code == 200
+        body = r.json()
+        assert (body["running"], body["declared"]) == (True, True)
+        got = {v["id"]: (v["block"]["kind"] if v["block"] else None, v["error"]) for v in body["views"]}
+        assert got["week"] == ("stats", None) and got["by_category"] == ("chart", None)
+        assert got["sneaky"] == (
+            None,
+            "view 'sneaky': 'add' changes data; a view only reads (a page that opens changes nothing)",
+        )
+        assert got["broken"] == (None, "spending.broken: database is locked")
+        assert body["views"][0]["block"]["stats"][0] == {"label": "Total", "value": {"v": 3420.0, "s": "NT$3,420"}}
+        # one ask for the two views of the same request and arguments; `add` never asked
+        assert [s for s, _ in asked] == ["rpc.mod.spending.summary", "rpc.mod.spending.broken"]
+        assert asked[0][1]["from"].count("-") == 2  # $week_start, as a date
+
+
+def test_a_module_without_views_is_shown_from_its_readable_requests():
+    with _client() as (client, gw, bus):
+        asked = _module(client, bus, SPENDING)
+        body = client.get(f"{API}/modules/spending/views").json()
+        assert body["declared"] is False
+        assert [(v["id"], v["title"], v["block"]["kind"] if v["block"] else v["error"]) for v in body["views"]] == [
+            ("summary.0", "Summary", "stats"),
+            ("summary.1", "By category", "chart"),
+            ("broken", "broken", "spending.broken: database is locked"),
+        ]
+        assert "rpc.mod.spending.add" not in [s for s, _ in asked]
+
+
+def test_a_module_page_that_cannot_be_shown_says_why():
+    with _client() as (client, gw, bus):
+        _module(client, bus, SPENDING, status="stopped")
+        assert client.get(f"{API}/modules/spending/views").json() == {
+            "name": "spending",
+            "running": False,
+            "declared": False,
+            "views": [],
+        }
+        assert client.get(f"{API}/modules/nobody/views").status_code == 404
+        assert client.get(f"{API}/modules/Not_A_Name/views").status_code == 400
+    with _client() as (client, gw, bus):
+        assert client.get(f"{API}/modules/spending/views").status_code == 504  # no supervisor on the bus
+
+
 def test_the_token_gate_covers_every_api_route_and_the_socket_but_not_healthz():
     with _client(_settings(WEB_TOKEN="s3cret")) as (client, gw, bus):
         for method, path in (
@@ -142,6 +257,7 @@ def test_the_token_gate_covers_every_api_route_and_the_socket_but_not_healthz():
             ("get", "/events"),
             ("post", "/chat"),
             ("post", "/rpc/rpc.sys.list"),
+            ("get", "/modules/hello/views"),
         ):
             r = getattr(client, method)(API + path)
             assert r.status_code == 401 and r.json() == {"ok": False, "error": "a bearer token is required (WEB_TOKEN)"}

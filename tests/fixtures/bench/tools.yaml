@@ -126,6 +126,30 @@ modules:
         - {day: "2026-11-01", ml: 900}
         - {day: "2026-11-02", ml: 1700}
         - {day: "2026-11-03", ml: 1500}
+  steps:  # declares its views: `show` can name one, and Main gets the data
+    purpose: Counts Hansen's steps per day from his phone, against his daily goal.
+    grown: true
+    requests:
+      today:
+        description: Today's steps so far and the daily goal.
+        returns: {steps: number, goal: number}
+      week:
+        description: Steps per day for the last seven days.
+        returns: {by_day: list}
+    views:
+      today: {title: Today, request: today, show: meter, fields: [steps, goal]}
+      week: {title: Last 7 days, request: week, path: by_day, show: chart, chart: line}
+    reply:
+      steps: 6420
+      goal: 10000
+      by_day:
+        - {day: "2026-10-28", steps: 8200}
+        - {day: "2026-10-29", steps: 11030}
+        - {day: "2026-10-30", steps: 5400}
+        - {day: "2026-10-31", steps: 9900}
+        - {day: "2026-11-01", steps: 3100}
+        - {day: "2026-11-02", steps: 7700}
+        - {day: "2026-11-03", steps: 6420}
 default_modules: [hello, expenses, climbing]
 
 notes:
@@ -1099,3 +1123,30 @@ cases:
     also: [ask_module]
     modules: [hello, spending, water, climbing]
     args: {kind: table, source: {has: [climbing]}}
+  # show by a module's view: Main gets the data, no ask_module needed
+  - id: view-steps-today
+    msg: how am I doing on steps today?
+    expect: show
+    modules: [hello, steps, spending]
+    args: {view: {has: [steps.today]}}
+  - id: view-steps-week
+    msg: show my steps this week
+    expect: show
+    modules: [hello, steps, spending]
+    args: {view: {has: [steps.week]}}
+  - id: view-steps-graph
+    msg: graph my steps
+    expect: show
+    modules: [hello, steps, spending]
+    args: {view: {has: [steps.week]}}
+  - id: view-steps-goal
+    msg: am I close to my step goal?
+    expect: show
+    modules: [hello, steps, spending]
+    args: {view: {has: [steps.today]}}
+  - id: view-steps-zh
+    msg: 給我看這週每天走了多少步
+    expect: show
+    modules: [hello, steps, spending]
+    args: {view: {has: [steps.week]}}
+

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { nearest, nextSort, niceTicks, positions, seriesColor, sortRows, spread, tickLabel } from "@/lib/blocks";
-import { blocksSchema, saySchema, type Cell } from "@/lib/schemas";
+import { blocksSchema, moduleViewsSchema, saySchema, type Cell } from "@/lib/schemas";
 
 const n = (v: number | null): Cell => ({ v, s: v === null ? "—" : `NT$${v}` });
 const t = (v: string): Cell => ({ v, s: v });
@@ -62,5 +62,23 @@ describe("a reply's blocks", () => {
     expect(blocksSchema.parse([{ kind: "map", pins: [] }, stats, { kind: "table" }])).toEqual([{ ...stats, title: "", text: "" }]);
     const say = saySchema.parse({ id: "a1", channel: "web", thread: "web", text: "hi" });
     expect(say.blocks).toEqual([]);
+  });
+
+  it("a module page's view this app cannot read says so, and the others still show", () => {
+    const page = moduleViewsSchema.parse({
+      name: "spending",
+      running: true,
+      declared: true,
+      views: [
+        { id: "map", title: "Where", request: "places", block: { kind: "map", pins: [] } },
+        { id: "week", title: "This week", request: "summary", block: { kind: "stats", stats: [{ label: "Total", value: { v: 1, s: "1" } }] } },
+        { id: "slow", title: "Slow", request: "history", block: null, error: "spending.history did not answer (TimeoutError)" },
+      ],
+    });
+    expect(page.views.map((v) => [v.id, v.block?.kind ?? null, v.error])).toEqual([
+      ["map", null, "this app cannot show this kind of view yet"],
+      ["week", "stats", null],
+      ["slow", null, "spending.history did not answer (TimeoutError)"],
+    ]);
   });
 });

@@ -9,6 +9,9 @@ requests: {}          # each described: Main reads these to call it      -> rpc.
 #     description: Totals for a date range, all time when no dates are given.
 #     params: {from: optional date, to: optional date}
 #     returns: {total: number, count: number}
+views: {}             # how its data is seen, on its page and in the chat: a request that only reads, the block
+#   week: {title: This week, request: summary, args: {from: $week_start}, show: stats}
+#   entries: {title: Entries, request: history, path: expenses, show: table, fields: [day, description, {key: amount, format: money}]}
 hooks:
   interval_seconds: []
 permissions:
