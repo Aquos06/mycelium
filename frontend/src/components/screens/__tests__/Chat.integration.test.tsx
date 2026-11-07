@@ -11,7 +11,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { Chat } from "@/components/screens/Chat";
-import { mockBus } from "@/lib/mock";
+import { mockBuilds, mockBus } from "@/lib/mock";
 import { envelope, event, renderScreen } from "./support";
 
 function aTurn() {
@@ -137,5 +137,51 @@ describe("Chat", () => {
     expect(await screen.findByText("coffee 85")).toBeInTheDocument();
     await waitFor(() => expect(mockBus.all().filter((e) => e.subject === "sense.chat")).toHaveLength(before + 1));
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("mycelium.threads") ?? "[]")[0]?.title).toBe("coffee 85"));
+  });
+
+  it("shows a build Main follows as one card: the rounds, the step it is on, the steps to come", () => {
+    const since = new Date(Date.now() - 190_000).toISOString();
+    const progress = (id: string, seq: number, state: string, title: string, steps: { text: string; state: string; since?: string }[]) =>
+      event("out.progress", { ...envelope(id), channel: "web", thread: "web", ref: "b1", seq, state, title, steps, text: title });
+    renderScreen(<Chat thread="web" />, [
+      progress("p1", 1, "running", "Building water", [{ text: "Round 1 of 6: writing the module", state: "active", since }]),
+      progress("p2", 2, "running", "Building water", [
+        { text: "Round 1: tests failed: 1 failed, 4 passed", state: "failed" },
+        { text: "Round 2 of 6: fixing what failed", state: "active", since },
+        { text: "Save it", state: "pending" },
+      ]),
+    ]);
+    const cards = document.querySelectorAll("[data-kind=progress]");
+    expect(cards).toHaveLength(1); // one card per build, whatever the number of updates
+    const card = screen.getByRole("group", { name: "Building water" });
+    expect([...card.querySelectorAll("li")].map((li) => li.getAttribute("data-state"))).toEqual(["failed", "active", "pending"]);
+    expect(within(card).getByText(/fixing what failed/)).toHaveTextContent("now: Round 2 of 6: fixing what failed");
+    expect(within(card).getByText("3 min")).toBeInTheDocument(); // how long the step it is on has taken
+  });
+
+  it("a running card that has heard nothing for a while asks the builder, and ends the way the build did", async () => {
+    const quiet = new Date(Date.now() - 20 * 60_000).toISOString(); // its last update, long gone from the bus
+    mockBuilds.set("b-quiet", { id: "b-quiet", name: "water", status: "failed", stage: "tests", error: "no working module after 6 rounds", finished: quiet });
+    renderScreen(<Chat thread="web" />, [
+      event("out.progress", {
+        ...envelope("p1"),
+        ts: quiet,
+        channel: "web",
+        thread: "web",
+        ref: "b-quiet",
+        seq: 3,
+        state: "running",
+        title: "Building water",
+        steps: [
+          { text: "Round 6 of 6: building it and running its tests", state: "active", since: quiet },
+          { text: "Save it", state: "pending" },
+        ],
+        text: "Building water",
+      }),
+    ]);
+    const card = screen.getByRole("group", { name: "Building water" });
+    expect(await within(card).findByText(/: no working module after 6 rounds$/)).toBeInTheDocument();
+    expect(card).toHaveAttribute("data-state", "failed");
+    expect([...card.querySelectorAll("li")].map((li) => li.getAttribute("data-state"))).toEqual(["failed", "pending"]);
   });
 });

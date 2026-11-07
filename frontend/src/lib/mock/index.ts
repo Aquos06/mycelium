@@ -167,11 +167,78 @@ export function mockEventsPage(after: number, limit: number): EventsPage {
  *  and the reply. Streamed as the vLLM planner: only a reasoning model's stream carries thinking. */
 export const STREAM_STEP_MS = 280;
 
+export const MOCK_BUILD_IT = "Build it";
+
+/** "track my water": Main offers a module, a card with Build it / Not now (services/main/tools/propose.py). */
+function mockPropose(text: string, thread: string, cause: string) {
+  setTimeout(() => {
+    const plan = env("main", cause);
+    const card = env("main", cause);
+    mockBus.publish("trace.plan", { ...plan, channel: "web", thread, input: text, tools: [{ name: "propose_module", ok: true }], rounds: 1, cost_usd: 0, error: null, latency_ms: STREAM_STEP_MS });
+    mockBus.publish("out.ask", {
+      ...card,
+      channel: "web",
+      thread,
+      ref: card.id,
+      choices: [MOCK_BUILD_IT, "Not now"],
+      text: "Nothing tracks that yet. I can grow a module for it.\n\nA new module, water: Tracks the glasses of water you drink and totals them per day\n- one entry holds: glasses and day\n- `today` answers how many glasses so far\nNothing is built until you choose.",
+    });
+  }, STREAM_STEP_MS);
+}
+
+type Step = { text: string; state: "done" | "failed" | "active" | "pending"; since?: string };
+
+/** The builder's records, as rpc.build.get answers them: every build the mock ran, and any a test puts here. */
+export const mockBuilds = new Map<string, Json>();
+
+/** A build after Build it, as Main tells it (services/main/progress.py): round 1 fails a test, round 2 passes. */
+function mockBuild(thread: string, cause: string) {
+  const buildId = id();
+  mockBuilds.set(buildId, { id: buildId, name: "water", status: "building", stage: "coder" });
+  const failed = "Round 1: tests failed: 1 failed, 4 passed; test_today_counts: assert 0 == 2 · 1 min";
+  const passed = "Round 2: the tests pass (5 passed) · 1 min";
+  const after = (at: number): Step[] =>
+    ["Save it", "Start it"].map((text, i) => ({ text, state: i < at ? "done" : i === at ? "active" : "pending", since: i === at ? new Date(now()).toISOString() : undefined }));
+  const active = (text: string): Step => ({ text, state: "active", since: new Date(now()).toISOString() });
+  const frames: { stage: string; round: number; steps: () => Step[] }[] = [
+    { stage: "coder", round: 1, steps: () => [active("Round 1 of 6: writing the module"), ...after(-1)] },
+    { stage: "verify", round: 1, steps: () => [active("Round 1 of 6: building it and running its tests"), ...after(-1)] },
+    { stage: "coder", round: 2, steps: () => [{ text: failed, state: "failed" }, active("Round 2 of 6: fixing what failed"), ...after(-1)] },
+    { stage: "verify", round: 2, steps: () => [{ text: failed, state: "failed" }, active("Round 2 of 6: building it and running its tests"), ...after(-1)] },
+    { stage: "promote", round: 2, steps: () => [{ text: failed, state: "failed" }, { text: passed, state: "done" }, ...after(0)] },
+    { stage: "deploy", round: 2, steps: () => [{ text: failed, state: "failed" }, { text: passed, state: "done" }, ...after(1)] },
+  ];
+  const progress = (seq: number, title: string, state: string, steps: Step[], stageCause: string) => {
+    const text = [title, ...steps.map((s) => `${{ done: "✅", failed: "❌", active: "⏳", pending: "▫️" }[s.state]} ${s.text}`)].join("\n");
+    mockBus.publish("out.progress", { ...env("main", stageCause), channel: "web", thread, ref: buildId, seq, title, state, steps, text });
+  };
+  mockBus.publish("out.say", { ...env("main", cause), channel: "web", thread, text: "Building water. I'll tell you here when it's ready." });
+  mockBus.publish("build.started", { ...env("builder", cause), build_id: buildId, name: "water", coder: "mycelium", mode: "new", channel: "web", thread, max_rounds: 6 });
+  frames.forEach((f, i) => {
+    setTimeout(() => {
+      const stage = env("builder", cause);
+      mockBus.publish("build.stage", { ...stage, build_id: buildId, name: "water", coder: "mycelium", mode: "new", channel: "web", thread, stage: f.stage, round: f.round, max_rounds: 6, seq: i + 1, since: stage.ts });
+      progress(i + 1, "Building water", "running", f.steps(), String(stage.id));
+    }, STREAM_STEP_MS * 2 * (i + 1));
+  });
+  setTimeout(() => {
+    const done = env("builder", cause);
+    mockBus.publish("build.done", { ...done, build_id: buildId, name: "water", coder: "mycelium", mode: "new", channel: "web", thread, version: "0.1.0", rounds: 2, seconds: 140 });
+    mockBuilds.set(buildId, { id: buildId, name: "water", status: "done", stage: null, version: "0.1.0", finished: done.ts });
+    mockBus.publish("out.say", { ...env("main", String(done.id)), channel: "web", thread, text: "water is built and running (version 0.1.0). Ask me about it any time." });
+    progress(frames.length + 1, "Built water v0.1.0", "done", [{ text: failed, state: "failed" }, { text: passed, state: "done" }, { text: "Save it", state: "done" }, { text: "Start it", state: "done" }], String(done.id));
+  }, STREAM_STEP_MS * 2 * (frames.length + 1));
+}
+
 /** A turn: what you said lands now, the reply is written in pieces, then the plan and the reply land whole. */
 export function mockSendChat(text: string, thread: string): Sent {
   const said = env("web");
   const cause = String(said.id);
   mockBus.publish("sense.chat", { ...said, channel: "web", thread, text });
+  if (/\btrack\b/i.test(text)) {
+    mockPropose(text, thread, cause);
+    return { ok: true, id: cause, thread };
+  }
   const asksForModules = /running|alive|module/i.test(text);
   const answer = asksForModules
     ? "Right now:\n- **hello** is running and counting messages\n- **budget** is still building\n- **garden** is paused"
@@ -214,6 +281,7 @@ export function mockSendChat(text: string, thread: string): Sent {
 export function mockFeedback(ref: string, thread: string, fields: { answer?: string; vote?: number }): Sent {
   const e = env("web");
   mockBus.publish("sense.feedback", { ...e, channel: "web", thread, ref, ...fields });
+  if (fields.answer === MOCK_BUILD_IT) mockBuild(thread, String(e.id));
   return { ok: true, id: String(e.id), thread };
 }
 
@@ -351,6 +419,10 @@ export function mockRpc(subject: string, payload: Json): Reply {
       return mockUsage();
     case subject === "rpc.build.coders":
       return mockCoders();
+    case subject === "rpc.build.get": {
+      const build = mockBuilds.get(String(payload.build_id ?? ""));
+      return build ? { ok: true, ...build } : { ok: false, error: `no build '${String(payload.build_id)}'` };
+    }
     case subject === "rpc.build.default": {
       const coder = String(payload.coder ?? "");
       if (!MOCK_CODERS.some((c) => c.name === coder)) return { ok: false, error: `no coder '${coder}'; one of ${MOCK_CODERS.map((c) => c.name).join(", ")}` };

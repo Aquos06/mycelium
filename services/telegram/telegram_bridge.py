@@ -5,6 +5,8 @@
   out.say  {channel: telegram, thread, text}      -> message to that chat
   out.ask  {channel?, thread?, text, choices, ref} -> message with one button per choice
   out.notify {text}                               -> message (unaddressed notifications reach the phone)
+  out.progress {channel: telegram, thread, ref, seq, state, text}
+                                                  -> one message per ref, edited in place as it changes
 
 Only the one allowed chat is accepted; everything else is ignored.
 """
@@ -26,6 +28,21 @@ CHANNEL = "telegram"
 MAX_CHARS = 4000  # Telegram caps a message at 4096
 MAX_CALLBACK_BYTES = 64  # Telegram caps callback_data at 64 bytes
 MAX_REMEMBERED_REFS = 500  # long refs are swapped for a short token until the tap comes back
+MAX_PROGRESS = 50  # progress messages followed at once; an older one gets a new message if it changes again
+FINAL = ("done", "failed")
+RETRIES = 3  # a progress update Telegram did not take (too many requests, no answer) is tried again this often
+RETRY_S = 5.0  # after this long, unless Telegram says how long (retry_after)
+GONE = ("message to edit not found", "message can't be edited", "message_id_invalid")  # edit: send it anew
+SAME = "message is not modified"  # edit: it shows this already
+
+
+class Shown(BaseModel):
+    """A progress message on the phone: which one, and the update it shows."""
+
+    message_id: int
+    seq: int
+    final: bool
+    text: str
 
 
 class ChatIn(BaseModel):
@@ -85,6 +102,20 @@ def chunks(text: str, size: int = MAX_CHARS) -> list[str]:
     return [text[i : i + size] for i in range(0, len(text), size)]
 
 
+class TelegramError(RuntimeError):
+    """Telegram said no: its description, and how long to wait when it is too many requests (429)."""
+
+    def __init__(self, method: str, description: str, retry_after: float | None = None) -> None:
+        super().__init__(f"telegram {method}: {description}")
+        self.description = description
+        self.retry_after = retry_after
+
+    @property
+    def gone(self) -> bool:
+        """The message to edit is not there to edit any more."""
+        return any(g in self.description.lower() for g in GONE)
+
+
 class TelegramAPI:
     def __init__(self, token: str, http: Any) -> None:
         self.base = f"https://api.telegram.org/bot{token}"
@@ -94,7 +125,8 @@ class TelegramAPI:
         r = await self.http.post(f"{self.base}/{method}", json=params)
         body = r.json()
         if not body.get("ok"):
-            raise RuntimeError(f"telegram {method}: {body.get('description')}")
+            wait = (body.get("parameters") or {}).get("retry_after")
+            raise TelegramError(method, str(body.get("description")), float(wait) if wait else None)
         return body.get("result") or {}
 
     async def updates(self, offset: int, timeout: int = 50) -> list[dict[str, Any]]:
@@ -112,11 +144,15 @@ class TelegramBridge:
         self.chat_id = chat_id
         self.thread = str(chat_id)
         self._refs: dict[str, str] = {}  # short token -> full ref, for refs too long for callback_data
+        self._progress: dict[str, Shown] = {}  # out.progress ref -> its message
+        self._progress_lock = asyncio.Lock()  # two updates of one ref must not both send a first message
+        self._retries: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         await self.bus.subscribe("out.say", self.on_say)
         await self.bus.subscribe("out.ask", self.on_ask)
         await self.bus.subscribe("out.notify", self.on_notify)
+        await self.bus.subscribe("out.progress", self.on_progress)
 
     # ---- bus -> phone ------------------------------------------------------------------------
 
@@ -151,6 +187,61 @@ class TelegramBridge:
             await self.send(str(msg.data.get("text") or ""), reply_markup=keyboard(self._token(ref), choices))
         else:
             await self.send(str(msg.data.get("text") or ""))
+
+    async def on_progress(self, msg: Message, attempt: int = 0) -> None:
+        """The first update of a ref is a message; the later ones edit it. An update older than the one shown (a
+        lower seq, or anything after the last) is dropped. Only a message that is gone (deleted, too old to edit)
+        is sent again, as a new one that later updates edit instead. An update Telegram did not take for now (too
+        many requests, no answer) is tried again a little later, unless a newer one has gone out by then."""
+        d = msg.data
+        ref, text = str(d.get("ref") or ""), str(d.get("text") or "").strip()[:MAX_CHARS]
+        if not ref or not text or not self._addressed(d, default=False):
+            return
+        seq, final = int(d.get("seq") or 0), d.get("state") in FINAL
+        async with self._progress_lock:
+            shown = self._progress.get(ref)
+            if shown and (shown.final or (seq < shown.seq and not final)):
+                return
+            if shown and shown.text == text:  # Telegram refuses an edit that changes nothing
+                shown.seq, shown.final = seq, final
+                return
+            try:
+                if shown:
+                    try:
+                        await self.api.call(
+                            "editMessageText", chat_id=self.chat_id, message_id=shown.message_id, text=text
+                        )
+                        shown.seq, shown.final, shown.text = seq, final, text
+                        return
+                    except TelegramError as e:
+                        if SAME in e.description.lower():
+                            shown.seq, shown.final, shown.text = seq, final, text
+                            return
+                        if not e.gone:
+                            raise
+                        log.info("progress %s: its message is gone, sending it again (%s)", ref, e.description)
+                sent = await self.api.call("sendMessage", chat_id=self.chat_id, text=text)
+            except Exception as e:  # too many requests, a timeout, Telegram down: the message is still as it was
+                wait = e.retry_after if isinstance(e, TelegramError) and e.retry_after else RETRY_S
+                if attempt < RETRIES:
+                    log.info("progress %s not shown (%s); trying again in %gs", ref, e, wait)
+                    self._later(msg, attempt + 1, wait)
+                else:
+                    log.warning("progress %s not shown after %d tries: %s", ref, attempt + 1, e)
+                return
+            self._progress.pop(ref, None)
+            self._progress[ref] = Shown(message_id=int(sent.get("message_id") or 0), seq=seq, final=final, text=text)
+            while len(self._progress) > MAX_PROGRESS:
+                self._progress.pop(next(iter(self._progress)))
+
+    def _later(self, msg: Message, attempt: int, wait: float) -> None:
+        async def again() -> None:
+            await asyncio.sleep(wait)
+            await self.on_progress(msg, attempt)
+
+        task = asyncio.create_task(again())
+        self._retries.add(task)
+        task.add_done_callback(self._retries.discard)
 
     def _token(self, ref: str) -> str:
         """The ref itself when it fits in callback_data next to ':<index>', else a short token mapped back on tap."""

@@ -7,10 +7,11 @@ import pytest
 
 from builder.coders import CoderUnavailable
 from builder.pipeline import PipelineError
-from builder.schemas import BuildRecord
+from builder.schemas import BuildRecord, BuildRequest
 from builder.service import BuilderService
 from builder.workspace import Workspace
 from mycelium_sdk import InMemoryBus, InMemoryKV, kv_key
+from mycelium_sdk.bus import as_dict
 from tests.unit.builder_fakes import (
     BROKEN,
     GOOD,
@@ -73,6 +74,33 @@ async def test_a_failed_round_is_the_next_rounds_feedback(tmp_path):
     second = coder.seen[1]
     assert not second.fresh and second.feedback.stage == "tests"
     assert "buy bread" in second.feedback.output and "1 failed" in second.feedback.output
+
+
+async def test_each_step_is_reported_as_it_begins_with_the_rounds_so_far(tmp_path):
+    bus = InMemoryBus()
+    grown = tmp_path / "grown"
+    await FakeSupervisor(bus, grown).start()
+    record = BuildRecord(name="notes", spec=SPEC, coder="fake")
+    seen = []
+
+    async def on_round(_rec, _rnd):
+        pass
+
+    async def on_stage(rec, n):
+        seen.append((rec.stage, n, [r.summary for r in rec.rounds], rec.since))
+
+    await make_pipeline(bus, grown).run(record, FakeCoder([BROKEN, GOOD]), on_round, on_stage)
+
+    assert [(s, n) for s, n, _, _ in seen] == [
+        ("coder", 1), ("checks", 1), ("verify", 1),
+        ("coder", 2), ("checks", 2), ("verify", 2),
+        ("promote", 2), ("deploy", 2),
+    ]  # fmt: skip
+    first = seen[3][2]  # round 2's coder: round 1 is over, and why it failed is in one line
+    assert len(first) == 1 and first[0].startswith("tests failed: 1 failed, ")
+    assert "; test_" in first[0]  # the first failing test, by name
+    assert all(since for *_, since in seen)
+    assert record.rounds[-1].summary.startswith("the tests pass (")
 
 
 async def test_checks_fail_before_anything_runs(tmp_path):
@@ -180,12 +208,31 @@ async def test_a_build_runs_and_says_so(tmp_path):
     await until(lambda: bus.events("build.done") or bus.events("build.failed"))
     await svc.stop()
 
-    assert [s for s, _ in bus.events("build.>")] == ["build.started", "build.progress", "build.done"]
+    steps = [(s, d.get("stage"), d.get("round")) for s, d in bus.events("build.>")]
+    assert steps == [
+        ("build.started", None, None),
+        ("build.stage", "coder", 1),
+        ("build.stage", "checks", 1),
+        ("build.stage", "verify", 1),
+        ("build.progress", "tests", 1),
+        ("build.stage", "promote", 1),
+        ("build.stage", "deploy", 1),
+        ("build.done", None, None),
+    ]
+    events = [d for _, d in bus.events("build.>")]
+    assert all(d["thread"] == "t" and d["build_id"] == reply["build_id"] for d in events)  # each one says where
+    seqs = [d["seq"] for d in events if "seq" in d]
+    assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs) == 6
+    assert all(d["since"] and d["max_rounds"] == 3 for s, d in bus.events("build.stage"))
+    summary = bus.events("build.progress")[0][1]["summary"]
+    assert summary.startswith("the tests pass (") and summary.endswith(" passed)")
     done = bus.events("build.done")[0][1]
+    assert [(r["n"], r["passed"], r["summary"]) for r in done["history"]] == [(1, True, summary)]
     assert done["build_id"] == reply["build_id"] and done["cause"] == "m1" and done["hops"] == 2
     assert done["thread"] == "t" and done["version"] == "0.1.0" and done["commit"]
     record = await bus.request("rpc.build.get", {"build_id": reply["build_id"]})
     assert record["status"] == "done" and record["rounds"][0]["passed"] and record["finished"]
+    assert record["seq"] == done["seq"] and record["since"] is None  # as its last event said it; no step now
     listed = await bus.request("rpc.build.list", {})
     assert [b["name"] for b in listed["builds"]] == ["notes"] and listed["builds"][0]["rounds"] == 1
     assert "spec" not in listed["builds"][0]
@@ -339,7 +386,7 @@ class FlakyKV(InMemoryKV):
         self.failed = False
 
     async def put(self, key, value):
-        if value.get("status") == "building" and not self.failed:
+        if as_dict(value).get("status") == "building" and not self.failed:
             self.failed = True
             raise TimeoutError("nats: timeout")
         await super().put(key, value)
@@ -363,6 +410,47 @@ async def test_the_worker_outlives_a_kv_that_fails(tmp_path):
     assert bus.events("build.done")[0][1]["build_id"] == second["build_id"]
 
 
+class BlinkingKV(InMemoryKV):
+    """Fails every save made while a build is at `stage`: the KV blinked just then."""
+
+    def __init__(self, stage):
+        super().__init__()
+        self.stage = stage
+
+    async def put(self, key, value):
+        d = as_dict(value)
+        if d.get("status") == "building" and d.get("stage") == self.stage:
+            raise TimeoutError("nats: timeout")
+        await super().put(key, value)
+
+
+async def test_a_kv_or_a_bus_that_blinks_mid_build_does_not_fail_it(tmp_path):
+    """At deploy the module is committed already: a step that could not be stored or announced must not stop it."""
+    bus = InMemoryBus()
+    grown = tmp_path / "grown"
+    sup = FakeSupervisor(bus, grown, verify=passes)
+    await sup.start()
+    kv = BlinkingKV("deploy")
+    publish = bus.publish
+
+    async def blinking(subject, data):
+        if subject in ("build.stage", "build.progress") and as_dict(data).get("round") == 1:
+            raise ConnectionError("nats: connection closed")
+        await publish(subject, data)
+
+    bus.publish = blinking
+    svc = BuilderService(
+        bus, kv, make_pipeline(bus, grown), Workspace(grown, TEMPLATE), {"fake": FakeCoder([GOOD])}, "fake"
+    )
+    await svc.start()
+    reply = await bus.request("rpc.build.start", {"name": "notes", "spec": SPEC})
+    await until(lambda: bus.events("build.done") or bus.events("build.failed"))
+    await svc.stop()
+    assert bus.events("build.done") and sup.deployed == ["notes"]
+    assert not bus.events("build.stage") and not bus.events("build.progress")  # none got out, the build went on
+    assert (await kv.get(kv_key("builds", reply["build_id"])))["status"] == "done"
+
+
 async def test_a_name_with_a_folder_is_taken_and_a_failed_list_refuses(tmp_path):
     svc, bus, *_ = await service(tmp_path)
     await svc.stop()
@@ -371,10 +459,10 @@ async def test_a_name_with_a_folder_is_taken_and_a_failed_list_refuses(tmp_path)
     sup.folders = ["drafts"]
     await sup.start()
     with pytest.raises(ValueError, match="a module named 'drafts' already exists"):
-        await svc.start_build({"name": "drafts", "spec": SPEC})
+        await svc.start_build(BuildRequest(name="drafts", spec=SPEC))
     sup.list_error = "registry down"
     with pytest.raises(ValueError, match="could not list modules: registry down"):
-        await svc.start_build({"name": "notes", "spec": SPEC})
+        await svc.start_build(BuildRequest(name="notes", spec=SPEC))
 
 
 async def test_an_unwritable_grown_dir_is_refused_with_how_to_fix_it(tmp_path):

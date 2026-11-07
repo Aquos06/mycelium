@@ -34,6 +34,27 @@ export const askSchema = saySchema.extend({
 });
 export type Ask = z.infer<typeof askSchema>;
 
+export const progressStepSchema = z.object({
+  text: z.string(),
+  state: z.enum(["done", "failed", "active", "pending"]).catch("pending"),
+  since: z.string().nullable().optional(), // an active step: when it began
+});
+export type ProgressStep = z.infer<typeof progressStepSchema>;
+
+/** out.progress: a job you are waiting on (a build Main started), one message that changes in place. Every update
+ *  carries the same `ref` and the whole picture; keep the finished one, else the highest `seq`. */
+export const progressSchema = envelopeSchema.extend({
+  channel: z.string(),
+  thread: z.string(),
+  ref: z.string(),
+  seq: z.number().default(0),
+  title: z.string(),
+  state: z.enum(["running", "done", "failed"]).catch("running"),
+  steps: z.array(progressStepSchema).default([]),
+  text: z.string().default(""),
+});
+export type Progress = z.infer<typeof progressSchema>;
+
 export const toolCallSchema = z.looseObject({
   name: z.string(),
   ok: z.boolean().optional(),

@@ -15,9 +15,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from mycelium_sdk import now_iso
-from mycelium_sdk.build import SPEC_MAX, BuildRef, BuildRequest, StartReply
-
-from .build import BuildSummary
+from mycelium_sdk.build import SPEC_MAX, BuildRef, BuildRequest, BuildSummary, StartReply
 
 __all__ = [
     "SPEC_MAX",

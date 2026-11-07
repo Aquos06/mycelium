@@ -3,7 +3,10 @@
     sense.chat      {id, channel, thread, text}            -> recall, plan, reply on out.say (or out.ask)
     sense.feedback  {ref, answer} | {ref, vote}            -> an answer continues the thread; a vote is traced
     brain.observe                                          -> v0: logged only (the gate comes with the snapshot)
-    build.done / build.failed                              -> told in the thread whose proposal started it
+    build.stage                                            -> out.progress in the thread that asked: one message
+                                                              per build, changed in place as it goes (progress.py)
+    build.done / build.failed                              -> told in the thread whose proposal started it; the
+                                                              progress message says how it ended, after the reply
 
 Every handled message ends in one trace.plan with the pack, the tool calls, the model usage and the
 reply, linked by `cause` to the message that started it.
@@ -26,8 +29,10 @@ import re
 import time
 from collections.abc import Callable, Coroutine
 from datetime import date
-from typing import Any
+from typing import Any, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from pydantic import BaseModel, ValidationError
 
 from mycelium_sdk import (
     Bus,
@@ -45,9 +50,21 @@ from mycelium_sdk import (
     ask,
     kv_key,
     now_iso,
+    validation_message,
 )
-from mycelium_sdk.build import BuildRef, BuildRequest, StartReply
+from mycelium_sdk.build import (
+    BuildDone,
+    BuildFailed,
+    BuildMode,
+    BuildRecord,
+    BuildRef,
+    BuildRequest,
+    BuildStage,
+    Stage,
+    StartReply,
+)
 
+from .progress import as_text, ended, running
 from .prompt import planner_prompt
 from .proposals import Proposal, ProposalKind, ProposalStatus, ProposalStore
 from .schemas import (
@@ -59,6 +76,8 @@ from .schemas import (
     ModuleInfo,
     PackSummary,
     PlanTrace,
+    Progress,
+    ProgressState,
     Say,
     SayOutput,
 )
@@ -76,6 +95,8 @@ from .tools import (
 )
 
 log = logging.getLogger("mycelium.main")
+
+M = TypeVar("M", bound=BaseModel)
 
 MODEL_DOWN_REPLY = "I can't reach my model right now, so I can't answer this yet. I kept your message."
 MODEL_SLOW_REPLY = "My model took too long to answer this time, so I stopped. I kept your message: ask me again."
@@ -151,6 +172,7 @@ class MainService:
         await self.bus.subscribe("sense.chat", self._dispatch(self.on_chat), queue="main")
         await self.bus.subscribe("sense.feedback", self._dispatch(self.on_feedback), queue="main")
         await self.bus.subscribe("brain.observe", self._dispatch(self.on_observe), queue="main")
+        await self.bus.subscribe("build.stage", self._dispatch(self.on_stage), queue="main")
         await self.bus.subscribe("build.done", self._dispatch(self.on_build), queue="main")
         await self.bus.subscribe("build.failed", self._dispatch(self.on_build), queue="main")
         # builds that ended while Main was down; never holds up the start, and outside drain(): it may wait minutes
@@ -290,29 +312,63 @@ class MainService:
             log.info("could not check the builder for %s: %s", p.name, e)
         return False
 
-    async def on_build(self, msg: Message) -> None:
-        """build.done / build.failed of a build a proposal started; other builds (mctl) are not Main's."""
-        outcome = BuildOutcome.from_event(msg.subject, msg.data)
-        channel, thread = msg.data.get("channel"), msg.data.get("thread")
-        if not outcome.build_id or not channel or not thread:
+    async def on_stage(self, msg: Message) -> None:
+        """A build that a thread asked for has moved on: its progress message there says where it is now. Rendered
+        from the event alone (it carries every round so far), so there is nothing to look up and nothing to lose."""
+        ev = _read(BuildStage, msg)
+        if ev is None or not ev.channel or not ev.thread:
             return
-        async with self._lock(str(channel), str(thread)):  # the tap that started it holds this lock until saved
-            p = await self.proposals.by_build(outcome.build_id)
-            if p is None:  # its start went unanswered at the tap: the latest proposal of that name, in this thread
-                latest = await self.proposals.by_name(str(msg.data.get("name") or ""))
-                if (
-                    latest
-                    and latest.status == ProposalStatus.PROPOSED
-                    and (latest.channel, latest.thread)
-                    == (
-                        channel,
-                        thread,
-                    )
-                ):
-                    latest.status, latest.build_id = ProposalStatus.BUILDING, outcome.build_id
-                    p = latest
-            if p is not None and p.status == ProposalStatus.BUILDING:
-                await self._finish(p, outcome, msg.data)
+        async with self._lock(ev.channel, ev.thread):  # the tap that started it says "Building ..." first
+            await self._show(ev, Envelope.child_of(msg.data, "main"))
+
+    async def _show(self, ev: BuildStage | BuildDone | BuildFailed, out: Envelope) -> None:
+        """The build's progress message, in the thread that asked for it, as `ev` has it. Never fails its caller:
+        a message that did not go out is replaced by the next one, and the end is said in the thread anyway."""
+        if not ev.channel or not ev.thread:
+            return
+        if isinstance(ev, BuildStage):
+            state, (title, steps) = ProgressState.RUNNING, running(ev)
+        else:
+            state = ProgressState.DONE if isinstance(ev, BuildDone) else ProgressState.FAILED
+            title, steps = ended(ev)
+        card = out.into(
+            Progress,
+            channel=ev.channel,
+            thread=ev.thread,
+            ref=ev.build_id,
+            seq=ev.seq,
+            title=title,
+            state=state,
+            steps=steps,
+            text=as_text(title, steps, self.zone),
+        )
+        try:
+            await self.bus.publish("out.progress", card)
+        except Exception:
+            log.exception("could not show the progress of build %s", ev.build_id)
+
+    async def on_build(self, msg: Message) -> None:
+        """build.done / build.failed: told in the thread whose proposal started it (other builds, mctl's, are not
+        Main's to tell), and its progress message, if a thread asked for it, ends however the proposal stands."""
+        ev = _read(BuildDone if msg.subject == "build.done" else BuildFailed, msg)
+        if ev is None or not ev.channel or not ev.thread:
+            return
+        async with self._lock(ev.channel, ev.thread):  # the tap that started it holds this lock until saved
+            try:
+                p = await self.proposals.by_build(ev.build_id)
+                if p is None:  # its start went unanswered at the tap: the latest proposal of that name, in this thread
+                    latest = await self.proposals.by_name(ev.name)
+                    if (
+                        latest
+                        and latest.status == ProposalStatus.PROPOSED
+                        and (latest.channel, latest.thread) == (ev.channel, ev.thread)
+                    ):
+                        latest.status, latest.build_id = ProposalStatus.BUILDING, ev.build_id
+                        p = latest
+                if p is not None and p.status == ProposalStatus.BUILDING:
+                    await self._finish(p, BuildOutcome.of(ev), msg.data)
+            finally:
+                await self._show(ev, Envelope.child_of(msg.data, "main"))
 
     async def catch_up(self, attempts: int = 20, wait: float = 30.0) -> None:
         """Builds that ended while Main was not listening: tell their threads. The builder may come up after Main
@@ -331,26 +387,36 @@ class MainService:
         """False when the builder did not answer, so catch_up tries again later."""
         for p in await self.proposals.building():
             try:
-                record = await self.bus.request("rpc.build.get", BuildRef(build_id=p.build_id or "?"), timeout=5.0)
+                reply = await self.bus.request("rpc.build.get", BuildRef(build_id=p.build_id or "?"), timeout=5.0)
             except Exception:
                 return False
-            if record.get("ok"):
-                outcome = BuildOutcome.from_record(record)
-            elif "no build" in str(record.get("error")):  # it answers, but lost the record: it will never report
+            if reply.get("ok"):
+                try:
+                    ev = BuildRecord.model_validate(reply).ended()
+                except ValidationError as e:
+                    log.warning("build %s: its record does not read: %s", p.build_id, validation_message(e))
+                    continue
+                if ev is None:  # still queued or building: its build.done/failed will come
+                    continue
+                outcome = BuildOutcome.of(ev)
+            elif "no build" in str(reply.get("error")):  # it answers, but lost the record: it will never report
                 outcome = BuildOutcome(
                     build_id=p.build_id or "", done=False, stage="unknown", error="the builder has no record of it"
                 )
+                ev = _lost(p, outcome)
             else:
                 return False
-            if outcome is None:  # still queued or building: its build.done/failed will come
-                continue
             async with self._lock(p.channel, p.thread):
                 fresh = await self.proposals.get(p.id)
                 if fresh is not None and fresh.status == ProposalStatus.BUILDING:
-                    await self._finish(fresh, outcome, {})
+                    try:
+                        await self._finish(fresh, outcome, {})
+                    finally:
+                        await self._show(ev, Envelope(source="main"))  # a record is not an event to be caused by
         return True
 
     async def _finish(self, p: Proposal, outcome: BuildOutcome, data: dict[str, Any]) -> None:
+        """Say how it ended, in the proposal's thread."""
         if outcome.done:
             p.status = ProposalStatus.DONE
             version = f" (version {outcome.version})" if outcome.version else ""
@@ -695,3 +761,29 @@ def _building(p: Proposal, position: int = 0) -> str:
     if p.is_change:
         return f"Changing {p.name}{ahead}. It runs as it is until the new version is ready; I'll tell you here."
     return f"Building {p.name}{ahead}. I'll tell you here when it's running."
+
+
+def _read(model: type[M], msg: Message) -> M | None:
+    """An event as the model it should be; None (and a line in the log) when it is not."""
+    try:
+        return model.model_validate(msg.data)
+    except ValidationError as e:
+        log.warning("%s does not read as %s: %s", msg.subject, model.__name__, validation_message(e))
+        return None
+
+
+def _lost(p: Proposal, outcome: BuildOutcome) -> BuildFailed:
+    """The end of a build the builder has no record of, for its progress message: stopped, nothing more known."""
+    return BuildFailed(
+        build_id=outcome.build_id,
+        name=p.name,
+        coder="",
+        mode=BuildMode.CHANGE if p.is_change else BuildMode.NEW,
+        channel=p.channel,
+        thread=p.thread,
+        rounds=0,
+        seconds=0.0,
+        stage=Stage.RESTART,  # not a step on the card: it reads "Stopped: <error>"
+        error=outcome.error or "the builder has no record of it",
+        base_version=p.base_version,
+    )

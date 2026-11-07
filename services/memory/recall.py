@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
+from mycelium_sdk.text import one_line
+
 from .decide import Decider
 from .embedder import Embedder
 from .index import FUZZY_THRESHOLD, Index
@@ -182,11 +184,6 @@ async def lookup(index: Index, name: str) -> list[Match]:
     return [Match(record=r, via=MatchVia.FUZZY, score=round(score, 3)) for r, score in await index.fuzzy(name, limit=3)]
 
 
-def _clip(text: str) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= EXCERPT_CHARS else text[: EXCERPT_CHARS - 1].rstrip() + "…"
-
-
 async def _excerpt(index: Index, record: NoteRecord, days: list[date], words: set[str]) -> str:
     """Facts on the days asked about win; then facts mentioning query words; then the note's summary."""
     facts = await index.facts(name=record.name)
@@ -194,8 +191,8 @@ async def _excerpt(index: Index, record: NoteRecord, days: list[date], words: se
     mentions = [f for f in facts if any(w in f.text.lower() for w in words)]
     chosen = on_days or mentions
     if chosen:
-        return _clip(" · ".join(f"{f.day.isoformat()} {f.text}" for f in chosen[:3]))
-    return _clip(record.summary)
+        return one_line(" · ".join(f"{f.day.isoformat()} {f.text}" for f in chosen[:3]), EXCERPT_CHARS)
+    return one_line(record.summary, EXCERPT_CHARS)
 
 
 async def recall(
@@ -237,7 +234,7 @@ async def recall(
         days.append(d)
         s = await index.summary("day", d.isoformat())
         if s:
-            add(s.path, f"{phrase} = {d.isoformat()}", _clip(s.text))
+            add(s.path, f"{phrase} = {d.isoformat()}", one_line(s.text, EXCERPT_CHARS))
             await hop(s.path, s.links)
         for f in await index.facts(day=d):
             if record := await index.get(f.note):
@@ -250,11 +247,11 @@ async def recall(
         period_dates = period_days(period, key)
         days.extend(period_dates)
         if s := await index.summary(period, key):
-            add(s.path, f"{phrase} = {key}", _clip(s.text))
+            add(s.path, f"{phrase} = {key}", one_line(s.text, EXCERPT_CHARS))
             await hop(s.path, s.links)
         else:
             for s in await index.summaries_in("day", [d.isoformat() for d in period_dates]):
-                add(s.path, f"{phrase}: day {s.key}", _clip(s.text))
+                add(s.path, f"{phrase}: day {s.key}", one_line(s.text, EXCERPT_CHARS))
 
     # 2. names: the note, then one hop
     for term, name, via in await find_names(query, index):
@@ -275,7 +272,7 @@ async def recall(
     # 3. the recent past is always context
     for why, d in (("today", today), ("yesterday", today - timedelta(days=1))):
         if s := await index.summary("day", d.isoformat()):
-            add(s.path, why, _clip(s.text))
+            add(s.path, why, one_line(s.text, EXCERPT_CHARS))
 
     # 4. the decide step. A vague question ("that place with the good shoyu"): the scorer reads the catalogue and
     #    recall hops from what it picks. A named or dated question: the notes just opened seed the loop, and the
@@ -304,9 +301,11 @@ async def recall(
             if pick.excerpt is not None:  # a fact: show that line on its note, open the note if it is not yet
                 if item := next((i for i in items if i.note == pick.path), None):
                     if pick.excerpt not in item.excerpt:
-                        item.excerpt = _clip(f"{item.excerpt} · {pick.excerpt}" if item.excerpt else pick.excerpt)
+                        item.excerpt = one_line(
+                            f"{item.excerpt} · {pick.excerpt}" if item.excerpt else pick.excerpt, EXCERPT_CHARS
+                        )
                 else:
-                    add(pick.path, why, _clip(pick.excerpt))
+                    add(pick.path, why, one_line(pick.excerpt, EXCERPT_CHARS))
                 # the notes a picked fact names are the answer's own pointers ("dinner at [[ramen-place-xinyi]]")
                 if owner := await index.by_path(pick.path):
                     for link in LINK_RE.findall(pick.excerpt):
@@ -314,7 +313,7 @@ async def recall(
                             await add_note(target, f"named in {owner.name}'s fact of {pick.excerpt[:10]}")
             elif pick.path.startswith("summaries/"):
                 if s := await index.summary_by_path(pick.path):
-                    add(s.path, why, _clip(s.text))
+                    add(s.path, why, one_line(s.text, EXCERPT_CHARS))
             elif record := await index.by_path(pick.path):
                 await add_note(record, why)
         if report.picked or report.error is None or not vague:
@@ -330,6 +329,6 @@ async def recall(
                 if isinstance(nb.record, NoteRecord):
                     await add_note(nb.record, why)
                 else:
-                    add(nb.record.path, why, _clip(nb.record.text))
+                    add(nb.record.path, why, one_line(nb.record.text, EXCERPT_CHARS))
 
     return RecallPack(query=query, items=items, used=used, budget=RecallBudget(notes_opened=len(items), max=budget))

@@ -1,18 +1,36 @@
 """Every shape the builder speaks, in one place (same layout as memory's and the gateway's schemas/).
 
-build.py        one build: BuildRecord, Round, BuildSummary, the stages
-rpc.py          rpc.build.* requests and replies: BuildRequest, StartReply, BuildRef, BuildListRequest, BuildList, ...
-events.py       the build.* events: BuildStarted, BuildProgress, BuildDone, BuildFailed
+rpc.py          rpc.build.* requests and replies: BuildListRequest, BuildList, CoderList, ... (and the SDK's below)
 coder.py        a coder's round: Feedback, CoderContext, CoderResult; our coder's tool arguments: ManifestDraft, WriteFiles
 supervisor.py   what the builder asks the supervisor (rpc.sys.*): VerifyCall, AgentCall, ... and the replies
 gateway.py      what our coder asks the gateway before a build (rpc.llm.config)
 
-The model calls (Prompt, CompletionRequest, ChatMessage, Tool, CompletionReply) and ask() are the SDK's.
+One build and what is said about it are the SDK's (mycelium_sdk.build), re-exported here, since Main and mctl
+read them too: BuildRecord, Round, BuildSummary, the stages, BuildRequest, StartReply, BuildRef, and the build.*
+events, each built from the record (`BuildStage.of(record, ...)`): BuildStarted, BuildStage, BuildProgress,
+BuildDone and BuildFailed (both BuildEnded), with RoundLine. The model calls (Prompt, CompletionRequest,
+ChatMessage, Tool, CompletionReply) and ask() are the SDK's too.
 """
 
-from .build import BuildMode, BuildRecord, BuildStatus, BuildSummary, FeedbackStage, Round, Stage
+from mycelium_sdk.build import (
+    BuildDone,
+    BuildEnded,
+    BuildEvent,
+    BuildFailed,
+    BuildMode,
+    BuildProgress,
+    BuildRecord,
+    BuildStage,
+    BuildStarted,
+    BuildStatus,
+    BuildSummary,
+    FeedbackStage,
+    Round,
+    RoundLine,
+    Stage,
+)
+
 from .coder import CoderContext, CoderResult, Feedback, FileArg, ManifestDraft, Spend, WriteFiles
-from .events import BuildDone, BuildEvent, BuildFailed, BuildProgress, BuildStarted
 from .gateway import ConfigReply, ProviderState, SlotState
 from .rpc import (
     SPEC_MAX,
@@ -57,10 +75,13 @@ __all__ = [
     "Spend",
     "WriteFiles",
     "BuildDone",
+    "BuildEnded",
     "BuildEvent",
     "BuildFailed",
     "BuildProgress",
+    "BuildStage",
     "BuildStarted",
+    "RoundLine",
     "ConfigReply",
     "ProviderState",
     "SlotState",

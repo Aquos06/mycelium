@@ -1,4 +1,5 @@
-// The builder's domain: rpc.build.coders and rpc.build.default (services/builder/schemas/rpc.py).
+// The builder's domain: rpc.build.coders and rpc.build.default (services/builder/schemas/rpc.py), and
+// rpc.build.get (mycelium_sdk/build.py).
 
 import { z } from "zod";
 import { replySchema } from "./vocabulary";
@@ -18,3 +19,19 @@ export const coderListSchema = replySchema.extend({
   coders: z.array(coderInfoSchema).default([]),
 });
 export type CoderList = z.infer<typeof coderListSchema>;
+
+/** rpc.build.get: one build's record (mycelium_sdk.build.BuildRecord), the part the app reads: how it ended. */
+export const buildRecordSchema = replySchema.extend({
+  id: z.string().default(""),
+  name: z.string().default(""),
+  status: z.enum(["queued", "building", "done", "failed"]).catch("building"),
+  stage: z.string().nullable().default(null), // where it is, or where a failed one stopped
+  // a failed build's error; the same key as a refusal's, and so the same type (none is undefined, not null)
+  error: z
+    .string()
+    .nullish()
+    .transform((v) => v ?? undefined),
+  version: z.string().nullable().default(null),
+  finished: z.string().nullable().default(null),
+});
+export type BuildRecord = z.infer<typeof buildRecordSchema>;

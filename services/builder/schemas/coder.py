@@ -14,8 +14,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from mycelium_sdk.build import FeedbackStage
+
 from ..prompts.brief import Brief
-from .build import FeedbackStage
 
 
 class Feedback(BaseModel):

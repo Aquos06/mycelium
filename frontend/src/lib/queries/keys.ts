@@ -17,6 +17,7 @@ export const queryKeys = {
   config: () => ["gateway-config"] as const,
   usage: () => ["gateway-usage"] as const,
   coders: () => ["builder-coders"] as const,
+  build: (id: string) => ["builder-build", id] as const,
 };
 
 /** What a screen may pass to a hook: everything but the key and the fetcher, which the hook owns. */

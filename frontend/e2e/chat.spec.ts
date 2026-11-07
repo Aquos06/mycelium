@@ -31,6 +31,24 @@ test.describe("chat", () => {
     await expect(reply).not.toContainText("**");
   });
 
+  test("a module being built shows its progress in the thread: rounds, steps, then the end", async ({ page }) => {
+    await page.goto("/chat/web");
+    await page.getByRole("textbox", { name: "Message" }).fill("I want to track my water");
+    await page.keyboard.press("Enter");
+    const offer = page.locator("[data-kind=ask]").last();
+    await expect(offer).toContainText("A new module, water");
+    await offer.getByRole("button", { name: "Build it" }).click();
+    const card = page.locator("[data-kind=progress]");
+    await expect(card).toHaveCount(1);
+    await expect(card.locator("li[data-state=active]")).toContainText("Round 1 of 6");
+    await expect(card.locator("li[data-state=failed]")).toContainText("tests failed: 1 failed, 4 passed", { timeout: 10_000 });
+    await expect(card).toHaveAttribute("data-state", "done", { timeout: 10_000 });
+    await expect(card).toContainText("Built water v0.1.0");
+    await expect(card.locator("li[data-state=done]")).toHaveCount(3);
+    await expect(card).toHaveCount(1); // the same card all along
+    await expect(page.getByText("water is built and running (version 0.1.0).")).toBeVisible();
+  });
+
   test("new chat starts a fresh thread and the rail remembers the old one", async ({ page }, info) => {
     test.skip(info.project.name === "mobile", "the rail with recent chats exists at md and up");
     await page.goto("/chat/web");
