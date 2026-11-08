@@ -1,4 +1,5 @@
-"""The coders a build can use: BUILDER_CODER picks the default, a build may name another.
+"""The coders a build can use. The default is the one chosen (rpc.build.default), else BUILDER_CODER; a build may
+name another.
 
 base.py       Coder, CoderError (this round failed), CoderUnavailable (the build stops); what a coder is
               given and gives back (CoderContext, CoderResult) is in schemas/coder.py

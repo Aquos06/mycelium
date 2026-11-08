@@ -62,6 +62,8 @@ describe("domains", () => {
       "Building water failed at tests: no working module after 6 rounds",
     );
     expect(read(ev("build.stage", { name: "water", coder: "opencode", stage: "coder", round: 1 })).meta).toBe("build.stage · opencode");
+    const chosen = read(ev("build.coder", { coder: "opencode", previous: "mycelium", seed: "mycelium" }));
+    expect(chosen).toEqual({ text: "Builds now use opencode instead of mycelium", meta: "build.coder" });
   });
 
   it("keeps the machine's side as meta, shown only in raw mode", () => {

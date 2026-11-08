@@ -47,7 +47,7 @@ export function Settings({ tab }: { tab: SettingsTab }) {
             {tab === "builder" && <Builder />}
             {env && (
               <>
-                <Heading title={env.title} lead={env.desc} />
+                <Heading title={env.title} lead={env.desc} level={tab === "builder" ? 2 : 1} />
                 <Card>
                   {env.rows.map((r) => (
                     <SettingRow key={r.env} r={r} />
@@ -67,10 +67,12 @@ export function Settings({ tab }: { tab: SettingsTab }) {
   );
 }
 
-export function Heading({ title, lead }: { title: string; lead: React.ReactNode }) {
+/** A tab's heading: the page's one h1, or an h2 for a second section under a tab that already has one. */
+export function Heading({ title, lead, level = 1 }: { title: string; lead: React.ReactNode; level?: 1 | 2 }) {
+  const H = level === 1 ? "h1" : "h2";
   return (
     <div className="flex flex-col gap-1.5">
-      <h1 className="m-0 text-[22px] font-semibold tracking-[-0.02em]">{title}</h1>
+      <H className="m-0 text-[22px] font-semibold tracking-[-0.02em]">{title}</H>
       <span className="text-[13.5px] text-pretty text-ink2">{lead}</span>
     </div>
   );

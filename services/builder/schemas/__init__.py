@@ -8,7 +8,7 @@ gateway.py      what our coder asks the gateway before a build (rpc.llm.config)
 One build and what is said about it are the SDK's (mycelium_sdk.build), re-exported here, since Main and mctl
 read them too: BuildRecord, Round, BuildSummary, the stages, BuildRequest, StartReply, BuildRef, and the build.*
 events, each built from the record (`BuildStage.of(record, ...)`): BuildStarted, BuildStage, BuildProgress,
-BuildDone and BuildFailed (both BuildEnded), with RoundLine. The model calls (Prompt, CompletionRequest,
+BuildDone and BuildFailed (both BuildEnded), with RoundLine, and build.coder (CoderChosen). The model calls (Prompt, CompletionRequest,
 ChatMessage, Tool, CompletionReply) and ask() are the SDK's too.
 """
 
@@ -24,6 +24,7 @@ from mycelium_sdk.build import (
     BuildStarted,
     BuildStatus,
     BuildSummary,
+    CoderChosen,
     FeedbackStage,
     Round,
     RoundLine,
@@ -91,6 +92,7 @@ __all__ = [
     "BuildRef",
     "BuildRequest",
     "CoderChoice",
+    "CoderChosen",
     "CoderInfo",
     "CoderList",
     "CoderSetting",

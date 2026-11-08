@@ -32,6 +32,8 @@ export function useChooseCoder() {
       if (!r.ok) throw new Error(r.error ?? "the builder said no");
       return r;
     },
+    // a poll already on its way could answer after this and put the old default back: stop it first
+    onMutate: () => qc.cancelQueries({ queryKey: queryKeys.coders() }),
     onSuccess: (list) => qc.setQueryData(queryKeys.coders(), list),
   });
 }

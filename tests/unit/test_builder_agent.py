@@ -1,6 +1,8 @@
 """A coding agent as the coder: what it is told, what the builder takes back from it, how it fails, and a whole
 build where an agent writes the module."""
 
+import asyncio
+
 import pytest
 
 from builder.coders import AgentCoder, CoderError, CoderUnavailable
@@ -220,3 +222,25 @@ async def test_the_agents_share_one_question_to_the_supervisor():
     assert reasons[:2] == [None, None] and "no agent 'codex'" in reasons[2] and len(asked) == 1
     assert await AgentCoder(bus, "opencode", roster=roster).describe() == "OpenCode on your own model"
     assert len(asked) == 1  # the description comes from the same answer
+
+
+async def test_listing_every_agent_asks_the_supervisor_once():
+    from builder.coders import AgentRoster
+
+    bus = InMemoryBus()
+    asked = []
+    names = ("opencode", "codex", "aider")
+
+    async def agents(msg):
+        asked.append(1)
+        await asyncio.sleep(0.05)  # the others ask while this one is on its way
+        await msg.respond(
+            {"ok": True, "agents": [{"name": n, "description": f"{n} on your model", "ready": True} for n in names]}
+        )
+
+    await bus.subscribe("rpc.sys.agents", agents)
+    roster = AgentRoster(bus)
+    coders = [AgentCoder(bus, n, roster=roster) for n in names]
+    answers = await asyncio.gather(*(c.ready() for c in coders), *(c.describe() for c in coders))
+    assert answers == [None, None, None, "opencode on your model", "codex on your model", "aider on your model"]
+    assert len(asked) == 1

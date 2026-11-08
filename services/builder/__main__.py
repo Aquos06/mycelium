@@ -55,7 +55,7 @@ async def main() -> None:
         bus, kv, pipeline, workspace, coders, s.coder, max_queue=s.max_queue, build_timeout=s.build_timeout
     )
     await service.start()
-    log.info("builder ready: coder=%s grown=%s", s.coder, s.grown_dir)
+    log.info("builder ready: default coder=%s (BUILDER_CODER=%s) grown=%s", service.default_coder, s.coder, s.grown_dir)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
