@@ -10,12 +10,13 @@ export function rpc<T extends Reply = Reply>(
   payload: Json = {},
   timeout?: number,
   schema: Parser<T> = replySchema as unknown as Parser<T>,
+  mockDelay = 80,
 ): Promise<T> {
   return apiFetch<T>(`${API}/rpc/${subject}`, {
     method: "POST",
     body: { payload, timeout },
     parse: { schema, what: subject },
     mock: async () => (await import("@/lib/mock")).mockRpc(subject, payload) as T,
-    mockDelay: 80,
+    mockDelay,
   });
 }

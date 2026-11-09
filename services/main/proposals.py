@@ -1,14 +1,16 @@
 """Proposals: a module Main drafted, kept in Main's KV until it is built or turned down.
 
-A proposal is a new module (kind `new`, from propose_module: its SPEC.md) or a change to one the builder grew
-(kind `change`, from change_module: what to change). It is stored before its card goes out, under the card's own id (the `ref` a tap carries back), so a
-tap on Build it starts the build in code, never through the model: the approval is enforced here, not in the
-prompt. A second tap, or a tap on an old card, finds the proposal already decided.
+A proposal is a new module (kind `new`, from propose_module: its SPEC.md), a change to one the builder grew
+(kind `change`, from change_module: what to change) or the deletion of one (kind `delete`, from delete_module). It
+is stored before its card goes out, under the card's own id (the `ref` a tap carries back), so a tap on Build it
+starts the build in code, never through the model: the approval is enforced here, not in the prompt. A second tap,
+or a tap on an old card, finds the proposal already decided.
 
     proposed -> building -> done | failed
              -> declined
     proposed stays proposed when the builder would not start (down, busy, name taken): nothing was built,
     and Main sends a fresh card for it, since the apps take the buttons off a card once it is answered.
+    A deletion is done while the tap waits: proposed -> done, or declined; never building.
 
 Keys in Main's bucket:
     proposal/<id>              the proposal; <id> is its first card's id
@@ -35,6 +37,7 @@ NOTE_SHOWN = 300  # characters of a note told in the chat
 class ProposalKind(StrEnum):
     NEW = "new"  # a module to grow: `spec`
     CHANGE = "change"  # a change to a grown module: `change`; the module runs as it was until it is built
+    DELETE = "delete"  # a grown module deleted: its data copied aside, its code kept in git
 
 
 class ProposalStatus(StrEnum):
@@ -48,11 +51,11 @@ class ProposalStatus(StrEnum):
 class Proposal(BaseModel):
     id: str  # its first card's id (out.ask)
     name: str
-    purpose: str  # a change: its first line
+    purpose: str  # a change: its first line; a deletion: none
     kind: ProposalKind = ProposalKind.NEW
     spec: str = ""  # a new module: SPEC.md, as Hansen approves it
     change: str = ""  # a change: what to change, as Hansen approves it
-    base_version: str | None = None  # a change: the version it was drafted against
+    base_version: str | None = None  # a change: the version it was drafted against; a deletion: the one deleted
     channel: str
     thread: str
     cause: str | None = None  # the message Main was answering when it proposed
@@ -65,6 +68,10 @@ class Proposal(BaseModel):
     @property
     def is_change(self) -> bool:
         return self.kind == ProposalKind.CHANGE
+
+    @property
+    def is_delete(self) -> bool:
+        return self.kind == ProposalKind.DELETE
 
     def short_note(self) -> str:
         note = self.note or "no reason given"
@@ -110,6 +117,10 @@ class ProposalStore:
         """Every proposal whose build has not been reported yet (Main's catch-up on start). Proposals are a few
         a week, so reading them all is cheaper than keeping an index in step."""
         return [p for p in await self._all() if p.status == ProposalStatus.BUILDING]
+
+    async def asking_to_delete(self, name: str) -> list[Proposal]:
+        """Every card that still asks to delete this module: once it is deleted from anywhere, they are stale."""
+        return [p for p in await self._all() if p.is_delete and p.name == name and p.status == ProposalStatus.PROPOSED]
 
     async def offered(self, limit: int = 8) -> list[Proposal]:
         """The newest proposal of each name, newest first: what the planner reads so it does not offer the same

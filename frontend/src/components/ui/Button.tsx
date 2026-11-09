@@ -5,6 +5,7 @@
 //   default   a bordered control: Refresh, Logs, New chat
 //   primary   the one action in a card: an answer, Run, Open. Ink, never moss: moss is the system's own.
 //   ghost     text on nothing: All →, Close
+//   danger    the one action that cannot be taken back from here, in its confirm dialog: Delete
 //   moss      the voice affordance, the only moss button. A pill.
 //   round     a 32px circle: send, mic
 
@@ -22,6 +23,7 @@ const buttonVariants = cva(
         default: "border border-line-strong bg-surface text-ink hover:bg-sidebar",
         primary: "bg-ink font-medium text-white hover:bg-ink1",
         ghost: "text-ink2 hover:bg-sunken hover:text-ink",
+        danger: "bg-red font-medium text-white hover:bg-red-text",
         moss: "rounded-[15px] bg-moss-soft pr-3 pl-2.5 font-medium text-moss hover:bg-moss-hover",
         round: "size-8 rounded-full bg-ink4 text-white data-[ready=true]:bg-ink",
         "round-moss": "size-8 rounded-full bg-moss-soft text-moss hover:bg-moss-hover",

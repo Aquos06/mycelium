@@ -127,6 +127,28 @@ async def test_module_deployed_writes_a_module_note(svc):
     assert (await svc.index.get("reminders")).type == "module"
 
 
+async def test_a_deleted_module_note_stops_sending_main_to_it(svc):
+    async def fake_list(msg):
+        manifest = {"name": "garden", "version": "0.1.0", "purpose": "Logs watering.", "requests": ["month"]}
+        await msg.respond({"ok": True, "modules": [{"name": "garden", "manifest": manifest}]})
+
+    await svc.bus.subscribe("rpc.sys.list", fake_list)
+    await svc.bus.publish("sys.module.deployed", {"name": "garden", "version": "0.1.0", "image": "img"})
+    copy = "mycelium-data-garden-v0.1.0-removed-20261108T020000Z"
+    await svc.bus.publish("sys.module.removed", {"name": "garden", "data": copy})
+
+    note = svc.vault.read("modules/garden.md")
+    assert note.summary == (
+        f"Deleted on {TODAY}: it no longer runs and cannot be asked. Its data was copied to {copy}. It was: Logs "
+        "watering."
+    )
+    assert "rpc.mod.garden" not in note.summary
+    assert [f.text for f in note.facts] == [f"deleted, its data copied to {copy}", "deployed v0.1.0"]
+
+    await svc.bus.publish("sys.module.removed", {"name": "never-noted", "data": None})
+    assert await svc.index.get("never-noted") is None  # no note is made for a module memory never knew
+
+
 async def test_module_redeploy_appends_not_duplicates(svc):
     async def fake_list(msg):
         await msg.respond(

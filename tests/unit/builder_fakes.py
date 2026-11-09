@@ -1,6 +1,6 @@
 """What the builder's tests share: a small module that works, a coder that writes what it is told, and a
-supervisor that answers verify by running pytest on the staged folder (no Docker), plus deploy, snapshot and
-list."""
+supervisor that answers verify by running pytest on the staged folder (no Docker), plus deploy, snapshot, remove
+and list."""
 
 from __future__ import annotations
 
@@ -139,7 +139,8 @@ def run_pytest(d: Path) -> dict:
 
 
 class FakeSupervisor:
-    """rpc.sys.list / verify / deploy on an InMemoryBus. `verify` defaults to pytest on the staged folder."""
+    """rpc.sys.list / verify / deploy / snapshot / remove on an InMemoryBus. `verify` defaults to pytest on the staged
+    folder."""
 
     def __init__(
         self,
@@ -155,7 +156,7 @@ class FakeSupervisor:
         self.modules = modules or ["hello"]
         self.verify_fn = verify or run_pytest
         self.deploy_error = deploy_error
-        self.answer = answer if answer is not None else {"list", "verify", "deploy", "snapshot"}
+        self.answer = answer if answer is not None else {"list", "verify", "deploy", "snapshot", "remove"}
         self.verified: list[str] = []
         self.deployed: list[str] = []
         self.snapshots: list[tuple[str, str]] = []  # (name, label), in order
@@ -163,6 +164,10 @@ class FakeSupervisor:
         self.events: list[str] = []  # snapshot:<name>, deploy:<name>: what happened in which order
         self.folders: list[str] = []
         self.list_error: str | None = None
+        self.removed: list[tuple[str, str]] = []  # (name, label), in order
+        self.remove_error: str | None = None
+        self.remove_gate: asyncio.Event | None = None  # set it to hold a removal until the test lets it go
+        self.dropped: set[str] = set()  # modules whose data a removal copied and dropped: a second one has none
 
     async def start(self) -> None:
         for action in self.answer:
@@ -188,6 +193,23 @@ class FakeSupervisor:
         self.snapshots.append((name, label))
         self.events.append(f"snapshot:{name}")
         await msg.respond({"ok": True, "name": name, "volume": f"test-data-{name}-{label}"})
+
+    async def _remove(self, msg) -> None:
+        name, label = msg.data["name"], msg.data["label"]
+        if self.remove_gate is not None:
+            await self.remove_gate.wait()
+        if self.remove_error:
+            await msg.respond({"ok": False, "error": self.remove_error})
+            return
+        self.removed.append((name, label))
+        self.events.append(f"remove:{name}")
+        listed = name in self.modules
+        if listed:
+            self.modules.remove(name)
+        data = None if name in self.dropped else f"test-data-{name}-{label}"
+        self.dropped.add(name)
+        reply = {"name": name, "stopped": listed, "data": data, "listed": listed}
+        await msg.respond({"ok": True, **reply})
 
     async def _verify(self, msg) -> None:
         name = msg.data["name"]

@@ -6,6 +6,7 @@
     python scripts/mctl.py verify hello                           # its tests, locked down (--staging: a build)
     python scripts/mctl.py build expenses specs/expenses.md --wait  # grow a module; --coder picks who writes it
     python scripts/mctl.py change expenses "keep a category" --wait  # change a grown module; it keeps its data
+    python scripts/mctl.py remove expenses-v2                     # delete a grown module (data copied, code kept)
     python scripts/mctl.py builds                                 # the latest builds
     python scripts/mctl.py build-get <build_id>                   # one build, round by round
     python scripts/mctl.py coders                                 # who can write a module, and the default
@@ -190,6 +191,8 @@ async def run(args) -> int:
                 return 0 if reply["passed"] else 1
         elif args.cmd in ("build", "change"):
             return await follow_build(bus, args)
+        elif args.cmd == "remove":
+            reply = await bus.request("rpc.build.remove", {"name": args.name}, timeout=max(args.timeout, 150.0))
         elif args.cmd == "builds":
             reply = await bus.request("rpc.build.list", {"limit": args.limit}, timeout=args.timeout)
         elif args.cmd == "build-get":
@@ -237,6 +240,10 @@ def main() -> int:
     ch.add_argument("change", help="what it should do after the change, in a sentence or a few lines")
     ch.add_argument("--coder", help="who writes it (mctl coders); default: the builder's default coder")
     ch.add_argument("--wait", action="store_true", help="follow the build round by round until it ends")
+    sub.add_parser(
+        "remove",
+        help="delete a module the builder grew: its data copied aside, its code kept in git (rpc.build.remove)",
+    ).add_argument("name")
     bl = sub.add_parser("builds", help="the latest builds")
     bl.add_argument("--limit", type=int, default=20)
     sub.add_parser("build-get", help="one build, round by round").add_argument("build_id")

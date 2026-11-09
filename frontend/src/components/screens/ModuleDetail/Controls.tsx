@@ -1,38 +1,35 @@
 "use client";
 
-// Logs, Pause / Start, Rebuild. Pause and the deploys ask twice: the second click within four seconds.
+// Logs, Pause / Start, Rebuild, Delete. Pause and the deploys ask twice (useConfirm); Delete, there for a module the
+// builder grew, asks the page to open the dialog that says what happens to it (the page keeps it, not this: these
+// controls go with the module's row, which is gone before the deletion is).
 
 import { AlignLeft } from "lucide-react";
 import { useState } from "react";
+import { useConfirm } from "@/lib/hooks";
 import { useModuleAction, useModuleLogs } from "@/lib/queries";
 import type { ModuleRow } from "@/lib/schemas";
 import { statusOf } from "@/lib/status";
 import { Button } from "@/components/ui/Button";
 import { ErrorLine, Label, Pre, Spinner } from "@/components/ui/Primitives";
 
-export function Controls({ m }: { m: ModuleRow }) {
-  const [arming, setArming] = useState<"stop" | "deploy" | null>(null);
+type Act = "stop" | "deploy";
+
+export function Controls({ m, onDelete }: { m: ModuleRow; onDelete?: () => void }) {
+  const { armed: arming, confirm } = useConfirm<Act>();
   const [logsOpen, setLogsOpen] = useState(false);
   const action = useModuleAction();
   const logs = useModuleLogs(m.name, logsOpen);
   const running = statusOf(m) === "running";
-  const busy = action.isPending ? action.variables?.action : null;
+  const busy: Act | null = action.isPending ? (action.variables?.action ?? null) : null;
 
-  const run = (a: "stop" | "deploy") => {
-    if (arming !== a) {
-      setArming(a);
-      window.setTimeout(() => setArming((x) => (x === a ? null : x)), 4000);
-      return;
-    }
-    setArming(null);
-    action.mutate({ name: m.name, action: a });
-  };
+  const run = (a: Act) => confirm(a, () => action.mutate({ name: m.name, action: a }));
 
   return (
     <>
       {action.error && <ErrorLine>{action.error.message}</ErrorLine>}
       <Button size="sm" onClick={() => setLogsOpen((o) => !o)} title="The container's last 200 lines" aria-expanded={logsOpen}>
-        <AlignLeft className="size-[13px]" /> Logs
+        <AlignLeft className="size-[13px]" /> <span className="max-sm:sr-only">Logs</span>
       </Button>
       {running ? (
         <Button size="sm" disabled={busy !== null} onClick={() => run("stop")}>
@@ -46,6 +43,11 @@ export function Controls({ m }: { m: ModuleRow }) {
       <Button size="sm" disabled={busy !== null} onClick={() => run("deploy")} title="Build the image again from modules/ and restart">
         {busy === "deploy" && running && <Spinner ink />} {arming === "deploy" && running ? "Sure? Rebuild" : "Rebuild"}
       </Button>
+      {onDelete && (
+        <Button size="sm" disabled={busy !== null} onClick={onDelete} aria-haspopup="dialog">
+          Delete
+        </Button>
+      )}
       {logsOpen && (
         <div className="absolute top-12 right-0 left-0 z-10 border-b border-line bg-surface/95 px-6 pb-6" role="region" aria-label="Logs">
           <div className="flex items-center py-2.5">

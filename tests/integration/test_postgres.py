@@ -43,7 +43,7 @@ async def test_core_migration_creates_tables_extensions_and_is_idempotent(engine
     assert results == [version] * 3
 
 
-async def test_registry_upsert_and_status(engine):
+async def test_registry_upsert_status_and_remove(engine):
     from supervisor.registry import PostgresRegistry
 
     reg = PostgresRegistry(DATABASE_URL, engine=engine)
@@ -55,6 +55,9 @@ async def test_registry_upsert_and_status(engine):
         await reg.set_status(name, "stopped")
         row = next(r for r in await reg.all() if r.name == name)
         assert row.status == "stopped" and row.image == "img:1" and row.manifest["name"] == name
+        assert await reg.remove(name) is True
+        assert name not in {r.name for r in await reg.all()}
+        assert await reg.remove(name) is False  # gone already
     finally:
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM modules WHERE name = :n"), {"n": name})

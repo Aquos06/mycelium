@@ -41,6 +41,7 @@ describe("domains", () => {
     expect(t("trace.decide", { picked: 2, scored: 7 })).toBe("Picked 2 of 7 notes for the question");
     expect(t("sys.module.deployed", { name: "hello", image: "img" })).toBe("Started hello");
     expect(t("sys.module.stopped", { name: "hello" })).toBe("Stopped hello");
+    expect(t("sys.module.removed", { name: "garden", data: "mycelium-data-garden-v0.1.0-removed-1" })).toBe("Deleted garden");
     expect(t("sys.reconciled", { modules: ["a", "b"] })).toBe("Checked 2 modules at start");
     expect(t("mod.hello.message.counted", { count: 13, day: "2026-10-26" })).toBe("hello: message counted (count 13 · day 2026-10-26)");
   });

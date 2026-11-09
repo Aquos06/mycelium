@@ -2,6 +2,7 @@
 
     rpc.build.start   BuildRequest -> StartReply: a new module from a spec, or a change to one the builder grew
     rpc.build.get     BuildRef     -> BuildRecord
+    rpc.build.remove  RemoveRequest -> Removed: a module deleted, its data copied first, its code kept in git
     build.started / build.stage / build.progress / build.done / build.failed: the BuildEvent kinds below
     build.coder       CoderChosen: the default coder changed (not about one build)
 
@@ -83,6 +84,31 @@ class StartReply(BaseModel):
 
 class BuildRef(BaseModel):
     build_id: str = Field(min_length=1)
+
+
+# ---- rpc.build.remove ------------------------------------------------------------------------------------
+
+
+class RemoveRequest(BaseModel):
+    """A module Hansen chose to delete: one the builder grew, or a registry row whose folder is gone already. Its
+    data is copied first and its code stays in GROWN_DIR's history, so it can come back."""
+
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        if not NAME_RE.match(v):
+            raise ValueError("must be a lowercase slug, 2-31 chars, starting with a letter")
+        return v
+
+
+class Removed(BaseModel):
+    name: str
+    version: str | None = None  # the version it ran; None: neither its folder nor the registry said
+    data: str | None = None  # the copy of its data volume; None: it had no data
+    commit: str | None = None  # the commit in GROWN_DIR that took its folder out; None: there was no folder
+    tag: str | None = None  # <name>-v<version>: where its code is kept
 
 
 # ---- one build -------------------------------------------------------------------------------------------

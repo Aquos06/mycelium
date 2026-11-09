@@ -208,15 +208,17 @@ flowchart TB
 | Main | memory | `rpc.memory.recall / remember / lookup` | request | notes, summaries, fuzzy matches |
 | Main, memory, bridges, modules | gateway | `rpc.llm.complete / embed / decide / transcribe` | request | prompt → completion; keys never leave the gateway |
 | Main | builder | `rpc.build.start` | request | `{name, spec, coder?}` after Hansen approved the spec, or `{name, change, coder?}` after he approved a change to a grown module; answers `{build_id, position}` or why not |
+| Main, web app, mctl | builder | `rpc.build.remove` | request | `{name}` after Hansen chose Delete it (or Delete on the module's page): a grown module deleted, its data copied first, its code kept in git; answers where each went, or why not |
 | Builder | bus | `build.started / stage / progress / done / failed` | event | each step as it begins, each round as it ends (in a line), then the commit or where it stopped; all with the thread that asked |
 | Builder | gateway | `rpc.llm.complete` (slot `coder`) | request | our coder: one forced tool call per file, `cause` = the build id |
 | Builder | supervisor | `rpc.sys.verify` | request | the staged build's tests in the sealed container |
 | Builder | supervisor | `rpc.sys.snapshot` | request | a change build: a copy of the module's data volume before the new version deploys |
+| Builder | supervisor | `rpc.sys.remove` | request | a module deleted: its data volume copied, then its container, data volume, images and registry row removed |
 | Builder | supervisor | `rpc.sys.agent` | request | a coding agent's round on a copy of the staged build; the folder comes back |
 | Builder | supervisor | `rpc.sys.catalog` | request | what already exists, so the new module can subscribe to other modules' events and reuse their requests |
 | Builder | supervisor | `rpc.sys.deploy` | request | deploy the verified module |
 | Anyone | supervisor | `rpc.sys.list / health / logs / stop / catalog / rollback` | request | registry, catalog of all declared events and requests |
-| Supervisor | bus | `sys.module.deployed / stopped / failed` | event | lifecycle |
+| Supervisor | bus | `sys.module.deployed / stopped / failed / removed` | event | lifecycle |
 | Main | bus | `trace.gate / plan / notify` | event | decision + inputs, for "why?" and evals |
 | Tracer | Postgres | — | thick | every stored event → `events`, every trace → `traces` |
 | Memory | Postgres | — | thick | own db; `events` read-only |
@@ -305,8 +307,8 @@ The only service with Docker access. Turns a module folder into a running contai
 | | |
 |---|---|
 | Owns | `modules` table (deployed manifests, status), images, per-module volumes |
-| Answers | `rpc.sys.deploy / verify / snapshot / stop / logs / list / health` |
-| Publishes | `sys.module.deployed / stopped / failed` |
+| Answers | `rpc.sys.deploy / verify / snapshot / stop / remove / logs / list / health` |
+| Publishes | `sys.module.deployed / stopped / failed / removed` |
 | Extend: **catalog** | `rpc.sys.catalog`: every deployed module's events, requests and their fields, plus the static core subjects (`sense.*`, `out.*`). Built from the manifests already stored; nothing kept by hand. |
 | Extend: **compat check** | Refuse a deploy that changes an event other modules subscribe to in a non-additive way. |
 | Extend: **secrets** | Inject declared secrets from a local store at container start. |
@@ -325,6 +327,15 @@ never retires modules because a whole root is missing (a `GROWN_DIR` without `.g
 change. **`rpc.sys.snapshot`** copies a module's data volume to `<stack>-data-<name>-v<version>-<build id>`
 before a change build deploys: a throwaway module-base container with no network, the module paused while it
 copies (so the copy is what a crash would leave, which SQLite recovers from), and no copy kept if it fails.
+**`rpc.sys.remove`** deletes a module for good: its container stopped and removed first (so nothing writes while
+the data is copied, and a module that crashes and restarts needs no pause), the same copy
+(`<stack>-data-<name>-v<version>-removed-<when>`), then its data volume (never before the copy), its images and its
+registry row, so nothing lists it, reconcile never brings it back, and a module grown again under the name starts
+with no data. A hand-written module is refused (its folder is in the repo). Each step does what is left to do, so
+asking again finishes a removal that failed halfway; a copy that fails leaves the module stopped with its data, and
+says so (a retired one stays retired). Behind another module's deploy it waits 30 s at most and then says no, so it
+never runs after the builder has stopped waiting for it. Its folder is the builder's to take out of `GROWN_DIR`,
+which is read-only here. Only the builder asks for it: the web gateway does not forward it, like `rpc.sys.agent`.
 
 **Coding agents** run here too, because only the supervisor holds Docker (`rpc.sys.agent`, `rpc.sys.agents`;
 recipes in `services/supervisor/agent_images/agents.yaml`, an image per agent FROM module-base so the agent can run
@@ -483,6 +494,18 @@ kind `change` and ends the turn the same way, with a card, Change it / Not now, 
 its data; a tap calls `rpc.build.start` with `change` instead of `spec`. Main tells the thread when the new
 version runs, or that the change failed and, unless it failed at deploy, that the module still runs as it was.
 A hand-written module (`hello`) is not the builder's to change.
+
+**Deleting a module.** When Hansen says he wants a grown module gone (a duplicate, one he no longer uses), the
+planner calls `delete_module` with its name; taking an entry out of a module is a change, not this, and the
+planner never suggests a deletion on its own. Code refuses a module that is hand-written, not there, or being
+built. A valid call is a proposal of kind `delete` and ends the turn with a card, Delete it / Keep it, that says
+the data is copied aside first and the code stays in git. A tap calls `rpc.build.remove` (no build, no queue)
+with the thread's lock let go, so Hansen's messages there are answered while it runs, and a second tap is told it
+is under way; then Main says where the data copy and the tag are. A refusal is told with the builder's reason and
+not offered again on a card. The module's page in the web app has the same Delete, without Main, and so does
+`mctl remove <name>`. Whichever deleted it, `sys.module.removed` marks every card still asking to delete that name
+done, so an old card tapped later never deletes a module grown again under the name; and memory's note of the
+module says it was deleted and where its data went, so recall stops sending the planner to it.
 Tools (`services/main/tools/`) are pydantic: one argument model and one async handler per tool,
 held in a `ToolRegistry`. The `input_schema` the planner sees is generated from the argument model,
 and every call is validated against the same model before it touches the bus; a rejected call goes
@@ -549,7 +572,7 @@ the code it builds: the supervisor verifies every round in its sealed container.
 
 | | |
 |---|---|
-| Answers | `rpc.build.start {name, spec, coder?}` → `{build_id, position}` or the reason it will not (the name exists, the queue is full, the coder cannot work, the supervisor is down); `rpc.build.get`, `rpc.build.list`, `rpc.build.coders`; `rpc.build.default {coder}` chooses the coder a build gets when it names none (the web app's Settings → Builder, `mctl coders --use`), kept in KV across restarts, `BUILDER_CODER` until then; choosing `BUILDER_CODER` again clears it, and every change is a `build.coder` event |
+| Answers | `rpc.build.start {name, spec, coder?}` → `{build_id, position}` or the reason it will not (the name exists, the queue is full, the coder cannot work, the supervisor is down); `rpc.build.get`, `rpc.build.list`, `rpc.build.coders`; `rpc.build.default {coder}` chooses the coder a build gets when it names none (the web app's Settings → Builder, `mctl coders --use`), kept in KV across restarts, `BUILDER_CODER` until then; choosing `BUILDER_CODER` again clears it, and every change is a `build.coder` event; `rpc.build.remove {name}` deletes a module it grew (below) |
 | Publishes | `build.started`, `build.stage` (each step as it begins: a round's coder, checks, verify, then snapshot, promote, deploy), `build.progress` (each round as it ends, with a one-line summary: "tests failed: 1 failed, 5 passed; test_add: KeyError: 'day'"), `build.done` (version, commit, image), `build.failed` (stage, error, output). Each carries the thread that asked (`channel`, `thread`); `build.stage`, `done` and `failed` carry every finished round in a line (`history`) and a `seq`, so a reader that comes in late needs only the last one. A step is stored and announced as it begins, but never at the build's cost: the KV or the bus failing for a moment there is logged, and the build goes on (at deploy, the module is committed already) |
 | Keeps | one record per build in the `builder` KV bucket; one build runs at a time, the rest wait in line; a restart fails the running build and puts the waiting ones back |
 | Modes | **new** (a module from a spec) and **change** (a module the builder grew, edited as it is: below); **wrap** (module + pinned backend) later |
@@ -583,6 +606,24 @@ round n    the same: coder -> tidy -> pin (version 0.2.0) -> checks -> rpc.sys.v
 snapshot   rpc.sys.snapshot: <stack>-data-<name>-v0.1.0-<build id>
 promote    .staging/<name> -> <name> (the old one aside until committed), commit + tag <name>-v0.2.0
 deploy     rpc.sys.deploy, on the same data volume
+```
+
+**Deleting a module** (`rpc.build.remove {name}`: Main's Delete it, the module's page, `mctl remove <name>`)
+is not a build: it runs while the request waits. It is refused while the module is being built (and a build of it
+is refused while it is being deleted), and for a hand-written module. `rpc.sys.remove` copies the data and
+removes the module; then the commit it was last built in is tagged `<name>-v<version>-removed-<when>` (the data
+copy's label), and one commit (`remove <name> v<version>`, naming the data copy) takes its folder out of
+`GROWN_DIR`, together with whatever a build left of it in `.staging`. `git checkout <that tag> -- <name>` and the
+data copy bring it back; its `<name>-v<version>` tags are no promise, since a module grown again under the name
+moves them. A row the supervisor still lists whose folder is gone already is removed the same way, without a
+commit. A commit that fails puts the folder back, and asking again finishes the deletion and still names the data
+copy the first try made; the module's page offers that Delete for a grown folder with no row. A build being
+started (still checked, not yet queued) holds its name, so a deletion asked meanwhile is refused.
+
+```
+check      not being built, not hand-written, there at all
+remove     rpc.sys.remove: stop, data -> <stack>-data-<name>-v0.1.0-removed-<when>, then volume, images, row
+commit     tag <name>-v0.1.0-removed-<when>, git rm <name>, commit "remove <name> v0.1.0"
 ```
 
 - **Tidy** puts the builder's files back after every round (Dockerfile, requirements.txt, CONTRACT.md,

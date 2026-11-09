@@ -1,7 +1,7 @@
 "use client";
 
 // Ask a module directly: pick one of its actions, give JSON arguments, see what it answers.
-// Mounted with `key={m.name}` by its page, so another module is a fresh form.
+// Mounted with a key of its module's name by its page, so another module is a fresh form.
 
 import { useState, type KeyboardEvent } from "react";
 import { useAskModule } from "@/lib/queries";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Kbd, Label, Mono, Pre, Spinner } from "@/components/ui/Primitives";
 
 export function AskIt({ m }: { m: ModuleRow }) {
-  const actions = [...m.manifest.requests, "health"];
+  const actions = [...new Set([...m.manifest.requests, "health"])]; // every module answers health; some declare it too
   const [action, setAction] = useState(actions[0]);
   const [args, setArgs] = useState("{}");
   const [parseError, setParseError] = useState<string | null>(null);

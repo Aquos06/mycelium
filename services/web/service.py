@@ -34,8 +34,9 @@ log = logging.getLogger("mycelium.web")
 
 RPC_RE = re.compile(r"^rpc(?:\.[A-Za-z0-9_-]+){2,}$")  # rpc.sys.list, rpc.mod.hello.stats, rpc.memory.recall
 # never forwarded: only the builder asks for an agent run, and the agent holds a key and reaches the internet,
-# so whoever writes its prompt can send the key anywhere
-NOT_FORWARDED = {"rpc.sys.agent"}
+# so whoever writes its prompt can send the key anywhere; and only the builder removes a module, since it also
+# checks that no build of it runs and takes its folder out of grown/ (the web app deletes through rpc.build.remove)
+NOT_FORWARDED = {"rpc.sys.agent", "rpc.sys.remove"}
 CLIENT_QUEUE = 1000  # frames a slow socket may fall behind before it is dropped
 
 Outgoing = BusEvent | StreamEvent

@@ -199,6 +199,13 @@ class Workspace:
         """The change is committed: the version it replaced lives in git (its tag), not on disk."""
         shutil.rmtree(self.previous(name), ignore_errors=True)
 
+    def discard(self, name: str) -> None:
+        """The module is deleted: what a build of it left in staging goes too, so nothing of it is on disk."""
+        if not NAME_RE.match(name):
+            raise ValueError(f"invalid module name: {name!r} (lowercase slug, 2-31 chars)")
+        for d in (self.staging(name), self.previous(name)):
+            shutil.rmtree(d, ignore_errors=True)
+
 
 def _drop_junk(d: Path) -> None:
     """Caches a test run leaves behind; never part of a module."""

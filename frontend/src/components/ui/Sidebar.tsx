@@ -1,18 +1,23 @@
 "use client";
 
-// The left rail (md and up): where you are, what is grown, the recent conversations, settings, you.
+// The left rail (md and up): where you are, what is grown, the recent conversations, settings, you. A module the
+// builder grew can be deleted from its row: the trash shows on hover (always on a touch screen) and opens the dialog
+// that says what happens to it.
 
+import { Trash2 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useMemo } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { useBus } from "@/lib/bus";
 import { byRecent, THREADS_KEY, type Thread } from "@/lib/chat";
 import { initials } from "@/lib/format";
 import { useStored } from "@/lib/hooks";
 import { ROUTES, TABS, tabForPath, threadOf } from "@/lib/nav";
-import { useMissingKeys, useModules } from "@/lib/queries";
+import { deletable, useMissingKeys, useModules } from "@/lib/queries";
+import type { ModuleRow } from "@/lib/schemas";
 import { statusOf } from "@/lib/status";
 import { cn } from "@/lib/utils";
+import { DeleteModuleDialog, type DeleteTarget } from "./DeleteModuleDialog";
 import { Logo } from "./Logo";
 import { StatusDot } from "./Primitives";
 
@@ -27,10 +32,13 @@ export function useThreads(): Thread[] {
 
 export function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const [deleting, setDeleting] = useState<DeleteTarget | null>(null);
   const tab = tabForPath(pathname);
   const thread = threadOf(pathname);
   const { events, status, name } = useBus();
-  const { modules } = useModules();
+  const mods = useModules();
+  const { modules } = mods;
   const missing = useMissingKeys();
   const threads = useThreads();
 
@@ -85,11 +93,15 @@ export function Sidebar() {
       <Section label="Grown">
         {modules.length === 0 && <div className="px-2.5 py-1 text-[12.5px] text-ink3">No modules yet</div>}
         {modules.map((m) => (
-          <SideRow key={m.name} href={ROUTES.module(m.name)} on={pathname === ROUTES.module(m.name)} title={m.manifest.purpose}>
-            <StatusDot kind={statusOf(m)} />
-            <span className="font-mono text-[13px]">{m.name}</span>
-            <span className="ml-auto text-[11.5px] text-ink3">{counts[m.name] ?? m.version}</span>
-          </SideRow>
+          <GrownRow
+            key={m.name}
+            m={m}
+            on={pathname === ROUTES.module(m.name)}
+            count={counts[m.name] ?? m.version}
+            onDelete={
+              deletable(m.name, mods) ? () => setDeleting({ name: m.name, version: m.version, grown: mods.grown.includes(m.name) }) : undefined
+            }
+          />
         ))}
       </Section>
 
@@ -118,6 +130,11 @@ export function Sidebar() {
           </div>
         </div>
       </div>
+      <DeleteModuleDialog
+        target={deleting}
+        onClose={() => setDeleting(null)}
+        onDeleted={(gone) => pathname === ROUTES.module(gone) && router.push(ROUTES.modules)}
+      />
     </aside>
   );
 }
@@ -153,15 +170,60 @@ function NavItem({ href, on, icon, label, children }: { href: string; on: boolea
   );
 }
 
-function SideRow({ href, on, title, children }: { href: string; on: boolean; title?: string; children: React.ReactNode }) {
+function SideRow({
+  href,
+  on,
+  title,
+  className,
+  children,
+}: {
+  href: string;
+  on: boolean;
+  title?: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
     <Link
       href={href}
       title={title}
       aria-current={on ? "page" : undefined}
-      className={cn("flex h-[30px] w-full items-center gap-[9px] rounded-row px-2.5 text-ink1 no-underline hover:bg-hover", on && "bg-active")}
+      className={cn("flex h-[30px] w-full items-center gap-[9px] rounded-row px-2.5 text-ink1 no-underline hover:bg-hover", on && "bg-active", className)}
     >
       {children}
     </Link>
+  );
+}
+
+/** A module's row: its link, and for one the builder grew a delete button beside it (not inside: a button in a
+ *  link is not allowed), which opens the dialog. */
+function GrownRow({ m, on, count, onDelete }: { m: ModuleRow; on: boolean; count: string | number; onDelete?: () => void }) {
+  return (
+    <div className="group relative">
+      <SideRow href={ROUTES.module(m.name)} on={on} title={m.manifest.purpose} className={onDelete ? "group-hover:bg-hover" : undefined}>
+        <StatusDot kind={statusOf(m)} />
+        <span className="min-w-0 truncate font-mono text-[13px]">{m.name}</span>
+        <span
+          className={cn(
+            "ml-auto text-[11.5px] text-ink3",
+            onDelete && "group-focus-within:invisible group-hover:invisible pointer-coarse:invisible",
+          )}
+        >
+          {count}
+        </span>
+      </SideRow>
+      {onDelete && (
+        <button
+          type="button"
+          aria-label={`Delete ${m.name}`}
+          title={`Delete ${m.name}…`}
+          aria-haspopup="dialog"
+          onClick={onDelete}
+          className="absolute top-[3px] right-1 flex size-6 items-center justify-center rounded-[6px] text-ink3 opacity-0 group-hover:opacity-100 hover:bg-active hover:text-red-text focus-visible:opacity-100 pointer-coarse:opacity-100"
+        >
+          <Trash2 className="size-[13px]" strokeWidth={1.9} />
+        </button>
+      )}
+    </div>
   );
 }

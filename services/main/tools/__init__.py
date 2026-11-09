@@ -7,6 +7,8 @@ modules.py   ask_module            -> rpc.mod.<module>.<action>
 ask.py       ask                   -> ends the turn; Main publishes out.ask
 propose.py   propose_module        -> ends the turn; Main stores the proposal, then sends its card
 change.py    change_module         -> the same, for a change to a module the builder grew
+delete.py    delete_module         -> the same, to delete a module the builder grew (Delete it / Keep it)
+lookup.py    what the supervisor and the builder say of one module, for change_module and delete_module
 show.py      show                  -> a module's data this turn as a block under the reply (../blocks.py)
 
 Adding a tool is one argument model, one async handler and one Tool(...) in the registry.
@@ -15,6 +17,7 @@ Adding a tool is one argument model, one async handler and one Tool(...) in the 
 from .ask import ASK, AskArgs
 from .base import Tool, ToolContext, ToolOutcome, ToolRegistry, ToolSpec, input_schema, validation_message
 from .change import CHANGE_MODULE, ChangeArgs
+from .delete import DELETE_MODULE, DeleteArgs
 from .memory import RECALL, REMEMBER, NoteType, RecallArgs, RecallPayload, RememberArgs, RememberPayload
 from .modules import ASK_MODULE, AskModuleArgs
 from .propose import PROPOSE_MODULE, ProposeArgs
@@ -31,6 +34,7 @@ __all__ = [
     "AskArgs",
     "AskModuleArgs",
     "ChangeArgs",
+    "DeleteArgs",
     "ProposeArgs",
     "ShowArgs",
     "NoteType",
@@ -43,4 +47,4 @@ __all__ = [
 
 
 def default_tools() -> ToolRegistry:
-    return ToolRegistry.of(REMEMBER, RECALL, ASK_MODULE, SHOW, ASK, PROPOSE_MODULE, CHANGE_MODULE)
+    return ToolRegistry.of(REMEMBER, RECALL, ASK_MODULE, SHOW, ASK, PROPOSE_MODULE, CHANGE_MODULE, DELETE_MODULE)

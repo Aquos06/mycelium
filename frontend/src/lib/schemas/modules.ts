@@ -33,8 +33,20 @@ export type ModuleRow = z.infer<typeof moduleRowSchema>;
 
 export const listReplySchema = replySchema.extend({
   modules: z.array(moduleRowSchema).default([]),
+  folders: z.array(z.string()).default([]), // every module folder on disk, in modules/ or grown/
+  grown: z.array(z.string()).default([]), // the folders in grown/: what the builder can change or delete
 });
 export type ListReply = z.infer<typeof listReplySchema>;
+
+/** rpc.build.remove: a module deleted. Its data is copied aside first and its code stays in git. */
+export const removedSchema = replySchema.extend({
+  name: z.string().optional(),
+  version: z.string().nullable().default(null),
+  data: z.string().nullable().default(null), // the copy of its data volume; null: it had none
+  commit: z.string().nullable().default(null),
+  tag: z.string().nullable().default(null), // <name>-v<version>-removed-<when> in grown/'s git: where its code is kept
+});
+export type Removed = z.infer<typeof removedSchema>;
 
 export const moduleHealthSchema = z.looseObject({
   ok: z.boolean(),

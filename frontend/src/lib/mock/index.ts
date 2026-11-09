@@ -4,8 +4,8 @@
 // one of those is a lazy `await import("@/lib/mock")`, which keeps the fixtures out of the real bundle.
 // A design law pins it.
 //
-// The world: Hansen's stack an hour into an evening. One grown module running (hello), one growing
-// (budget), one paused (garden); a telegram turn that happened earlier, a question Main asked and
+// The world: Hansen's stack an hour into an evening. One module running (hello, hand-written), one growing
+// (budget), one paused (garden, which can be deleted); a telegram turn that happened earlier, a question Main asked and
 // nobody answered yet, a notification, the nightly consolidation. The bus ticks: hello counts a
 // message every few seconds, and a chat turn typed here gets a plan and a reply in under a second.
 
@@ -394,6 +394,38 @@ const manifest = (name: string, purpose: string, need: string, more: Partial<Mod
   ...more,
 });
 
+// hello is hand-written (modules/hello); the others the builder grew, so they can be deleted
+const MOCK_GROWN = ["budget", "garden"];
+const mockDeleted = new Set<string>();
+const mockHalfDeleted = new Set<string>(); // its row gone, its folder not: a deletion that stopped at git
+
+/** Every module back: tests that delete one start from the same place. */
+export function resetMockModules(): void {
+  mockDeleted.clear();
+  mockHalfDeleted.clear();
+}
+
+/** A deletion that stopped halfway: the supervisor dropped the module's row, its folder is still in grown/. */
+export function mockHalfDelete(name: string): void {
+  mockHalfDeleted.add(name);
+}
+
+/** rpc.build.remove, as the builder answers it: a module being built or a hand-written one is refused. */
+function mockRemove(name: string): Reply {
+  const m = mockModules().find((x) => x.name === name && !mockDeleted.has(name));
+  if (!m) return { ok: false, error: `there is no module '${name}' to delete` };
+  if (!MOCK_GROWN.includes(name)) {
+    return { ok: false, error: `${name} is hand-written (modules/${name}): only a module the builder grew can be deleted here` };
+  }
+  if (m.status === "building") return { ok: false, error: `'${name}' is being built (mock-b1); delete it once that build has ended` };
+  mockDeleted.add(name);
+  mockHalfDeleted.delete(name);
+  const label = `v${m.version}-removed-20261108T020000Z`;
+  const data = `mycelium-data-${name}-${label}`;
+  setTimeout(() => mockBus.publish("sys.module.removed", { ...env("supervisor"), name, data }), 300);
+  return { ok: true, name, version: m.version, data, commit: "a1b2c3d4e5f6", tag: `${name}-${label}` };
+}
+
 export function mockModules(): ModuleRow[] {
   return [
     {
@@ -413,7 +445,7 @@ export function mockModules(): ModuleRow[] {
       manifest: manifest("budget", "Keeps a running total of what you log as spent and answers how the month looks.", "Hansen logs spending in chat; nobody adds it up.", {
         subscribes: ["sense.chat", "brain.observe"],
         emits: ["total.updated", "limit.near"],
-        requests: ["month", "add"],
+        requests: ["month", "add", "health"], // grown modules declare health too, as expenses does
         hooks: { interval_seconds: [86400] },
       }),
     },
@@ -500,8 +532,11 @@ export function mockCoders(): CoderList {
 /** Any rpc subject, answered the way its service would. */
 export function mockRpc(subject: string, payload: Json): Reply {
   switch (true) {
-    case subject === "rpc.sys.list":
-      return { ok: true, modules: mockModules() } satisfies ListReply;
+    case subject === "rpc.sys.list": {
+      const modules = mockModules().filter((m) => !mockDeleted.has(m.name) && !mockHalfDeleted.has(m.name));
+      const folders = [...modules.map((m) => m.name), ...mockHalfDeleted];
+      return { ok: true, modules, folders, grown: folders.filter((n) => MOCK_GROWN.includes(n)) } satisfies ListReply;
+    }
     case subject === "rpc.sys.health":
       return { ok: true, modules: { hello: { ok: true, status: "ok" }, garden: { ok: false, status: "exited" } } };
     case subject === "rpc.sys.logs":
@@ -521,6 +556,8 @@ export function mockRpc(subject: string, payload: Json): Reply {
       const build = mockBuilds.get(String(payload.build_id ?? ""));
       return build ? { ok: true, ...build } : { ok: false, error: `no build '${String(payload.build_id)}'` };
     }
+    case subject === "rpc.build.remove":
+      return mockRemove(String(payload.name ?? ""));
     case subject === "rpc.build.default": {
       const coder = String(payload.coder ?? "");
       if (!MOCK_CODERS.some((c) => c.name === coder)) return { ok: false, error: `no coder '${coder}'; one of ${MOCK_CODERS.map((c) => c.name).join(", ")}` };

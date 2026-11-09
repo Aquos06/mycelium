@@ -16,7 +16,9 @@ Growing a module: `propose_module` ends the turn like `ask`; Main stores the pro
 sends its card with Build it / Not now. A tap on Build it is handled here, not by the model: it calls
 rpc.build.start under the thread's lock, so a double tap or an old card finds the proposal decided.
 `change_module` is the same for a module the builder grew: a card with Change it / Not now, and a tap starts a
-change build, which keeps the module running as it is until the new version deploys.
+change build, which keeps the module running as it is until the new version deploys. `delete_module` sends a card
+with Delete it / Keep it, and a tap deletes the module while it waits (rpc.build.remove): its data is copied aside
+first and its code stays in git.
 
 Each message is handled in its own task, so one slow turn never holds up the others; turns on the
 same (channel, thread) take a lock, so a typed message and a button tap cannot interleave.
@@ -63,6 +65,8 @@ from mycelium_sdk.build import (
     BuildRef,
     BuildRequest,
     BuildStage,
+    Removed,
+    RemoveRequest,
     Stage,
     StartReply,
 )
@@ -91,6 +95,7 @@ from .tools import (
     AskArgs,
     AskModuleArgs,
     ChangeArgs,
+    DeleteArgs,
     ProposeArgs,
     RecallPayload,
     ToolContext,
@@ -98,6 +103,7 @@ from .tools import (
     ToolRegistry,
     default_tools,
 )
+from .tools.lookup import SysList
 
 log = logging.getLogger("mycelium.main")
 
@@ -108,7 +114,10 @@ MODEL_SLOW_REPLY = "My model took too long to answer this time, so I stopped. I 
 OUT_OF_ROUNDS = "planner did not finish"
 BUILD_IT = "Build it"
 CHANGE_IT = "Change it"
+DELETE_IT = "Delete it"
 NOT_NOW = "Not now"
+KEEP_IT = "Keep it"  # Not now, on a deletion's card
+TAPS = (BUILD_IT, CHANGE_IT, DELETE_IT, NOT_NOW, KEEP_IT)  # the answers a proposal's card can carry back
 UNTOUCHED_AFTER = ("deploy",)  # a change that failed at deploy may have stopped the old version; before it, never
 ERROR_SHOWN = 300  # characters of a builder error told in the chat; the build record has all of it
 MAX_TOOL_RESULT_CHARS = 4000
@@ -146,6 +155,7 @@ class MainService:
         recall_budget: int = 8,
         llm_timeout: float = 90.0,
         build_timeout: float = 30.0,
+        delete_timeout: float = 150.0,
         tools: ToolRegistry | None = None,
         proposals: ProposalStore | None = None,
         currency: str = "TWD",
@@ -167,12 +177,15 @@ class MainService:
         # rpc.build.start: the builder asks the supervisor and the coder before it answers (5 s each), the build
         # itself runs later
         self.build_timeout = build_timeout
+        # rpc.build.remove: the deletion happens while the tap waits; the builder gives the supervisor 120 s for it
+        self.delete_timeout = delete_timeout
         self._catch_up: asyncio.Task | None = None
         self.tools = tools or default_tools()
         self.ctx = ToolContext(bus=bus, recall_budget=recall_budget)
         self._tool_specs = self.tools.specs()
         self._tasks: set[asyncio.Task] = set()
         self._locks: dict[str, asyncio.Lock] = {}
+        self._deleting: set[str] = set()  # proposals whose deletion runs now, outside their thread's lock
 
     async def start(self) -> None:
         await self.bus.connect()
@@ -182,6 +195,7 @@ class MainService:
         await self.bus.subscribe("build.stage", self._dispatch(self.on_stage), queue="main")
         await self.bus.subscribe("build.done", self._dispatch(self.on_build), queue="main")
         await self.bus.subscribe("build.failed", self._dispatch(self.on_build), queue="main")
+        await self.bus.subscribe("sys.module.removed", self._dispatch(self.on_removed), queue="main")
         # builds that ended while Main was down; never holds up the start, and outside drain(): it may wait minutes
         self._catch_up = asyncio.create_task(self.catch_up())
 
@@ -241,9 +255,11 @@ class MainService:
         if not answer:
             return
         ref = str(data.get("ref") or "")
-        if ref and answer in (BUILD_IT, CHANGE_IT, NOT_NOW) and (proposal := await self.proposals.by_card(ref)):
+        if ref and answer in TAPS and (proposal := await self.proposals.by_card(ref)):
             async with self._lock(proposal.channel, proposal.thread):
-                await self._decide(ref, answer, data)
+                deleting = await self._decide(ref, answer, data)
+            if deleting is not None:
+                await self._delete_now(deleting, data)
             return
         await self.on_chat(Message(subject="sense.chat", data={**data, "text": answer}))
 
@@ -252,25 +268,41 @@ class MainService:
 
     # ---- growing a module ------------------------------------------------------------------
 
-    async def _decide(self, ref: str, answer: str, data: dict[str, Any]) -> None:
-        """A tap on a proposal's card, under its thread's lock. The model plays no part in this."""
+    async def _decide(self, ref: str, answer: str, data: dict[str, Any]) -> Proposal | None:
+        """A tap on a proposal's card, under its thread's lock. The model plays no part in this. A Delete it is
+        returned, to run once the lock is let go (_delete_now)."""
         p = await self.proposals.by_card(ref)  # read again under the lock: a second tap sees what the first one did
         if p is None:
-            return
+            return None
         offer_again = False
         if p.status != ProposalStatus.PROPOSED:
             reply = _already(p)
-        elif answer == NOT_NOW:
+        elif p.id in self._deleting:
+            reply = f"{p.name} is being deleted now. I'll tell you here when it's done."
+        elif answer in (NOT_NOW, KEEP_IT):
             p.status, p.decided = ProposalStatus.DECLINED, now_iso()
-            reply = (
-                f"OK, I'll leave {p.name} as it is. Ask me again whenever you want the change."
-                if p.is_change
-                else f"OK, I won't build {p.name}. Ask me again whenever you want it."
-            )
+            reply = _declined(p)
+        elif answer != _choices(p)[0]:  # another card's yes: no app sends it, and it never builds or deletes
+            return None
+        elif p.is_delete:
+            self._deleting.add(p.id)  # under the lock: a second tap from now on is told it is under way
+            return p
         else:
             reply, offer_again = await self._start_build(p, data)
         await self.proposals.save(p)
         await self._tell(p, reply, data, answer=answer, offer_again=offer_again)
+        return None
+
+    async def _delete_now(self, p: Proposal, data: dict[str, Any]) -> None:
+        """A Delete it, with the thread's lock let go while the module is copied and removed (seconds, or minutes
+        behind a deploy): Hansen's messages there are answered meanwhile. What happened is said there after."""
+        try:
+            reply = await self._delete(p)
+            async with self._lock(p.channel, p.thread):
+                await self.proposals.save(p)
+                await self._tell(p, reply, data, answer=DELETE_IT)
+        finally:
+            self._deleting.discard(p.id)
 
     async def _start_build(self, p: Proposal, data: dict[str, Any]) -> tuple[str, bool]:
         """What to say, and whether to send a fresh card: the apps take the buttons off a card once it is answered,
@@ -303,6 +335,50 @@ class MainService:
             return f"The builder won't {verb} {p.name}: {p.short_note()}", True
         p.status, p.build_id, p.decided, p.note = ProposalStatus.BUILDING, started.build_id, now_iso(), None
         return _building(p, started.position), False
+
+    async def _delete(self, p: Proposal) -> str:
+        """The deletion: the builder asks the supervisor to copy its data and remove it, then takes its folder out of
+        GROWN_DIR. A deletion that did not happen is told with the builder's reason and not offered again on a card:
+        what stopped it (a build of it, a hand-written module) is not undone by a second tap."""
+        try:
+            removed = await ask(
+                self.bus, "rpc.build.remove", RemoveRequest(name=p.name), Removed, timeout=self.delete_timeout
+            )
+        except NoAnswer:
+            if await self._gone(p.name):  # it went through; only the answer, with where things went, was late
+                p.status, p.decided, p.note = ProposalStatus.DONE, now_iso(), None
+                return (
+                    f"Deleted {p.name}. The builder answered late, so I can't say what it kept: any data and code it "
+                    "had are under names ending in -removed-<time> (a Docker volume, a git tag)."
+                )
+            p.status, p.decided, p.note = ProposalStatus.FAILED, now_iso(), "the builder did not answer"
+            return f"The builder didn't answer in time, so {p.name} may be deleted only partly. Ask me again to finish."
+        except Refused as e:
+            p.status, p.decided, p.note = ProposalStatus.FAILED, now_iso(), str(e)
+            return f"I couldn't delete {p.name}: {p.short_note()}"
+        p.status, p.decided, p.note = ProposalStatus.DONE, now_iso(), None
+        return _deleted(removed)
+
+    async def _gone(self, name: str) -> bool:
+        """Neither listed by the supervisor nor a folder in either root: a deletion whose answer did not come in time
+        went through."""
+        try:
+            listed = await ask(self.bus, "rpc.sys.list", None, SysList, timeout=5.0)
+        except (NoAnswer, Refused):
+            return False
+        return name not in listed.names()
+
+    async def on_removed(self, msg: Message) -> None:
+        """A module deleted from anywhere (its page, mctl, a card): a card that still asks to delete it is stale, and a
+        tap on it later must never delete a module grown again under its name. From now on it reads as deleted."""
+        name = str(msg.data.get("name") or "")
+        for p in await self.proposals.asking_to_delete(name):
+            async with self._lock(p.channel, p.thread):
+                fresh = await self.proposals.get(p.id)
+                if fresh is None or fresh.status != ProposalStatus.PROPOSED or fresh.id in self._deleting:
+                    continue  # decided meanwhile, or this is its own deletion: that one says what happened
+                fresh.status, fresh.decided, fresh.note = ProposalStatus.DONE, now_iso(), "deleted elsewhere"
+                await self.proposals.save(fresh)
 
     async def _adopt(self, p: Proposal) -> bool:
         """A build of this proposal the builder has although its start went unanswered: same name, same thread."""
@@ -367,6 +443,7 @@ class MainService:
                     latest = await self.proposals.by_name(ev.name)
                     if (
                         latest
+                        and not latest.is_delete
                         and latest.status == ProposalStatus.PROPOSED
                         and (latest.channel, latest.thread) == (ev.channel, ev.thread)
                     ):
@@ -450,7 +527,7 @@ class MainService:
         out = Envelope.child_of(data, "main") if data else Envelope(source="main")
         if offer_again:
             await self.proposals.add_card(out.id, p)
-            choices = [CHANGE_IT if p.is_change else BUILD_IT, NOT_NOW]
+            choices = _choices(p)
             card = out.into(Ask, channel=p.channel, thread=p.thread, text=text, choices=choices, ref=out.id)
             await self.bus.publish("out.ask", card)
             saved = f"{text}\n[choices: {' / '.join(choices)}]"
@@ -495,8 +572,8 @@ class MainService:
         llm_calls: list[LlmCall] = []
         reply_text = ""
         asked: AskArgs | None = None
-        proposed: ProposeArgs | ChangeArgs | None = None
-        base_version: str | None = None  # a change: the module's version when it was drafted
+        proposed: ProposeArgs | ChangeArgs | DeleteArgs | None = None
+        base_version: str | None = None  # a change or a deletion: the module's version when it was asked
         error: str | None = None
         claim_check = False
 
@@ -539,7 +616,7 @@ class MainService:
                 if asked is None and proposed is None:  # the first valid `ask` or proposal ends the turn
                     if isinstance(outcome.args, AskArgs):
                         asked = outcome.args
-                    elif isinstance(outcome.args, ProposeArgs | ChangeArgs) and outcome.ok:  # not when refused
+                    elif isinstance(outcome.args, ProposeArgs | ChangeArgs | DeleteArgs) and outcome.ok:  # not refused
                         proposed = outcome.args
                         base_version = outcome.result.get("version")
                 tool_log.append(outcome)
@@ -565,19 +642,22 @@ class MainService:
                     proposed.text(),
                 )
                 proposal.base_version = base_version
-                card = AskArgs(text=proposed.card(base_version), choices=[CHANGE_IT, NOT_NOW])
+                card = AskArgs(text=proposed.card(base_version), choices=_choices(proposal))
+            elif isinstance(proposed, DeleteArgs):
+                proposal.kind, proposal.base_version = ProposalKind.DELETE, base_version
+                card = AskArgs(text=proposed.card(base_version), choices=_choices(proposal))
             else:
                 proposal.purpose, proposal.spec = proposed.purpose, proposed.spec()
-                card = AskArgs(text=proposed.card(), choices=[BUILD_IT, NOT_NOW])
+                card = AskArgs(text=proposed.card(), choices=_choices(proposal))
             try:
                 await self.proposals.create(proposal)
                 asked = card
             except Exception as e:  # no card without its proposal stored, but Hansen still gets a reply
                 log.exception("could not store the proposal for %s", proposed.name)
-                reply_text = (
-                    f"I drafted {'a change to ' if isinstance(proposed, ChangeArgs) else 'a module for this '}"
-                    f"({proposed.name}) but couldn't save it ({type(e).__name__}), "
+                what = {ChangeArgs: "a change to ", DeleteArgs: "the deletion of "}.get(
+                    type(proposed), "a module for this "
                 )
+                reply_text = f"I drafted {what}({proposed.name}) but couldn't save it ({type(e).__name__}), "
                 reply_text += "so I can't offer it right now. Ask me again in a moment."
                 proposed = None
         if asked and not error:
@@ -724,8 +804,10 @@ def _gone_since(
         for c in t.calls
         if c.name == "ask_module" and c.result.startswith('{"ok": true')
     }
-    built = {
-        p.name for p in offered if p.status == ProposalStatus.DONE and (p.channel, p.thread) == (channel, thread_id)
+    built = {  # a deletion done here is no module that stopped: the thread says it was deleted
+        p.name
+        for p in offered
+        if not p.is_delete and p.status == ProposalStatus.DONE and (p.channel, p.thread) == (channel, thread_id)
     }
     status = {m.name: m.status for m in modules}
     gone = sorted(n for n in used | built if status.get(n, "gone") != "running")
@@ -767,8 +849,40 @@ def _kept(tools: list[ToolOutcome]) -> list[TurnCall]:
     return [TurnCall.of(o.name, o.input, o.result) for o in tools if o.args is not None]
 
 
+def _choices(p: Proposal) -> list[str]:
+    """A proposal's card: its yes first."""
+    if p.is_delete:
+        return [DELETE_IT, KEEP_IT]
+    return [CHANGE_IT if p.is_change else BUILD_IT, NOT_NOW]
+
+
+def _declined(p: Proposal) -> str:
+    if p.is_delete:
+        return f"OK, I'll keep {p.name}. Ask me again whenever you want it gone."
+    if p.is_change:
+        return f"OK, I'll leave {p.name} as it is. Ask me again whenever you want the change."
+    return f"OK, I won't build {p.name}. Ask me again whenever you want it."
+
+
+def _deleted(r: Removed) -> str:
+    """What went where: the data copy and the tag are how it comes back."""
+    kept = [f"its data in {r.data}"] if r.data else []
+    kept += [f"its code in git as {r.tag}"] if r.tag else []
+    if not kept:
+        return f"Deleted {r.name}."
+    return f"Deleted {r.name}. I kept {' and '.join(kept)}, in case you want it back."
+
+
 def _already(p: Proposal) -> str:
     """A tap on a card that was decided already: a second tap, or an old card."""
+    if p.is_delete:
+        match p.status:
+            case ProposalStatus.DECLINED:
+                return f"You chose to keep {p.name}. Ask me again if you want it gone now."
+            case ProposalStatus.DONE:
+                return f"{p.name} is already deleted."
+            case _:
+                return f"Deleting {p.name} didn't work ({p.short_note()}). Ask me to delete it again."
     if p.is_change:
         match p.status:
             case ProposalStatus.DECLINED:

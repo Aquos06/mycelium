@@ -14,6 +14,7 @@ import {
   moduleLogs,
   modulesHealth,
   probe,
+  removeModule,
   stopModule,
 } from "@/lib/api";
 import { useBus } from "@/lib/bus";
@@ -28,6 +29,8 @@ export const VIEWS_POLL_MS = 60_000;
 
 export interface ModulesState {
   modules: ModuleRow[];
+  grown: string[]; // the modules the builder grew: the ones it can delete
+  folders: string[]; // every module folder on disk; one listed and not here has lost its folder
   health: Record<string, ModuleHealth>;
   loading: boolean;
   error: string | null; // the supervisor did not answer
@@ -41,7 +44,7 @@ export function useModules(): ModulesState {
     queryFn: async () => {
       const r = await listModules();
       if (!r.ok) throw new Error(r.error ?? "the supervisor said no");
-      return r.modules.slice().sort((a, b) => a.name.localeCompare(b.name));
+      return { ...r, modules: r.modules.slice().sort((a, b) => a.name.localeCompare(b.name)) };
     },
     refetchInterval: MODULES_POLL_MS,
   });
@@ -51,7 +54,7 @@ export function useModules(): ModulesState {
       const r = await modulesHealth();
       return r.ok ? r.modules : {};
     },
-    enabled: (list.data?.length ?? 0) > 0,
+    enabled: (list.data?.modules.length ?? 0) > 0,
     refetchInterval: MODULES_POLL_MS,
   });
 
@@ -71,7 +74,9 @@ export function useModules(): ModulesState {
   }, [lastSys, status, qc]);
 
   return {
-    modules: list.data ?? [],
+    modules: list.data?.modules ?? [],
+    grown: list.data?.grown ?? [],
+    folders: list.data?.folders ?? [],
     health: health.data ?? {},
     loading: list.isPending,
     error: list.error ? describeError(list.error, "the supervisor") : null,
@@ -140,6 +145,29 @@ export function useModuleAction() {
       void qc.invalidateQueries({ queryKey: queryKeys.modulesHealth() });
     },
   });
+}
+
+/** Delete a module the builder grew (rpc.build.remove). A refusal (it is being built, it is hand-written) throws
+ *  with the builder's reason; the list refreshes either way. */
+export function useRemoveModule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (name: string) => {
+      const r = await removeModule(name);
+      if (!r.ok) throw new Error(r.error ?? "the builder said no");
+      return r;
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.modules() });
+      void qc.invalidateQueries({ queryKey: queryKeys.modulesHealth() });
+    },
+  });
+}
+
+/** Whether the builder can delete this module: one it grew, or one still listed whose folder is gone. A
+ *  hand-written one (its folder in modules/) is the repo's to remove. */
+export function deletable(name: string, state: Pick<ModulesState, "grown" | "folders">): boolean {
+  return state.grown.includes(name) || !state.folders.includes(name);
 }
 
 /** Ask a module directly: rpc.mod.<name>.<action> with JSON arguments. The reply is shown as is. */

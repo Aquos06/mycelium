@@ -5,16 +5,18 @@
     rpc.build.list    BuildListRequest   -> BuildList, newest first
     rpc.build.coders  {}                 -> CoderList
     rpc.build.default CoderChoice        -> CoderList (the web app's Settings → Builder, mctl coders --use)
+    rpc.build.remove  RemoveRequest      -> Removed (a module deleted: Main's Delete it, the module page, mctl remove)
 
-The handler adds ok=true; errors are {"ok": false, "error": "<field>: <message>"}. BuildRequest, StartReply
-and BuildRef live in the SDK (mycelium_sdk.build), since Main fills them; they are re-exported here.
+The handler adds ok=true; errors are {"ok": false, "error": "<field>: <message>"}. BuildRequest, StartReply,
+BuildRef, RemoveRequest and Removed live in the SDK (mycelium_sdk.build), since Main fills them; they are re-exported
+here.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from mycelium_sdk.build import SPEC_MAX, BuildRef, BuildRequest, BuildSummary, StartReply
+from mycelium_sdk.build import SPEC_MAX, BuildRef, BuildRequest, BuildSummary, Removed, RemoveRequest, StartReply
 
 __all__ = [
     "SPEC_MAX",
@@ -26,6 +28,8 @@ __all__ = [
     "CoderInfo",
     "CoderList",
     "CoderSetting",
+    "Removed",
+    "RemoveRequest",
     "StartReply",
 ]
 
