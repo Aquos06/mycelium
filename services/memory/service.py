@@ -8,6 +8,7 @@
     rpc.memory.rollup       RollupRequest      -> RollupReport           (a week or month from its days)
     rpc.memory.embed        {}                 -> EmbedSweepReport       (vectors for rows that lack one)
     sys.module.deployed     -> writes modules/<name>.md from the manifest
+    sys.module.removed      -> says in modules/<name>.md that it was deleted, and where its data went
 
 Payloads are validated with the models in schemas/rpc.py (the contract Main codes against).
 Replies are {"ok": true, ...} or {"ok": false, "error": ...}, like the supervisor's.
@@ -81,6 +82,7 @@ class MemoryService:
         await self.bus.subscribe("rpc.memory.rollup", self._wrap(self.rollup), queue="memory")
         await self.bus.subscribe("rpc.memory.embed", self._wrap(self.embed), queue="memory")
         await self.bus.subscribe("sys.module.deployed", self.on_module_deployed, queue="memory")
+        await self.bus.subscribe("sys.module.removed", self.on_module_removed, queue="memory")
 
     def _wrap(self, fn):
         async def handler(msg: Message) -> None:
@@ -207,6 +209,29 @@ class MemoryService:
             self.sweep_soon()
         except Exception:
             log.exception("could not write module note for %s", name)
+
+    async def on_module_removed(self, msg: Message) -> None:
+        """A module deleted for good: its note stops telling Main to ask it, since recall would send Main to a module
+        that is gone, and keeps where its data went. Grown again under its name, the next deploy rewrites it."""
+        name = str(msg.data.get("name", "")).strip().lower()
+        if not NAME_RE.match(name):
+            return
+        try:
+            existing = await self.index.get(name)
+            if not existing:
+                return
+            note = self.vault.read(existing.path)
+            data = str(msg.data.get("data") or "").strip()
+            was = note.summary.split(" Exact data lives in the module")[0].strip()
+            kept = f" Its data was copied to {data}." if data else ""
+            note.summary = f"Deleted on {self.today()}: it no longer runs and cannot be asked.{kept} It was: {was}"
+            fact = f"deleted, its data copied to {data}" if data else "deleted"
+            note.facts.insert(0, Fact(day=self.today(), text=fact, source="sys"))
+            self.vault.write(note)
+            await index_file(self.vault, self.index, note.path)
+            self.sweep_soon()
+        except Exception:
+            log.exception("could not mark the module note for %s deleted", name)
 
     async def _manifest_for(self, name: str) -> dict[str, Any]:
         try:

@@ -1150,3 +1150,131 @@ cases:
     modules: [hello, steps, spending]
     args: {view: {has: [steps.week]}}
 
+
+  # ---- delete_module: Hansen wants a whole grown module gone (20 cases), and a message that sounds like it but is
+  # not: an entry to take out is a change.
+  - id: del-plain
+    msg: delete the books module
+    expect: delete_module
+    modules: [hello, ledger, books]
+    args: {module: books}
+  - id: del-dont-use
+    msg: remove the reading log, I don't use it anymore
+    expect: delete_module
+    modules: [hello, ledger, books]
+    args: {module: books}
+  - id: del-get-rid
+    msg: get rid of the ledger module
+    expect: delete_module
+    modules: [hello, ledger, books]
+    args: {module: ledger}
+  - id: del-duplicate  # Hansen's case: expenses, expenses-v2 and expenses-v3 all track the same thing
+    msg: I have two expense trackers now, delete spending, I'll keep ledger
+    expect: delete_module
+    avoid: [change_module]
+    modules: [hello, ledger, spending]
+    args: {module: spending}
+  - id: del-zh
+    msg: 把記帳模組刪掉
+    expect: delete_module
+    modules: [hello, ledger]
+    args: {module: ledger}
+  - id: del-zh-books
+    msg: 我不讀書了，幫我刪除 books 模組
+    expect: delete_module
+    modules: [hello, ledger, books]
+    args: {module: books}
+  - id: del-no-longer-needed
+    msg: I don't need the water module anymore, delete it
+    expect: delete_module
+    modules: [hello, ledger, water]
+    args: {module: water}
+  - id: del-uninstall
+    msg: uninstall steps
+    expect: delete_module
+    modules: [hello, steps, spending]
+    args: {module: steps}
+  - id: del-trash
+    msg: trash the water tracker
+    expect: delete_module
+    modules: [hello, water, steps]
+    args: {module: water}
+  - id: del-for-good
+    msg: remove the spending module for good
+    expect: delete_module
+    modules: [hello, ledger, spending]
+    args: {module: spending}
+  - id: del-start-over
+    msg: the ledger is a mess, just delete it and I'll start over with a new one later
+    expect: delete_module
+    avoid: [change_module]
+    modules: [hello, ledger]
+    args: {module: ledger}
+  - id: del-can-you
+    msg: can you delete the steps module?
+    expect: delete_module
+    modules: [hello, steps, water]
+    args: {module: steps}
+  - id: del-want-gone
+    msg: I want the books module gone
+    expect: delete_module
+    modules: [hello, ledger, books]
+    args: {module: books}
+  - id: del-drop
+    msg: drop the water module, I track it in my phone's health app now
+    expect: delete_module
+    modules: [hello, water, steps]
+    args: {module: water}
+  - id: del-which-one  # "the old one": the thread said which
+    msg: ok delete the old one then
+    expect: delete_module
+    modules: [hello, ledger, spending]
+    history:
+      - {role: user, text: "why do I have ledger and spending, don't they do the same thing?"}
+      - role: assistant
+        text: "Both track your spending. ledger is the old one: entries and totals. spending, the newer one, also breaks them down by category and by day."
+    args: {module: ledger}
+  - id: del-it-after-asking
+    msg: ok just delete that module, I'll keep my books in Goodreads
+    expect: delete_module
+    modules: [hello, ledger, books]
+    history:
+      - {role: user, text: "what's in the books module?"}
+      - role: assistant
+        text: "One book so far: Project Hail Mary by Andy Weir, finished 2026-10-12."
+        calls: [{name: ask_module, input: {module: books, action: list}, result: {ok: true, books: [{title: Project Hail Mary, author: Andy Weir, finished: "2026-10-12"}]}}]
+    args: {module: books}
+  - id: del-built-by-mistake
+    msg: oops I didn't mean to build that, delete it
+    expect: delete_module
+    avoid: [change_module]
+    modules: [hello, ledger, water]
+    history:
+      - {role: user, text: "Build it"}
+      - {role: assistant, text: "water is built and running (version 0.1.0). Ask me about it any time."}
+    args: {module: water}
+  - id: del-delete-module-not-entries
+    msg: not the entries, the whole spending module. delete it
+    expect: delete_module
+    modules: [hello, ledger, spending]
+    history:
+      - {role: user, text: "delete spending"}
+      - {role: assistant, text: "Do you mean an entry in spending, or the whole module?"}
+    args: {module: spending}
+  - id: del-remove-from-modules
+    msg: remove steps from my modules
+    expect: delete_module
+    modules: [hello, steps, spending]
+    args: {module: steps}
+  - id: del-two-names  # one card per turn: either is right
+    msg: delete books and water, I don't use either
+    expect: delete_module
+    modules: [hello, books, water]
+    args: {module: [books, water]}
+  # sounds like a deletion, is not one
+  - id: del-not-an-entry  # an entry out of a module is a change to it (chg-delete, chg-remove-entry)
+    msg: delete the coffee I logged by mistake today
+    expect: change_module
+    avoid: [delete_module]
+    modules: [hello, ledger]
+    args: {module: ledger}

@@ -6,8 +6,8 @@ supervisor.py   what the builder asks the supervisor (rpc.sys.*): VerifyCall, Ag
 gateway.py      what our coder asks the gateway before a build (rpc.llm.config)
 
 One build and what is said about it are the SDK's (mycelium_sdk.build), re-exported here, since Main and mctl
-read them too: BuildRecord, Round, BuildSummary, the stages, BuildRequest, StartReply, BuildRef, and the build.*
-events, each built from the record (`BuildStage.of(record, ...)`): BuildStarted, BuildStage, BuildProgress,
+read them too: BuildRecord, Round, BuildSummary, the stages, BuildRequest, StartReply, BuildRef, RemoveRequest,
+Removed, and the build.* events, each built from the record (`BuildStage.of(record, ...)`): BuildStarted, BuildStage, BuildProgress,
 BuildDone and BuildFailed (both BuildEnded), with RoundLine, and build.coder (CoderChosen). The model calls (Prompt, CompletionRequest,
 ChatMessage, Tool, CompletionReply) and ask() are the SDK's too.
 """
@@ -43,6 +43,8 @@ from .rpc import (
     CoderInfo,
     CoderList,
     CoderSetting,
+    Removed,
+    RemoveRequest,
     StartReply,
 )
 from .supervisor import (
@@ -54,6 +56,8 @@ from .supervisor import (
     DeployReply,
     ModuleEntry,
     ModulesReply,
+    RemoveCall,
+    RemoveReply,
     SnapshotCall,
     SnapshotReply,
     VerifyCall,
@@ -96,6 +100,8 @@ __all__ = [
     "CoderInfo",
     "CoderList",
     "CoderSetting",
+    "Removed",
+    "RemoveRequest",
     "StartReply",
     "AgentCall",
     "AgentInfo",
@@ -105,6 +111,8 @@ __all__ = [
     "DeployReply",
     "ModuleEntry",
     "ModulesReply",
+    "RemoveCall",
+    "RemoveReply",
     "SnapshotCall",
     "SnapshotReply",
     "VerifyCall",

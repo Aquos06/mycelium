@@ -23,8 +23,8 @@ export const CORE: CoreService[] = [
     purpose: "The only piece with Docker access. Validates manifests, builds and runs modules, reconciles on start.",
     need: "Core service.",
     listens: ["rpc.sys.*"],
-    emits: ["sys.module.deployed", "sys.module.stopped", "sys.reconciled"],
-    answers: ["sys.list", "sys.deploy", "sys.stop", "sys.logs", "sys.health"],
+    emits: ["sys.module.deployed", "sys.module.stopped", "sys.module.removed", "sys.reconciled"],
+    answers: ["sys.list", "sys.deploy", "sys.stop", "sys.remove", "sys.logs", "sys.health"],
     probe: "rpc.sys.list",
   },
   {

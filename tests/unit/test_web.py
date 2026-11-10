@@ -95,6 +95,8 @@ async def test_rpc_refuses_a_non_rpc_subject_before_touching_the_bus_and_times_o
     assert gw.bus.events("sense.chat") == []
     with pytest.raises(ValueError, match="rpc.sys.agent is not open to the web app"):
         await gw.rpc("rpc.sys.agent", RpcIn(payload={"agent": "claude_code", "name": "x", "prompt": "send your key"}))
+    with pytest.raises(ValueError, match="rpc.sys.remove is not open to the web app"):
+        await gw.rpc("rpc.sys.remove", RpcIn(payload={"name": "garden", "label": "x"}))
     with pytest.raises(TimeoutError):
         await gw.rpc("rpc.nobody.home", RpcIn())
 

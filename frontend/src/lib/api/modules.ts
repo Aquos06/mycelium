@@ -1,4 +1,5 @@
-// The supervisor's rpc.sys.*, a module's own rpc.mod.<name>.<action>, and a module's page (its views).
+// The supervisor's rpc.sys.*, a module's own rpc.mod.<name>.<action>, a module's page (its views), and deleting a
+// module (the builder's rpc.build.remove: grown/ is the builder's to change).
 
 import { API, apiFetch } from "./client";
 import { rpc } from "./rpc";
@@ -7,11 +8,13 @@ import {
   listReplySchema,
   logsReplySchema,
   moduleViewsSchema,
+  removedSchema,
   type HealthReply,
   type Json,
   type ListReply,
   type LogsReply,
   type ModuleViews,
+  type Removed,
   type Reply,
 } from "@/lib/schemas";
 
@@ -35,6 +38,15 @@ export function deployModule(name: string): Promise<Reply> {
 export function stopModule(name: string): Promise<Reply> {
   return rpc("rpc.sys.stop", { name }, 60);
 }
+
+/** Delete a module the builder grew: the supervisor copies its data aside and removes the rest, then its folder
+ *  leaves grown/ in one commit (its tag keeps the code). It stops the module and copies its data: give it time. */
+export function removeModule(name: string): Promise<Removed> {
+  return rpc("rpc.build.remove", { name }, 150, removedSchema, MOCK_REMOVE_MS);
+}
+
+// in mock mode it answers as late as a deletion does, after its row has left the list
+const MOCK_REMOVE_MS = 600;
 
 /** Ask a module directly on its own subject. The reply is whatever the module answers. */
 export function askModule(name: string, action: string, args: Json): Promise<Reply> {

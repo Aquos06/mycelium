@@ -71,6 +71,8 @@ class DockerOps(Protocol):
     ) -> AgentResult: ...
     def run_module(self, image: str, manifest: Manifest) -> ContainerInfo: ...
     def snapshot_data(self, name: str, label: str) -> str | None: ...
+    def drop_data(self, name: str) -> bool: ...
+    def remove_module_images(self, name: str) -> int: ...
     def stop_module(self, name: str) -> bool: ...
     def logs(self, name: str, tail: int = 100) -> str: ...
     def list_modules(self) -> list[ContainerInfo]: ...
@@ -268,6 +270,30 @@ class RealDockerOps:
             if running is not None:
                 running.unpause()
         return target
+
+    def drop_data(self, name: str) -> bool:
+        """The module's data volume, gone: only once it is copied (snapshot_data) and its container removed. False
+        when it had none."""
+        import docker
+
+        try:
+            volume = self.client.volumes.get(self._data_volume(name))
+        except docker.errors.NotFound:
+            return False
+        volume.remove()  # no force: a container still using it is an error to see, not data to lose
+        return True
+
+    def remove_module_images(self, name: str) -> int:
+        """Every image this stack built for the module, one per version it ran. Best effort: one Docker will not
+        remove (another tag still uses it) is logged and left; it holds no data."""
+        gone = 0
+        for image in self.client.images.list(filters={"label": [f"{LABEL}={name}", f"{STACK_LABEL}={self.stack}"]}):
+            try:
+                self.client.images.remove(image.id, force=True)
+                gone += 1
+            except Exception as e:
+                log.warning("could not remove image %s of %s: %s", image.id, name, e)
+        return gone
 
     def run_module(self, image: str, manifest: Manifest) -> ContainerInfo:
         self.stop_module(manifest.name)

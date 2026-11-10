@@ -29,6 +29,18 @@ test.describe("modules", () => {
     await expect(page.getByRole("button", { name: "Sure? Pause" })).toBeVisible();
   });
 
+  test("a grown module is deleted through its dialog, and leaves the list", async ({ page }) => {
+    await page.goto("/modules/garden");
+    await page.getByRole("button", { name: "Delete", exact: true }).click(); // the rail has one per row too
+    const dialog = page.getByRole("alertdialog", { name: "Delete garden?" });
+    await expect(dialog).toContainText("its code stays in git, under the tag garden-v0.1.0-removed-…");
+    await dialog.getByRole("button", { name: "Delete garden" }).click();
+    await expect(page).toHaveURL(/\/modules$/);
+    const grown = page.getByRole("region", { name: "Grown" });
+    await expect(grown.getByRole("link", { name: /hello/ })).toBeVisible();
+    await expect(grown.getByRole("link", { name: /garden/ })).toHaveCount(0);
+  });
+
   test("a core service has a page too", async ({ page }) => {
     await page.goto("/modules/gateway");
     await expect(page.getByRole("heading", { level: 1, name: "gateway" })).toBeVisible();

@@ -31,7 +31,7 @@ export function renderScreen(ui: ReactNode, events: BusEvent[], status: BusState
   const view = render(tree(streams));
   /** The same mounted screen, with the replies being written moved on (the next frame, the next planner round). */
   const restream = (next: BusState["streams"]) => view.rerender(tree(next));
-  return { ...view, restream };
+  return { ...view, restream, client };
 }
 
 let seq = 0;

@@ -64,12 +64,16 @@ def _grown(m: ModuleInfo) -> str:
 def render_proposals(
     proposals: list[Proposal], running: set[str] | None = None, here: tuple[str, str] | None = None
 ) -> str:
-    """Modules already offered and not running, and changes offered and not made: so the planner does not offer one
-    again, or offers it knowingly. A card is "there" only in the chat it went to; a module built and since retired
-    can be offered again."""
+    """Modules already offered and not running, and changes and deletions asked for and not made: so the planner does
+    not offer one again, or offers it knowingly. A card is "there" only in the chat it went to; a module built and since
+    retired (or deleted) can be offered again."""
     lines = []
     for p in proposals:
         since = (p.decided or p.created)[:10]
+        if p.is_delete:
+            if state := _delete_state(p, since, here):
+                lines.append(f"- deleting {p.name} ({state})")
+            continue
         if p.is_change:
             if state := _change_state(p, since, here):
                 lines.append(f"- a change to {p.name}: {p.purpose.strip()} ({state})")
@@ -111,6 +115,21 @@ def _change_state(p: Proposal, since: str, here: tuple[str, str] | None) -> str:
             return f"being made since {since}; {p.name} runs as it was until then"
         case _:
             return f"it failed on {since} and {p.name} runs as it was: call `change_module` again only if he asks"
+
+
+def _delete_state(p: Proposal, since: str, here: tuple[str, str] | None) -> str:
+    """A deletion's line, or "" once it is done (the module is gone from Modules, and so is what was offered of it)."""
+    match p.status:
+        case ProposalStatus.DONE:
+            return ""
+        case ProposalStatus.PROPOSED if here is not None and (p.channel, p.thread) != here:
+            return f"asked {p.created[:10]} in another chat: if he asks here, call `delete_module` here"
+        case ProposalStatus.PROPOSED:
+            return f"asked {p.created[:10]}, waiting for his Delete it: do not ask again, the card is there"
+        case ProposalStatus.DECLINED:
+            return f"he chose Keep it on {since}: do not ask again unless he asks for it"
+        case _:
+            return f"it did not go through on {since} ({p.short_note()}): call `delete_module` again only if he asks"
 
 
 def planner_prompt(
@@ -156,6 +175,7 @@ How you work:
 - When a module's answer is something Hansen should see rather than read (a list of entries, totals by category or by day, a few figures, one record, a number against a goal), call `show`: a table, a chart, stats, details or a meter goes under your reply, made from the module's own data. A view listed under a module is the easy way (`show` with `view`: Main gets its data); otherwise call `ask_module` first and point `show` at its reply. Then say in a line or two what it means, and do not write out again what it shows.
 - A module that listens to sense.chat hears Hansen's messages itself: when he logs something it tracks (dinner 350 for expenses), acknowledge it without logging it again.
 - Use `change_module` when a module marked grown does something wrong, should work differently, or cannot do what Hansen asks of it (take an entry out, keep one more field, a total it does not give): say what it should do after the change. Saying it cannot is not enough: send the card that makes it able to. It keeps its data, and nothing changes until he chooses Change it. Offer a change only by calling `change_module`, never in words: its card is the only way he can make it. Do not `propose_module` a second module for what a running one should do; a module not marked grown cannot be changed, so say so.
+- Use `delete_module` when Hansen wants a whole module marked grown gone (delete it, remove it, get rid of the duplicate, he no longer uses it): only on his word, never because you think one is unused. Its card (Delete it / Keep it) is the only way to delete one, so never say it is deleted, or will be, in words. Taking an entry out of a module is `change_module`, not this; a module not marked grown cannot be deleted, so say so.
 - Use `propose_module` when Hansen wants something ongoing that no module above does: tracking or logging things over time, counts, totals, history. Draft it from his words; nothing is built until he chooses Build it. Offer a module only by calling `propose_module`: its card is the only way he can build it, so never offer to build or rebuild one in words.
 - When he logs money spent, a count or a reading that no module above tracks, `remember` it first, then `propose_module` to track it from now on (`propose_module` ends your turn, so what is not remembered by then is lost). If a module under "Offered" below covers it, only `remember` it and do what its line says.
 - Use `ask` when a decision is Hansen's.

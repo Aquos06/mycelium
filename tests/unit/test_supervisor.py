@@ -7,6 +7,7 @@ import yaml
 from mycelium_sdk import InMemoryBus, validate_manifest
 from supervisor.docker_ops import ContainerInfo, TestRun
 from supervisor.registry import MemoryRegistry
+from supervisor.schemas import ModuleStatus
 from supervisor.service import Supervisor
 
 
@@ -17,6 +18,7 @@ class FakeDocker:
         self.running: dict[str, ContainerInfo] = {}
         self.calls: list[str] = []
         self.built_from: list = []
+        self.dropped: set[str] = set()  # data volumes gone
 
     def ensure_base_image(self, sdk_dir):
         self.calls.append("base")
@@ -46,7 +48,16 @@ class FakeDocker:
 
     def snapshot_data(self, name, label):
         self.calls.append(f"snapshot:{name}:{label}")
-        return None if name == "fresh" else f"mycelium-data-{name}-{label}"
+        return None if name == "fresh" or name in self.dropped else f"mycelium-data-{name}-{label}"
+
+    def drop_data(self, name):
+        self.calls.append(f"drop:{name}")
+        self.dropped.add(name)
+        return True
+
+    def remove_module_images(self, name):
+        self.calls.append(f"images:{name}")
+        return 1
 
     def logs(self, name, tail=100):
         return f"logs of {name} ({tail})"
@@ -534,3 +545,138 @@ def test_real_docker_has_nothing_to_copy_for_a_module_without_data(monkeypatch):
     client = VolumeClient(has_data=False)
     assert volume_ops(monkeypatch, client).snapshot_data("expenses", "v0.1.0-001a2b") is None
     assert client.created == [] and client.runs == []
+
+
+# ---- remove ------------------------------------------------------------------------------------------
+
+
+async def test_remove_copies_the_data_then_removes_the_module_for_good(tmp_path):
+    s, bus, docker, reg, _, g = await two_roots(tmp_path)
+    write_module(g, "expenses")
+    await bus.request("rpc.sys.deploy", {"name": "expenses"})
+    docker.calls.clear()
+
+    reply = await bus.request("rpc.sys.remove", {"name": "expenses", "label": "v0.1.0-removed-20261108T020000Z"})
+
+    copy = "mycelium-data-expenses-v0.1.0-removed-20261108T020000Z"
+    assert reply == {"ok": True, "name": "expenses", "stopped": True, "data": copy, "listed": True}
+    assert docker.calls == [  # stopped (not in calls), then copied before anything is dropped
+        "snapshot:expenses:v0.1.0-removed-20261108T020000Z",
+        "drop:expenses",
+        "images:expenses",
+    ]
+    assert "expenses" not in reg.rows and "expenses" not in docker.running
+    assert bus.events("sys.module.removed")[-1][1] == {"name": "expenses", "data": copy}
+    assert (await s.list({})).modules == []
+    assert await s.reconcile() == {}  # nothing brings it back
+
+
+async def test_a_copy_that_fails_leaves_the_module_stopped_with_its_data(tmp_path):
+    class NoCopy(FakeDocker):
+        def snapshot_data(self, name, label):
+            raise RuntimeError("cp: no space left on device")
+
+    _, bus, docker, reg, _, g = await two_roots(tmp_path, docker=NoCopy())
+    write_module(g, "expenses")
+    await bus.request("rpc.sys.deploy", {"name": "expenses"})
+    reply = await bus.request("rpc.sys.remove", {"name": "expenses", "label": "v0.1.0-removed-1"})
+    assert reply["ok"] is False and "no space left" in reply["error"]
+    assert reply["error"].startswith("expenses is stopped, but its data could not be copied")  # not just "failed"
+    assert reg.rows["expenses"].status == "stopped" and "expenses" not in docker.running
+    assert "drop:expenses" not in docker.calls and not bus.events("sys.module.removed")
+
+
+async def test_a_retired_module_whose_copy_fails_stays_retired(tmp_path):
+    class NoCopy(FakeDocker):
+        def snapshot_data(self, name, label):
+            raise RuntimeError("cp: no space left on device")
+
+    _, bus, _, reg, _, g = await two_roots(tmp_path, docker=NoCopy())
+    write_module(g, "expenses")
+    await bus.request("rpc.sys.deploy", {"name": "expenses"})
+    await reg.set_status("expenses", ModuleStatus.RETIRED)
+    assert (await bus.request("rpc.sys.remove", {"name": "expenses", "label": "removed-1"}))["ok"] is False
+    assert reg.rows["expenses"].status == "retired"  # its name stays free
+
+
+async def test_remove_behind_a_long_deploy_says_so_rather_than_run_late(tmp_path, monkeypatch):
+    monkeypatch.setattr("supervisor.service.LOCK_WAIT_S", 0.05)
+    s, bus, docker, reg, _, g = await two_roots(tmp_path)
+    write_module(g, "expenses")
+    await bus.request("rpc.sys.deploy", {"name": "expenses"})
+    docker.calls.clear()
+    async with s._lock:  # another module's deploy
+        reply = await bus.request("rpc.sys.remove", {"name": "expenses", "label": "removed-1"})
+    assert reply == {
+        "ok": False,
+        "error": "another module is being deployed; ask again to delete expenses once it is done",
+    }
+    assert docker.calls == [] and "expenses" in docker.running and reg.rows["expenses"].status == "running"
+
+
+async def test_remove_drops_no_data_it_could_not_copy(sup):
+    _, bus, docker, _ = sup
+    reply = await bus.request("rpc.sys.remove", {"name": "fresh", "label": "removed-20261108T020000Z"})
+    assert reply["ok"] is True and reply["data"] is None and reply["listed"] is False and reply["stopped"] is False
+    assert "drop:fresh" not in docker.calls
+
+
+async def test_remove_again_finishes_and_says_what_was_left(tmp_path):
+    _, bus, docker, _, _, g = await two_roots(tmp_path)
+    write_module(g, "expenses")
+    await bus.request("rpc.sys.deploy", {"name": "expenses"})
+    await bus.request("rpc.sys.remove", {"name": "expenses", "label": "v0.1.0-removed-1"})
+    again = await bus.request("rpc.sys.remove", {"name": "expenses", "label": "v0.1.0-removed-2"})
+    assert again == {"ok": True, "name": "expenses", "stopped": False, "data": None, "listed": False}
+
+
+async def test_remove_refuses_a_hand_written_module(tmp_path):
+    _, bus, docker, reg, modules, _ = await two_roots(tmp_path)
+    write_module(modules, "hello")
+    await bus.request("rpc.sys.deploy", {"name": "hello"})
+    docker.calls.clear()
+    reply = await bus.request("rpc.sys.remove", {"name": "hello", "label": "v0.1.0-removed-1"})
+    assert reply["ok"] is False and "hello is hand-written (modules/hello)" in reply["error"]
+    assert docker.calls == [] and reg.rows["hello"].status == "running"
+
+
+@pytest.mark.parametrize(
+    "data", [{"name": "../etc", "label": "x"}, {"name": "expenses", "label": "../x"}, {"name": "x"}]
+)
+async def test_remove_takes_only_a_module_name_and_a_plain_label(sup, data):
+    _, bus, docker, _ = sup
+    assert (await bus.request("rpc.sys.remove", data))["ok"] is False
+    assert docker.calls == ["base", "sweep"]
+
+
+def test_real_docker_drops_the_data_volume_without_force(monkeypatch):
+    client = VolumeClient()
+    assert volume_ops(monkeypatch, client).drop_data("expenses") is True
+    assert client.removed == ["mycelium-dev-data-expenses"]
+    assert volume_ops(monkeypatch, VolumeClient(has_data=False)).drop_data("expenses") is False
+
+
+def test_real_docker_removes_every_image_of_the_module_in_its_stack(monkeypatch):
+    class Image:
+        def __init__(self, id):
+            self.id = id
+
+    class Images:
+        def __init__(self):
+            self.filters = None
+            self.removed = []
+
+        def list(self, filters):
+            self.filters = filters
+            return [Image("sha256:a"), Image("sha256:b")]
+
+        def remove(self, image, force=False):
+            if image == "sha256:b":
+                raise RuntimeError("image is being used by a running container")
+            self.removed.append((image, force))
+
+    client = VolumeClient()
+    client.images = Images()
+    assert volume_ops(monkeypatch, client).remove_module_images("expenses") == 1
+    assert client.images.filters == {"label": ["mycelium.module=expenses", "mycelium.stack=mycelium-dev"]}
+    assert client.images.removed == [("sha256:a", True)]

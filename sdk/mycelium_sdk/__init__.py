@@ -11,8 +11,8 @@
 - prompt:    Prompt, the system text and the user message a model reads
 - llm:       rpc.llm.complete for every service: ChatMessage and its blocks, ToolSpec, Tool, the request, the reply
 - rpc:       ask(), one request to another service read into a model; NoAnswer, Refused
-- build:     the builder's contract: BuildRequest, StartReply, BuildRef, BuildRecord and the build.* events, as the
-             builder sends them and Main reads them (import mycelium_sdk.build)
+- build:     the builder's contract: BuildRequest, StartReply, BuildRef, BuildRecord, RemoveRequest, Removed and the
+             build.* events, as the builder sends them and Main reads them (import mycelium_sdk.build)
 - text:      cut and one_line, text made to fit a card or a prompt
 - blocks:    a module's data as a table, a chart, stats, details or a meter: BlockSpec, build (import mycelium_sdk.blocks)
 - views:     a module's views, declared in its manifest or suggested from its requests (import mycelium_sdk.views)

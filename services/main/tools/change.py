@@ -9,13 +9,13 @@ version passes its tests and deploys; a change that fails leaves it as it was.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
 from .base import Tool, ToolContext
+from .lookup import look_up
 from .propose import CARD_LINES, Line, split_lines
 
 SUMMARY_MAX = 200  # characters of the first line, as the Offered list shows the change
@@ -73,41 +73,27 @@ class ChangeArgs(BaseModel):
         )
 
 
-async def _ask(ctx: ToolContext, subject: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    try:
-        reply = await ctx.bus.request(subject, payload, timeout=2.0)
-    except Exception:
-        return None
-    return reply if reply.get("ok", True) else None
-
-
 async def change(args: ChangeArgs, ctx: ToolContext) -> dict[str, Any]:
-    """Refused when the module is not one the builder grew, or is being built now; best effort, since the builder
-    checks again at the tap: a supervisor that does not answer only means a refusal would come then."""
-    listed, builds = await asyncio.gather(_ask(ctx, "rpc.sys.list", {}), _ask(ctx, "rpc.build.list", {"limit": 50}))
-    if listed is None:
+    """Refused when the module is not one the builder grew, or is being built now; best effort (lookup.py)."""
+    found = await look_up(ctx, args.module)
+    if found is None:
         return {"ok": True, "change": args.module}
-    grown = {str(n) for n in listed.get("grown") or []}
-    rows = {str(r.get("name")): r for r in listed.get("modules") or [] if r.get("name")}
-    if args.module not in grown:
-        if args.module in rows or args.module in (listed.get("folders") or []):
+    if not found.is_grown:
+        if found.listed or found.folder:
             error = f"{args.module} is hand-written, not grown: only modules marked grown can be changed. Tell Hansen."
         else:
-            names = ", ".join(sorted(grown)) or "none"
+            names = ", ".join(found.grown) or "none"
             error = (
                 f"there is no module {args.module!r} to change (grown: {names}). If Hansen wants a new one, call "
                 "`propose_module`."
             )
         return {"ok": False, "error": error}
-    for b in (builds or {}).get("builds") or []:
-        if b.get("name") == args.module and b.get("status") in ("queued", "building"):
-            return {
-                "ok": False,
-                "error": f"{args.module} is being built or changed right now: tell Hansen to ask again once it is done.",
-            }
-    row = rows.get(args.module) or {}
-    version = row.get("version") or (row.get("manifest") or {}).get("version")
-    return {"ok": True, "change": args.module, "version": version}
+    if found.building:
+        return {
+            "ok": False,
+            "error": f"{args.module} is being built or changed right now: tell Hansen to ask again once it is done.",
+        }
+    return {"ok": True, "change": args.module, "version": found.version}
 
 
 CHANGE_MODULE = Tool(

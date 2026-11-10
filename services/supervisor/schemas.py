@@ -6,6 +6,7 @@
     rpc.sys.agent    AgentRequest     -> AgentRun
     rpc.sys.agents   {}               -> AgentList
     rpc.sys.stop     ModuleRef        -> Stopped
+    rpc.sys.remove   RemoveRequest    -> Removed (a module gone for good: its data copied first, then dropped)
     rpc.sys.logs     LogsRequest      -> Logs
     rpc.sys.list     {}               -> ModuleList
     rpc.sys.health   {}               -> HealthReport
@@ -39,7 +40,7 @@ class ModuleStatus(StrEnum):
     RUNNING = "running"
     FAILED = "failed"
     STOPPED = "stopped"
-    RETIRED = "retired"  # its folder is gone; reconcile no longer brings it back
+    RETIRED = "retired"  # its folder is gone; reconcile no longer brings it back (a removed module has no row)
 
 
 class VerifyStage(StrEnum):
@@ -66,6 +67,11 @@ class VerifyRequest(BaseModel):
 class SnapshotRequest(BaseModel):
     name: ModuleName
     label: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")  # in the copy's volume name: v0.1.0-<build id>
+
+
+class RemoveRequest(BaseModel):
+    name: ModuleName
+    label: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")  # in its data copy's name: v0.1.0-removed-<when>
 
 
 class AgentRequest(BaseModel):
@@ -104,6 +110,13 @@ class Snapshot(BaseModel):
 class Stopped(BaseModel):
     name: str
     stopped: bool  # False: there was no container to stop
+
+
+class Removed(BaseModel):
+    name: str
+    stopped: bool  # False: there was no container
+    data: str | None = None  # the copy of its data volume; None: it had none, so nothing was dropped
+    listed: bool  # False: the registry had no row for it
 
 
 class Logs(BaseModel):

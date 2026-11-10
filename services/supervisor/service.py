@@ -6,11 +6,12 @@ RPC subjects (the requests and replies are in schemas.py):
     rpc.sys.agent   AgentRequest     a coding agent on a copy of a staged build; the folder comes back
     rpc.sys.agents  {}               the coding agents and whether each can run now
     rpc.sys.stop    ModuleRef
+    rpc.sys.remove  RemoveRequest    a module gone for good: stopped, data copied then dropped, images, row
     rpc.sys.logs    LogsRequest
     rpc.sys.list    {}               the registry's modules, and every module folder on disk
     rpc.sys.health  {}               pings every running module
 Events emitted:
-    sys.module.deployed / sys.module.stopped / sys.module.failed
+    sys.module.deployed / sys.module.stopped / sys.module.failed / sys.module.removed
 
 Modules live in two roots: MODULES_DIR holds the hand-written ones (hello), GROWN_DIR the grown ones, a git
 repo of their own that the builder writes. A build is staged in GROWN_DIR/.staging/<name> until verify passes;
@@ -53,6 +54,8 @@ from .schemas import (
     ModuleRef,
     ModuleRow,
     ModuleStatus,
+    Removed,
+    RemoveRequest,
     Snapshot,
     SnapshotRequest,
     Stopped,
@@ -64,6 +67,7 @@ from .schemas import (
 log = logging.getLogger("mycelium.supervisor")
 
 STAGING = ".staging"  # GROWN_DIR/.staging/<name>: a build before it passes verify
+LOCK_WAIT_S = 30.0  # how long a removal waits for a deploy to end; the builder waits 120 s for the whole of it
 
 
 class Supervisor:
@@ -112,6 +116,7 @@ class Supervisor:
             "agent": self.agent,
             "agents": self.list_agents,
             "stop": self.stop,
+            "remove": self.remove,
             "logs": self.logs,
             "list": self.list,
             "health": self.health,
@@ -323,6 +328,47 @@ class Supervisor:
         if stopped:
             await self.bus.publish("sys.module.stopped", {"name": name})
         return Stopped(name=name, stopped=stopped)
+
+    async def remove(self, data: dict[str, Any]) -> Removed:
+        """A module gone for good: its container stopped and removed, its data volume copied (`<stack>-data-<name>-
+        <label>`, the way back) and then dropped, its images removed and its registry row deleted, so nothing lists it,
+        reconcile never brings it back, and a module grown again under its name starts with no data. Stopped first, so
+        the copy is of data nothing writes any more (a module that crashes and restarts cannot be paused). Its folder
+        is not the supervisor's (GROWN_DIR is read-only here): the builder takes a grown one out after this. A
+        hand-written one is refused, since its folder is in the repo. Each step does what is left to do, so asking
+        again finishes a removal that failed halfway; one that fails at the copy leaves the module stopped, data kept,
+        and says so. Behind a deploy it waits LOCK_WAIT_S at most, then says no: never at work after its caller (the
+        builder) has stopped waiting, while a build of the module could start."""
+        req = RemoveRequest.model_validate(data)
+        name = req.name
+        if self._inside(self.modules_dir, name).is_dir():
+            raise ValueError(f"{name} is hand-written (modules/{name}): to remove it, delete its folder from the repo")
+        retired = any(r.name == name and r.status == ModuleStatus.RETIRED for r in await self.registry.all())
+        try:
+            async with asyncio.timeout(LOCK_WAIT_S):
+                await self._lock.acquire()  # no deploy of it in between
+        except TimeoutError:
+            raise ValueError(f"another module is being deployed; ask again to delete {name} once it is done") from None
+        try:
+            stopped = await asyncio.to_thread(self.docker.stop_module, name)
+            if not retired:  # what it is, if the copy fails; a retired one stays retired, its name free
+                await self.registry.set_status(name, ModuleStatus.STOPPED)
+            try:
+                copy = await asyncio.to_thread(self.docker.snapshot_data, name, req.label)
+            except Exception as e:
+                raise ValueError(
+                    f"{name} is stopped, but its data could not be copied ({e}), so nothing of it was deleted: ask "
+                    "again to finish, or start it again from its page"
+                ) from e
+            if copy is not None:  # never dropped before it is copied
+                await asyncio.to_thread(self.docker.drop_data, name)
+            images = await asyncio.to_thread(self.docker.remove_module_images, name)
+            listed = await self.registry.remove(name)
+        finally:
+            self._lock.release()
+        log.info("removed %s: data %s, %d images", name, f"copied to {copy}" if copy else "none", images)
+        await self.bus.publish("sys.module.removed", {"name": name, "data": copy})
+        return Removed(name=name, stopped=stopped, data=copy, listed=listed)
 
     async def logs(self, data: dict[str, Any]) -> Logs:
         req = LogsRequest.model_validate(data)

@@ -4,6 +4,7 @@
     rpc.sys.verify    VerifyCall   -> VerifyReply    (its VerifyResult)
     rpc.sys.deploy    DeployCall   -> DeployReply    (its Deployed)
     rpc.sys.snapshot  SnapshotCall -> SnapshotReply  (its Snapshot): a change build copies the module's data first
+    rpc.sys.remove    RemoveCall   -> RemoveReply    (its Removed): a module deleted, its data copied first
     rpc.sys.agents    {}           -> AgentsReply    (its AgentList)
     rpc.sys.agent     AgentCall    -> AgentReply     (its AgentRun)
 
@@ -24,11 +25,13 @@ from mycelium_sdk.build import Stage
 class ModuleEntry(BaseModel):
     name: str
     status: str
+    version: str | None = None
 
 
 class ModulesReply(BaseModel):
     modules: list[ModuleEntry] = Field(default_factory=list)
     folders: list[str] = Field(default_factory=list)  # every module folder on disk, deployed or not
+    grown: list[str] = Field(default_factory=list)  # the folders in GROWN_DIR; the rest of `folders` are hand-written
 
 
 class VerifyCall(BaseModel):
@@ -57,6 +60,15 @@ class SnapshotCall(BaseModel):
 
 class SnapshotReply(BaseModel):
     volume: str | None = None  # the copy; None: the module had no data yet
+
+
+class RemoveCall(BaseModel):
+    name: str
+    label: str  # in its data copy's name: the version it ran, and when it was removed
+
+
+class RemoveReply(BaseModel):
+    data: str | None = None  # the copy of its data; None: it had none
 
 
 class AgentInfo(BaseModel):

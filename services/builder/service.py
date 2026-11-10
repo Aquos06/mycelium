@@ -5,6 +5,7 @@
     rpc.build.list    BuildListRequest   -> BuildList (newest first)
     rpc.build.coders  {}                 -> CoderList
     rpc.build.default CoderChoice        -> CoderList
+    rpc.build.remove  RemoveRequest      -> Removed (a module deleted: rpc.sys.remove, then its folder out of git)
 Each handler returns a model; it goes back as Answer.of(it) ({"ok": true, ...}), or Refusal ({"ok": false, "error"}).
 Events, each with the thread that asked (channel, thread):
     build.started / build.stage (each step it enters) / build.progress (each round's end) / build.done / build.failed
@@ -25,6 +26,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -70,6 +72,10 @@ from .schemas import (
     CoderList,
     CoderSetting,
     ModulesReply,
+    RemoveCall,
+    Removed,
+    RemoveReply,
+    RemoveRequest,
     Round,
     Stage,
     StartReply,
@@ -94,6 +100,7 @@ class BuilderService:
         default_coder: str,
         max_queue: int = 5,
         build_timeout: float = 3600.0,
+        remove_timeout: float = 120.0,
     ) -> None:
         if default_coder not in coders:
             raise ValueError(f"BUILDER_CODER={default_coder!r}: one of {', '.join(coders)}")
@@ -106,6 +113,10 @@ class BuilderService:
         self.default_coder = default_coder
         self.max_queue = max_queue
         self.build_timeout = build_timeout
+        self.remove_timeout = remove_timeout  # rpc.sys.remove: it stops the module and copies its data first
+        self._removing: set[str] = set()  # modules being deleted now: no build of them starts meanwhile
+        self._starting: set[str] = set()  # builds being checked before they queue: no deletion of them meanwhile
+        self._copied: dict[str, str] = {}  # where a deletion that stopped halfway copied the data, for the retry to say
         self._waiting: list[BuildRecord] = []
         self._current: BuildRecord | None = None
         self._wake = asyncio.Event()
@@ -119,6 +130,7 @@ class BuilderService:
         await self.bus.subscribe("rpc.build.list", self._wrap(self.list, BuildListRequest), queue="builder")
         await self.bus.subscribe("rpc.build.coders", self._wrap(self.list_coders), queue="builder")
         await self.bus.subscribe("rpc.build.default", self._wrap(self.choose_coder, CoderChoice), queue="builder")
+        await self.bus.subscribe("rpc.build.remove", self._wrap(self.remove_module, RemoveRequest), queue="builder")
         self._worker = asyncio.create_task(self._work())
 
     async def stop(self) -> None:
@@ -155,6 +167,17 @@ class BuilderService:
         busy = [r for r in [self._current, *self._waiting] if r is not None and r.name == req.name]
         if busy:
             raise ValueError(f"{req.name!r} is already being built ({busy[0].id})")
+        if req.name in self._starting:
+            raise ValueError(f"{req.name!r} is already being started")
+        if req.name in self._removing:
+            raise ValueError(f"{req.name!r} is being deleted right now; ask again once it is gone")
+        self._starting.add(req.name)  # before the first wait, until it is queued: a deletion asked meanwhile is refused
+        try:
+            return await self._start(req, coder_name, coder)
+        finally:
+            self._starting.discard(req.name)
+
+    async def _start(self, req: BuildRequest, coder_name: str, coder: Coder) -> StartReply:
         if req.is_change:
             record = await self._change(req, coder_name)
         else:
@@ -215,6 +238,76 @@ class BuilderService:
             base_version=base,
             base_commit=await self.pipeline.repo.last_commit(name),
         )
+
+    async def remove_module(self, req: RemoveRequest) -> Removed:
+        """A module Hansen chose to delete (Main's Delete it, its page, mctl remove): the supervisor copies its data
+        and removes the rest (rpc.sys.remove), then its folder leaves GROWN_DIR in one commit, its tag keeping the
+        code. Refused while it is being built, and for a hand-written one (its folder is in the repo). A registry row
+        whose folder is gone already is removed too. A deletion that fails halfway is finished by asking again."""
+        name = req.name
+        busy = [r for r in [self._current, *self._waiting] if r is not None and r.name == name]
+        if busy or name in self._starting:
+            which = f" ({busy[0].id})" if busy else ""
+            raise ValueError(f"{name!r} is being built{which}; delete it once that build has ended")
+        if name in self._removing:
+            raise ValueError(f"{name!r} is already being deleted")
+        self._removing.add(name)  # before the first wait: a build asked for meanwhile is refused
+        try:
+            return await self._remove(name)
+        finally:
+            self._removing.discard(name)
+
+    async def _remove(self, name: str) -> Removed:
+        listed = await self._listed()
+        grown = self.workspace.exists(name)
+        row = next((m for m in listed.modules if m.name == name), None)
+        if not grown and name in listed.folders:
+            raise ValueError(
+                f"{name} is hand-written (modules/{name}): only a module the builder grew can be deleted here; to "
+                "remove it, delete its folder from the repo"
+            )
+        if not grown and row is None:
+            raise ValueError(f"there is no module {name!r} to delete")
+        version = (self._version(name) if grown else None) or (row.version if row else None)
+        when = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        label = f"v{version}-removed-{when}" if version else f"removed-{when}"
+        try:
+            reply = await ask(
+                self.bus, "rpc.sys.remove", RemoveCall(name=name, label=label), RemoveReply, timeout=self.remove_timeout
+            )
+        except NoAnswer as e:
+            raise ValueError(
+                f"the supervisor did not answer within {self.remove_timeout:g}s; {name} may be stopped already: ask "
+                "again to finish deleting it"
+            ) from e
+        except Refused as e:
+            raise ValueError(f"the supervisor could not remove {name}: {e}") from e
+        data = reply.data or self._copied.get(name)  # dropped by the first try, which said where it went
+        commit = tag = None
+        if grown:
+            kept = f"\n\nits data copied to {data}" if data else ""
+            tag = f"{name}-{label}"
+            try:
+                commit = await self.pipeline.repo.remove(
+                    name, f"remove {name}{f' v{version}' if version else ''}{kept}", tag
+                )
+                await asyncio.to_thread(self.workspace.discard, name)
+            except (OSError, RuntimeError) as e:
+                if data:
+                    self._copied[name] = data
+                copied = f" and its data copied to {data}" if data else ""
+                raise ValueError(
+                    f"{name} is stopped{copied}, but its folder could not leave GROWN_DIR ({e}); ask again to finish"
+                ) from e
+        self._copied.pop(name, None)
+        log.info("deleted %s%s: data %s, commit %s", name, f" v{version}" if version else "", data, commit)
+        return Removed(name=name, version=version, data=data, commit=commit, tag=tag if commit else None)
+
+    def _version(self, name: str) -> str | None:
+        try:
+            return load_manifest(self.workspace.module(name) / "manifest.yaml").version
+        except (OSError, ManifestError):
+            return None
 
     async def get(self, ref: BuildRef) -> BuildRecord:
         build_id = ref.build_id
@@ -277,14 +370,17 @@ class BuilderService:
     async def _known_modules(self) -> set[str]:
         """Every module name in use: deployed (the registry) or with a folder in either root, hand-written ones
         included, so a build never takes one."""
+        reply = await self._listed()
+        live = {m.name for m in reply.modules if m.status != "retired"}
+        return live | set(reply.folders)  # a retired module's name is free once its folder is gone
+
+    async def _listed(self) -> ModulesReply:
         try:
-            reply = await ask(self.bus, "rpc.sys.list", None, ModulesReply, timeout=5)
+            return await ask(self.bus, "rpc.sys.list", None, ModulesReply, timeout=5)
         except NoAnswer as e:
             raise ValueError("the supervisor is not answering; a build needs it to verify and deploy") from e
         except Refused as e:
             raise ValueError(f"the supervisor could not list modules: {e}") from e
-        live = {m.name for m in reply.modules if m.status != "retired"}
-        return live | set(reply.folders)  # a retired module's name is free once its folder is gone
 
     # ---- the worker ----------------------------------------------------------------------------------
 

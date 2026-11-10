@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -18,6 +18,7 @@ from .schemas import ModuleRecord, ModuleStatus
 class Registry(Protocol):
     async def upsert(self, manifest: Manifest, status: ModuleStatus, image: str | None) -> None: ...
     async def set_status(self, name: str, status: ModuleStatus) -> None: ...
+    async def remove(self, name: str) -> bool: ...
     async def all(self) -> list[ModuleRecord]: ...
 
 
@@ -37,6 +38,9 @@ class MemoryRegistry:
     async def set_status(self, name: str, status: ModuleStatus) -> None:
         if name in self.rows:
             self.rows[name].status = status
+
+    async def remove(self, name: str) -> bool:
+        return self.rows.pop(name, None) is not None
 
     async def all(self) -> list[ModuleRecord]:
         return list(self.rows.values())
@@ -81,6 +85,11 @@ class PostgresRegistry:
             await conn.execute(
                 update(modules).where(modules.c.name == name).values(status=status, updated_at=func.now())
             )
+
+    async def remove(self, name: str) -> bool:
+        """The module's row, gone: it is no longer listed, and reconcile never brings it back."""
+        async with self.engine.begin() as conn:
+            return (await conn.execute(delete(modules).where(modules.c.name == name))).rowcount > 0
 
     async def all(self) -> list[ModuleRecord]:
         stmt = select(

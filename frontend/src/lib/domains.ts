@@ -142,8 +142,10 @@ export function read(e: BusEvent, raw = false): Reading {
     case sub === "brain.observe":
       return { text: str(d.summary ?? payload(d)), meta: `brain.observe · ${source}` };
     case sub.startsWith("sys.module."): {
-      const verb = parts[2] === "deployed" ? "Started" : parts[2] === "stopped" ? "Stopped" : parts[2][0].toUpperCase() + parts[2].slice(1);
-      return { text: `${verb} ${str(d.name)}`, meta: `${sub}${d.image ? ` · ${str(d.image, 40)}` : ""}` };
+      const verbs: Record<string, string> = { deployed: "Started", stopped: "Stopped", removed: "Deleted" };
+      const verb = verbs[parts[2]] ?? parts[2][0].toUpperCase() + parts[2].slice(1);
+      const where = d.image ? ` · ${str(d.image, 40)}` : d.data ? ` · data kept in ${str(d.data, 60)}` : "";
+      return { text: `${verb} ${str(d.name)}`, meta: `${sub}${where}` };
     }
     case sub === "sys.reconciled":
       return { text: `Checked ${(d.modules as unknown[] | undefined)?.length ?? 0} modules at start`, meta: sub };
