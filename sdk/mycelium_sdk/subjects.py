@@ -8,7 +8,8 @@ Events (fire-and-forget, recorded in the JetStream EVENTS stream):
     build.<event>               builder events: build.started, build.stage, build.progress, build.done, build.failed
     out.<kind>                  outputs: out.say (reply on a thread), out.notify, out.ask (choices), out.ha,
                                 out.progress (a job in a thread, one message changed in place)
-    trace.<kind>                decision traces: trace.plan, trace.llm, trace.consolidate, trace.rollup, trace.embed, trace.decide, trace.feedback
+    trace.<kind>                decision traces: trace.plan, trace.llm, trace.consolidate, trace.rollup, trace.embed, trace.decide, trace.feedback,
+                                trace.wake
 
 Live (fire-and-forget, NOT an event: not in the stream, the tracer skips it, nobody keeps it):
     stream.llm                  a reply's text as the model writes it, a frame per few tokens, matched by `cause`

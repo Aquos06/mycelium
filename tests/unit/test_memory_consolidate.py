@@ -20,11 +20,11 @@ from memory.consolidate import (
 from memory.events import JsonlEvents
 from memory.index import InMemoryIndex
 from memory.indexer import reindex
-from memory.schedule import next_run
 from memory.schemas import DayDigest
 from memory.service import MemoryService
 from memory.vault import Vault
 from mycelium_sdk import InMemoryBus, Message
+from mycelium_sdk.clock import next_daily
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 EVENTS = FIXTURES / "events" / "2026-10-14.jsonl"
@@ -238,9 +238,9 @@ async def test_rpc_consolidate_defaults_to_yesterday_and_needs_a_consolidator(wo
 def test_schedule_finds_the_next_local_run():
     zone = ZoneInfo(TZ)
     before = datetime(2026, 10, 23, 1, 0, tzinfo=zone)  # 01:00 local: today at 03:30
-    assert next_run(before, time(3, 30), zone) == datetime(2026, 10, 23, 3, 30, tzinfo=zone)
+    assert next_daily(before, time(3, 30), zone) == datetime(2026, 10, 23, 3, 30, tzinfo=zone)
     after = datetime(2026, 10, 22, 20, 0, tzinfo=UTC)  # 04:00 local on the 23rd: tomorrow
-    assert next_run(after, time(3, 30), zone) == datetime(2026, 10, 24, 3, 30, tzinfo=zone)
+    assert next_daily(after, time(3, 30), zone) == datetime(2026, 10, 24, 3, 30, tzinfo=zone)
 
 
 def test_autolink_wraps_known_names_once_and_leaves_existing_links_alone():

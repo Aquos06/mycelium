@@ -203,7 +203,7 @@ flowchart TB
 | Main / module | bridge | `out.ha` | event | a Home Assistant service call (actuation, gated) |
 | Main / module | connector | `out.mail`, `out.calendar` | event | send a mail, create an event (actuation; mail to other people never becomes automatic) |
 | Module | bus | `mod.<name>.<event>` | event | declared payload, validated by the SDK |
-| Module | Main | `brain.observe` | event | `{type, summary, severity, data}` |
+| Module | Main | `brain.observe` | event | `{type, summary, severity_hint: info · notice · alert, data}` + envelope (`mycelium_sdk.observe`) |
 | Main / module | module | `rpc.mod.<name>.<action>` | request | declared params → declared returns |
 | Main | memory | `rpc.memory.recall / remember / lookup` | request | notes, summaries, fuzzy matches |
 | Main, memory, bridges, modules | gateway | `rpc.llm.complete / embed / decide / transcribe` | request | prompt → completion; keys never leave the gateway |
@@ -359,9 +359,16 @@ Everything the system grows. One container each, one job each, contract in `temp
 |---|---|
 | Owns | its own data in `/data` (SQLite), its handlers, its tests, later its UI panel |
 | Listens | declared `subscribes` |
-| Publishes | `mod.<name>.<event>` (declared), `brain.observe` summaries |
+| Publishes | `mod.<name>.<event>` (declared), `brain.observe` summaries (info, notice or alert: how loud) |
 | Answers | `rpc.mod.<name>.<action>` (declared), `health` automatic |
 | Kinds | **plain** (re-created from scratch), **wrap** (thin module + backend container running open software), **bridge** (hand-written host adapter, e.g. Home Assistant → `sense.iot`) |
+
+**Telling Hansen something: built.** A module does not message Hansen; it tells Main, on `brain.observe`, how loud
+it is: `info` is for the record and wakes nothing, `notice` is told at the next good moment, `alert` interrupts
+Hansen now (one an hour per module). The summary is what Hansen reads, so it is one sentence addressed to Hansen. A check worth
+doing once a day ("nothing logged by evening") is a time in `hooks.daily` (`["21:00"]`, in the user's zone) whose
+handler `@mod.at("21:00")` looks at the data and observes a `notice` only when there is something to say. Main
+decides whether and when it is said (§5, Waking).
 
 **Where modules live.** Nothing is pre-built; a module exists only after Hansen asked for it. Once
 built it is real code that has to persist and have history (change builds, rollback), so generated
@@ -436,7 +443,7 @@ tool calls, usage and cost, linked by `cause`. `sense.feedback` answers continue
 traced. When the gateway fails or the budget is spent, Main still replies that it cannot reach its model
 and keeps the turn. The module list in the prompt says what each module listens to, so the planner knows
 a module on `sense.chat` already hears "dinner 350". Not yet: the gate, the state snapshot, the policy
-database; `brain.observe` is only logged.
+database (waking, below, keeps its rules in code and its state in KV).
 
 **Saying only what it did.** The thread Main reads back is what happened, not only what was said: each
 assistant turn keeps the tool calls Main accepted in it (arguments and the start of each result), and the
@@ -506,6 +513,25 @@ not offered again on a card. The module's page in the web app has the same Delet
 `mctl remove <name>`. Whichever deleted it, `sys.module.removed` marks every card still asking to delete that name
 done, so an old card tapped later never deletes a module grown again under the name; and memory's note of the
 module says it was deleted and where its data went, so recall stops sending the planner to it.
+**Waking.** Main also speaks unasked (`wake.py`). A module's `notice` wakes it within a couple of minutes (notices
+that come together are one wake), an `alert` at once, and a timer every `MAIN_WAKE_EVERY` minutes (15) looks for a
+module the registry says should run whose container does not, at two looks in a row (told once until it runs
+again), and a card to build or change a module that has waited 3 to 14 days without a tap (shown once more, in its
+thread; a deletion is never pushed). Each thing it could say is decided in code, never by the model: dropped when
+two of its module's messages got 👎 this week, when a notice has waited over 10 hours, or when the same thing was
+told already (the same summary from the module that day; the SDK's error reports for a module, one a day); told at
+once when it is an alert within its module's one an hour (one 👎 makes its alerts notices); otherwise held during quiet hours (`MAIN_QUIET_HOURS`, 23:00-08:00), while Hansen is in a conversation there (a turn
+running, or a message in the last 5 minutes) and once the day's budget is spent (`MAIN_WAKE_BUDGET`, 3, alerts
+included), and told at the first wake that lets it through. A module's notice is told as `<module>: <summary>` in
+the thread Hansen last wrote in on a channel of `MAIN_WAKE_CHANNELS` (telegram, web; not mctl), and kept in that
+thread, so a reply to it is read with it; before Hansen has written anywhere it is an unaddressed `out.notify` (the phone,
+the app's home screen). A 👍 on one clears its module's 👎s. Each wake that told, dropped or newly held something
+publishes one `trace.wake` with every item and why. State: `wake/state` and `wake/home` in Main's KV; a held
+observation is kept without its data, five a module and twenty in all, and the state is saved after each message
+told, so a wake that stops halfway never tells one twice. A message goes out at once and is added to its thread when
+a turn running there ends. Not yet: the model reading what is held and the day's info to write a check-in, reminders
+Hansen sets in the chat, and checking an observation's `source` (modules share one bus login, §1).
+
 Tools (`services/main/tools/`) are pydantic: one argument model and one async handler per tool,
 held in a `ToolRegistry`. The `input_schema` the planner sees is generated from the argument model,
 and every call is validated against the same model before it touches the bus; a rejected call goes
@@ -525,7 +551,7 @@ gets its 20 cases there before it ships, so a regression on the old ones shows.
 | | |
 |---|---|
 | Listens | `sense.*`, `brain.observe`, `sys.*`, `build.*`, `sense.feedback` from channels |
-| Publishes | `out.notify`, `out.say`, `out.ask`, `out.progress` (a build it started, followed in the thread that asked), `trace.gate / plan / notify` |
+| Publishes | `out.notify`, `out.say`, `out.ask`, `out.progress` (a build it started, followed in the thread that asked), `trace.gate / plan / notify / wake` |
 | Calls | `rpc.mod.*` (ask a module), `rpc.memory.*` (recall, remember), `rpc.sys.list`, `rpc.build.start / get / list` |
 | Owns | `<stack>_main` (§12): policy and trust levels. The snapshot is a projection it can rebuild from `events`, cached in NATS KV |
 

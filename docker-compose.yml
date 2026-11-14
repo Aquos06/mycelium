@@ -165,6 +165,10 @@ services:
       MAIN_TZ: ${MAIN_TZ:-${MEMORY_TZ:-Asia/Taipei}}   # one TZ for memory and Main unless MAIN_TZ is set
       MAIN_LLM_TIMEOUT: ${MAIN_LLM_TIMEOUT:-90}        # raise for a cold local model (ollama first load)
       MAIN_CURRENCY: ${MAIN_CURRENCY:-TWD}              # money in what Main shows: an ISO code
+      MAIN_WAKE_EVERY: ${MAIN_WAKE_EVERY:-15}           # minutes between Main's own looks (>= 1)
+      MAIN_QUIET_HOURS: ${MAIN_QUIET_HOURS-23:00-08:00} # only an alert is told then; empty: never quiet
+      MAIN_WAKE_BUDGET: ${MAIN_WAKE_BUDGET:-3}          # messages a day Main sends unasked; alerts count, never held
+      MAIN_WAKE_CHANNELS: ${MAIN_WAKE_CHANNELS:-telegram,web}  # where Main may write first: the last one used
     networks: [mesh]
     depends_on:
       nats: { condition: service_healthy }

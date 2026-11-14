@@ -29,8 +29,13 @@ def build(**kwargs) -> Module:            # keep this shape: tests call build(ma
     @mod.every(3600)                      # every N seconds (declared under hooks.interval_seconds)
     async def hourly(): ...
 
+    @mod.at("21:00")                      # every day at 21:00 in the user's zone (declared under hooks.daily)
+    async def evening(): ...
+
     await mod.emit("expense.logged", {...})                           # publishes mod.<name>.expense.logged
-    await mod.observe("big_expense", "One sentence.", {...}, severity="notice")   # info | notice | alert
+    await mod.observe("big_expense", "One sentence for the user.", {...}, severity="notice")
+    # info: for the record, nobody is told (most observations) | notice: told at the next good moment
+    # alert: interrupts the user now, even at night; never for anything routine
     return mod
 
 if __name__ == "__main__":

@@ -86,6 +86,16 @@ export interface Reading {
   meta: string; // the machine's side: subject, source, numbers
 }
 
+/** A wake of Main's own, in words: what it told, held and dropped. */
+function readWake(d: Record<string, unknown>): string {
+  const items = Array.isArray(d.items) ? (d.items as Record<string, unknown>[]) : [];
+  const told = items.filter((i) => i.verdict === "sent").length;
+  const held = items.filter((i) => String(i.verdict ?? "").startsWith("held")).length;
+  const dropped = items.length - told - held;
+  const parts = [told && `told you ${told}`, held && `held ${held}`, dropped && `dropped ${dropped}`].filter(Boolean);
+  return `Looked around: ${parts.join(", ") || "nothing to say"}`;
+}
+
 /** One event as a timeline row reads it. `raw` shows the subject and payload instead of the words. */
 export function read(e: BusEvent, raw = false): Reading {
   const d = e.data;
@@ -139,6 +149,8 @@ export function read(e: BusEvent, raw = false): Reading {
       return { text: `Picked ${num(d.picked)} of ${num(d.scored)} notes for the question`, meta: `trace.decide · ${d.latency_ms ?? 0} ms` };
     case sub === "trace.feedback":
       return { text: d.answer ? `Recorded your answer ${quote(d.answer)}` : "Recorded your vote", meta: "trace.feedback" };
+    case sub === "trace.wake":
+      return { text: readWake(d), meta: `trace.wake · ${str(d.reason)} · ${num(d.sent_today)} of ${num(d.budget)} today` };
     case sub === "brain.observe":
       return { text: str(d.summary ?? payload(d)), meta: `brain.observe · ${source}` };
     case sub.startsWith("sys.module."): {

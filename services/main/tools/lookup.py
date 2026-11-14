@@ -22,9 +22,10 @@ BUSY = ("queued", "building")  # a build of it that has not ended
 
 class SysRow(BaseModel):
     name: str
-    status: str = ""
+    status: str = ""  # the registry's: what the supervisor last did with it (running = it should be running)
     version: str | None = None
     manifest: dict[str, Any] = Field(default_factory=dict)
+    container: str | None = "running"  # the container's state now; None: there is none (left out: taken as running)
 
 
 class SysList(BaseModel):

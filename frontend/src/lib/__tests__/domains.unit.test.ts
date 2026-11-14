@@ -39,6 +39,9 @@ describe("domains", () => {
     expect(t("trace.consolidate", { day: "2026-10-25", ok: true, facts: 14 })).toBe("Consolidated 2026-10-25 into 14 facts");
     expect(t("trace.embed", { embedded: 3 })).toBe("Embedded 3 notes");
     expect(t("trace.decide", { picked: 2, scored: 7 })).toBe("Picked 2 of 7 notes for the question");
+    const wake = { reason: "timer", sent_today: 1, budget: 3, items: [{ verdict: "sent" }, { verdict: "held: quiet hours" }, { verdict: "dropped: told already" }] };
+    expect(t("trace.wake", wake)).toBe("Looked around: told you 1, held 1, dropped 1");
+    expect(t("trace.wake", { reason: "notice", items: [] })).toBe("Looked around: nothing to say");
     expect(t("sys.module.deployed", { name: "hello", image: "img" })).toBe("Started hello");
     expect(t("sys.module.stopped", { name: "hello" })).toBe("Stopped hello");
     expect(t("sys.module.removed", { name: "garden", data: "mycelium-data-garden-v0.1.0-removed-1" })).toBe("Deleted garden");

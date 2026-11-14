@@ -31,6 +31,7 @@ from .views import View
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}\Z")  # \Z: `$` would also take a trailing newline
 FIELD_RE = re.compile(r"^[a-z_][a-z0-9_]{0,40}\Z")  # a param or return field
 TOKEN_RE = re.compile(r"^[a-z0-9_*>-]+(\.[a-z0-9_*>-]+)*\Z")
+HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d\Z")  # a daily hook's time: 07:30, 21:00
 RESERVED = {"sys", "brain", "build", "memory", "out", "trace", "sense", "rpc", "supervisor", "main"}
 
 
@@ -50,6 +51,7 @@ class Resources(BaseModel):
 
 class Hooks(BaseModel):
     interval_seconds: list[int] = Field(default_factory=list)
+    daily: list[str] = Field(default_factory=list)  # "HH:MM" in the user's time zone (`@mod.at("21:00")`)
 
     @field_validator("interval_seconds")
     @classmethod
@@ -58,6 +60,22 @@ class Hooks(BaseModel):
             if s < 10:
                 raise ValueError("interval hooks must be >= 10 seconds")
         return v
+
+    @field_validator("daily", mode="before")
+    @classmethod
+    def _daily(cls, v: Any) -> Any:
+        """Times as "HH:MM". YAML reads an unquoted 21:00 as a number of minutes (1260), so that is taken back."""
+        if not isinstance(v, list):
+            return v
+        out = []
+        for t in v:
+            t = f"{t // 60:02d}:{t % 60:02d}" if isinstance(t, int) and not isinstance(t, bool) else str(t).strip()
+            if not HHMM_RE.match(t):
+                raise ValueError(f"daily hook {t!r}: a time as HH:MM, 00:00 to 23:59")
+            out.append(t)
+        if len(set(out)) != len(out):
+            raise ValueError("daily hooks: each time once")
+        return out
 
 
 class RequestSpec(BaseModel):
