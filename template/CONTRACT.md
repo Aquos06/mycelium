@@ -20,7 +20,7 @@ Do not create files outside this folder. Do not edit CONTRACT.md.
 ## Rules
 
 1. **Use the SDK, never NATS directly.** `from mycelium_sdk import Module`. Register handlers with
-   `@mod.on(subject)`, `@mod.on_request(action)`, `@mod.every(seconds)`. Send with
+   `@mod.on(subject)`, `@mod.on_request(action)`, `@mod.every(seconds)`, `@mod.at("21:00")`. Send with
    `await mod.emit(event, data)` and `await mod.observe(type, summary, data, severity)`.
 2. **Declare everything in manifest.yaml.** The SDK raises `ContractViolation` if you subscribe,
    emit, answer, or schedule anything not declared.
@@ -56,6 +56,7 @@ Do not create files outside this folder. Do not edit CONTRACT.md.
          fields: [day, description, {key: amount, format: money}]
      ```
    - `hooks.interval_seconds`: list of intervals (>= 10s)
+   - `hooks.daily`: list of times in the user's day, quoted: `["21:00"]` -> `@mod.at("21:00")` runs then, every day
 3. **Never subscribe to your own events** (loops). Subscribe only to events: `sense.*`, `brain.*`, `mod.*`, `sys.*`,
    `build.*`, `out.*`. A module's bus login cannot send requests, read `rpc.*`, `trace.*` or `stream.*`.
 4. **Data lives only in `mod.data_dir`** (mounted at `/data`, persists across restarts).
@@ -63,9 +64,16 @@ Do not create files outside this folder. Do not edit CONTRACT.md.
 5. **No network access** unless `permissions.network: true` (and then justify it in `purpose`).
    **No real-world actions** (home devices, messages, money) unless `permissions.actuation: true`;
    such modules need human approval before deploy.
-6. **Observe what matters.** Call `mod.observe(...)` when something happens that a human might care
-   about. Use `severity="alert"` only for things that warrant interrupting the user.
-   Keep `summary` to one short sentence.
+6. **Observe what matters, at the right loudness.** `mod.observe(type, summary, data, severity)` tells Main, and
+   the `summary` is what the user reads, as you wrote it: one short sentence addressed to the user.
+   - `info`: for the record (an entry added, a total changed). Nobody is told. Most observations are this.
+   - `notice`: worth telling the user at the next good moment ("Nothing logged today: anything to add?", "Spending this
+     week is twice last week's"). Main tells it unless it is night, the user is mid-conversation, or has had enough
+     messages today. The same summary twice in a day is told once.
+   - `alert`: worth interrupting the user now, even at night (a door opened at 3am). One an hour per module; more are told
+     as notices. Never for anything routine.
+   A check the user would want once a day ("nothing logged by evening") is a `hooks.daily` time whose handler looks
+   at the data and observes a `notice` only when there is something to say.
 7. **Request handlers return a dict.** The SDK adds `ok: true`. Raise an exception for errors;
    the SDK turns it into `{"ok": false, "error": ...}`. Validate inputs.
 8. **Handlers must not crash the module.** The SDK catches exceptions, but write defensive code.

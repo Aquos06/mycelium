@@ -3,7 +3,9 @@
     sense.chat      {id, channel, thread, text}            -> recall, plan, reply on out.say (or out.ask), with
                                                               the blocks `show` made from a module's data
     sense.feedback  {ref, answer} | {ref, vote}            -> an answer continues the thread; a vote is traced
-    brain.observe                                          -> v0: logged only (the gate comes with the snapshot)
+    brain.observe                                          -> a module's notice or alert wakes Main (wake.py): told
+                                                              in the thread Hansen last wrote in, when the policy
+                                                              lets it (quiet hours, a chat in progress, the budget)
     build.stage                                            -> out.progress in the thread that asked: one message
                                                               per build, changed in place as it goes (progress.py)
     build.done / build.failed                              -> told in the thread whose proposal started it; the
@@ -20,6 +22,10 @@ change build, which keeps the module running as it is until the new version depl
 with Delete it / Keep it, and a tap deletes the module while it waits (rpc.build.remove): its data is copied aside
 first and its code stays in git.
 
+Waking: besides a module's notice or alert, a timer wakes Main every MAIN_WAKE_EVERY minutes to look for a module
+that stopped running and a card left waiting for days. What it may say is decided in code (wake.py), never by the
+model, and one trace.wake says what it told, held or dropped and why.
+
 Each message is handled in its own task, so one slow turn never holds up the others; turns on the
 same (channel, thread) take a lock, so a typed message and a button tap cannot interleave.
 """
@@ -31,7 +37,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Coroutine
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -46,9 +52,11 @@ from mycelium_sdk import (
     Manifest,
     Message,
     NoAnswer,
+    Observation,
     Refused,
     RequestSpec,
     Role,
+    Severity,
     TextBlock,
     ToolUse,
     ask,
@@ -83,6 +91,7 @@ from .schemas import (
     FeedbackTrace,
     LlmCall,
     ModuleInfo,
+    Notify,
     PackSummary,
     PlanTrace,
     Progress,
@@ -104,6 +113,22 @@ from .tools import (
     default_tools,
 )
 from .tools.lookup import SysList
+from .wake import (
+    MAIN,
+    DownModule,
+    Home,
+    Item,
+    ItemKind,
+    Verdict,
+    WakeOutcome,
+    WakePolicy,
+    WakeState,
+    WakeStore,
+    WakeTrace,
+    age_s,
+    day_of,
+    since_local,
+)
 
 log = logging.getLogger("mycelium.main")
 
@@ -159,6 +184,8 @@ class MainService:
         tools: ToolRegistry | None = None,
         proposals: ProposalStore | None = None,
         currency: str = "TWD",
+        wake: WakePolicy | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.bus = bus
         self.store = store
@@ -186,6 +213,14 @@ class MainService:
         self._tasks: set[asyncio.Task] = set()
         self._locks: dict[str, asyncio.Lock] = {}
         self._deleting: set[str] = set()  # proposals whose deletion runs now, outside their thread's lock
+        self.wake = wake or WakePolicy()
+        self.wakes = WakeStore(store.kv)
+        self.clock = clock or (lambda: datetime.now(UTC))
+        self._wake_lock = asyncio.Lock()  # one wake at a time: each reads and writes wake/state
+        self._home: Home | None = None  # the thread Hansen last wrote in (wake/home), once read
+        self._ticker: asyncio.Task | None = None
+        self._notice_wake: asyncio.Task | None = None  # notices that come within notice_delay_s are one wake
+        self._notice_pending = False  # a notice came that no wake has read yet
 
     async def start(self) -> None:
         await self.bus.connect()
@@ -198,6 +233,14 @@ class MainService:
         await self.bus.subscribe("sys.module.removed", self._dispatch(self.on_removed), queue="main")
         # builds that ended while Main was down; never holds up the start, and outside drain(): it may wait minutes
         self._catch_up = asyncio.create_task(self.catch_up())
+        if self.wake.every_s:
+            self._ticker = asyncio.create_task(self._tick())
+
+    async def stop(self) -> None:
+        """The timers end; what is in flight is drain()'s."""
+        for task in (self._ticker, self._notice_wake, self._catch_up):
+            if task is not None:
+                task.cancel()
 
     # ---- dispatch ------------------------------------------------------------------------
 
@@ -235,6 +278,7 @@ class MainService:
             return
         channel = str(data.get("channel") or data.get("source") or "unknown")
         thread_id = str(data.get("thread") or data.get("chat_id") or "default")
+        await self._at_home(channel, thread_id)
         async with self._lock(channel, thread_id):
             await self._turn(data, text, channel, thread_id)
 
@@ -245,12 +289,14 @@ class MainService:
             Envelope.child_of(data, "main").into(
                 FeedbackTrace,
                 ref=data.get("ref"),
-                vote=data.get("vote"),
+                vote=_vote_of(data.get("vote")),
                 answer=data.get("answer"),
                 channel=data.get("channel"),
                 thread=data.get("thread"),
             ),
         )
+        if (vote := _vote_of(data.get("vote"))) is not None and data.get("ref"):
+            self._spawn(self._vote(str(data["ref"]), vote))  # never holds up an answer in the same message
         answer = str(data.get("answer") or "").strip()
         if not answer:
             return
@@ -263,8 +309,223 @@ class MainService:
             return
         await self.on_chat(Message(subject="sense.chat", data={**data, "text": answer}))
 
+    # ---- waking ----------------------------------------------------------------------------
+
     async def on_observe(self, msg: Message) -> None:
-        log.debug("observe (v0: log only): %s", msg.data.get("summary"))
+        """A module's notice is held for a wake a little later, so the ones that come together are one; an alert
+        wakes Main now. `info` is for the record and wakes nothing."""
+        obs = _read(Observation, msg)
+        if obs is None or obs.severity_hint == Severity.INFO or not obs.summary.strip():
+            return
+        if obs.source == MAIN:  # Main never observes: a module calling itself main would never be muted
+            log.warning("an observation claims to be Main's (%s): ignored", obs.type)
+            return
+        async with self._wake_lock:
+            state = await self.wakes.load()
+            if not self.wake.hold(state, obs, self.zone):
+                return  # the same thing is waiting already
+            await self.wakes.save(state)
+        if obs.severity_hint == Severity.ALERT or not self.wake.notice_delay_s:
+            await self.wake_up(obs.severity_hint.value)
+            return
+        self._notice_pending = True
+        if self._notice_wake is None or self._notice_wake.done():
+            self._notice_wake = asyncio.create_task(self._notices())
+
+    async def _tick(self) -> None:
+        while True:
+            await asyncio.sleep(self.wake.every_s)
+            await self._safe_wake("timer")
+
+    async def _notices(self) -> None:
+        """One wake for the notices that come within notice_delay_s, and another for any that came while it ran."""
+        while self._notice_pending:
+            await asyncio.sleep(self.wake.notice_delay_s)
+            self._notice_pending = False
+            await self._safe_wake("notice")
+
+    async def _safe_wake(self, reason: str) -> None:
+        try:
+            await self.wake_up(reason)
+        except Exception:  # a wake that failed is tried again by the next one
+            log.exception("wake (%s) failed", reason)
+
+    async def wake_up(self, reason: str) -> None:
+        """Look at what could be said now and say what the policy lets through. The timer also looks for modules
+        that stopped running and cards left waiting; a notice or an alert wake only tells what is held."""
+        async with self._wake_lock:
+            now = self.clock()
+            state = self.wake.tidy(await self.wakes.load(), now, self.zone)
+            items = [Item.of(o, self.zone) for o in state.held]
+            if reason == "timer":
+                items += await self._down(state, now)
+                items += await self._waiting_cards(now)
+                looked = {i.key for i in items}
+                state.waiting = {k: v for k, v in state.waiting.items() if k in looked}
+            outcomes: list[WakeOutcome] = []
+            news = False
+            busy: dict[Home | None, bool] = {}  # once per place it would go
+            for item in items:
+                where = await self._where(item)
+                if where not in busy:
+                    busy[where] = await self._busy(where, now)
+                verdict = self.wake.judge(item, state, now, self.zone, busy=busy[where])
+                reply = None
+                if verdict == Verdict.SENT:
+                    try:
+                        reply = await self._say_unasked(item)
+                    except Exception:
+                        log.exception("could not tell %s", item.key)
+                        continue  # still held, or found again: the next wake tries it
+                news = news or state.waiting.get(item.key) != verdict
+                self.wake.record(state, item, verdict, now, reply)
+                if reply:  # recorded as soon as it went out: a wake that stops later never tells it twice
+                    await self.wakes.save(state)
+                outcomes.append(
+                    WakeOutcome(
+                        kind=item.kind,
+                        source=item.source,
+                        text=item.text,
+                        verdict=verdict,
+                        ref=item.ref,
+                        reply_id=reply,
+                    )
+                )
+            await self.wakes.save(state)
+        if news:
+            trace = WakeTrace(reason=reason, items=outcomes, sent_today=state.sent, budget=self.wake.budget)
+            await self.bus.publish("trace.wake", trace)
+
+    async def _down(self, state: WakeState, now: datetime) -> list[Item]:
+        """Modules that should be running (the registry says so) and whose container is not, at two wakes in a row: a
+        restart or a deploy in between is not news. Told once until it runs again. A supervisor that does not answer
+        says nothing about them, either way."""
+        try:
+            listed = await ask(self.bus, "rpc.sys.list", None, SysList, timeout=5.0)
+        except (NoAnswer, Refused):
+            return []
+        down = {r.name: r.container for r in listed.modules if r.status == "running" and r.container != "running"}
+        state.down = {n: d for n, d in state.down.items() if n in down}  # running again: a new stop is news again
+        items = []
+        for name, container in sorted(down.items()):
+            seen = state.down.get(name)
+            if seen is None:  # the first look that finds it down: the next one tells it
+                state.down[name] = DownModule(since=now.isoformat())
+                continue
+            if seen.told:
+                continue
+            why = f"its container is {container}" if container else "it has no container"
+            items.append(
+                Item(
+                    kind=ItemKind.DOWN,
+                    key=f"down/{name}/{seen.since}",
+                    source=MAIN,
+                    text=(
+                        f"{name} has stopped running ({why}) since about {since_local(seen.since, now, self.zone)}. "
+                        "Its data is kept. You can start it again from its page in the app."
+                    ),
+                    since=seen.since,
+                    ref=name,
+                )
+            )
+        return items
+
+    async def _waiting_cards(self, now: datetime) -> list[Item]:
+        """A card to build or change a module that has waited days without a tap: shown once more, in its thread. A
+        deletion is never pushed."""
+        try:
+            offered = await self.proposals.offered(limit=None)
+        except Exception as e:
+            log.info("could not read the proposals: %s", e)
+            return []
+        items = []
+        for p in offered:
+            if p.status != ProposalStatus.PROPOSED or p.is_delete or p.nudged or p.channel not in self.wake.channels:
+                continue
+            if not self.wake.card_after_s <= age_s(p.created, now) <= self.wake.card_until_s:
+                continue
+            what = f"The change to {p.name}" if p.is_change else f"The {p.name} module"
+            yes, no = _choices(p)
+            items.append(
+                Item(
+                    kind=ItemKind.CARD,
+                    key=f"card/{p.id}",
+                    source=MAIN,
+                    text=(
+                        f"{what} I offered on {day_of(p.created, self.zone)} is still waiting: {p.purpose}\n\n"
+                        f"{yes}, or {no} to let it go."
+                    ),
+                    since=p.created,
+                    ref=p.id,
+                    channel=p.channel,
+                    thread=p.thread,
+                )
+            )
+        return items
+
+    async def _busy(self, where: Home | None, now: datetime) -> bool:
+        """Hansen is mid-conversation where it would go: a turn running there, or a message there just now."""
+        if where is None:
+            return False
+        if self._lock(where.channel, where.thread).locked():
+            return True
+        thread = await self.store.load(where.channel, where.thread)
+        last = next((t for t in reversed(thread.turns) if t.role == Role.USER), None)
+        return last is not None and age_s(last.ts, now) < self.wake.busy_s
+
+    async def _where(self, item: Item) -> Home | None:
+        if item.channel and item.thread:
+            return Home(channel=item.channel, thread=item.thread)
+        if self._home is None:
+            self._home = await self.wakes.home()
+        return self._home
+
+    async def _say_unasked(self, item: Item) -> str:
+        """Tell it, and keep it in the thread so a reply to it is read with it. Returns the message's id."""
+        if item.kind == ItemKind.CARD:
+            async with self._lock(item.channel or "", item.thread or ""):
+                p = await self.proposals.get(item.ref or "")  # read again under the lock: a tap may have decided it
+                if p is None or p.status != ProposalStatus.PROPOSED or p.nudged:
+                    raise LookupError(f"proposal {item.ref} is gone or decided")
+                card = await self._tell(p, item.text, {}, offer_again=True)
+                p.nudged = now_iso()
+                await self.proposals.save(p)
+            return card
+        home = await self._where(item)
+        if home is None:  # Hansen has written nowhere yet: the phone and the app's home screen still get it
+            note = Notify(text=item.text)
+            await self.bus.publish("out.notify", note)
+            return note.id
+        out = Envelope(source="main", cause=item.ref if item.kind == ItemKind.OBSERVE else None)
+        await self.bus.publish("out.say", out.into(Say, channel=home.channel, thread=home.thread, text=item.text))
+        # kept in the thread once a turn running there is done: an alert goes out now, never after the turn
+        self._spawn(self._keep(home, Turn(role=Role.ASSISTANT, text=item.text, ts=out.ts, id=out.id)))
+        return out.id
+
+    async def _keep(self, where: Home, turn: Turn) -> None:
+        async with self._lock(where.channel, where.thread):
+            thread = await self.store.load(where.channel, where.thread)
+            await self.store.append(thread, turn)
+
+    async def _at_home(self, channel: str, thread: str) -> None:
+        """Where Hansen writes is where Main writes first, on a channel that reaches Hansen (not mctl's)."""
+        if channel not in self.wake.channels:
+            return
+        home = Home(channel=channel, thread=thread)
+        if home == self._home:
+            return
+        self._home = home
+        try:
+            await self.wakes.set_home(home)
+        except Exception:
+            log.exception("could not keep the home thread")
+
+    async def _vote(self, ref: str, vote: int) -> None:
+        """A 👍 or 👎 on something Main told without being asked: it counts for the module that led to it."""
+        async with self._wake_lock:
+            state = await self.wakes.load()
+            if self.wake.vote(state, ref, vote, self.clock()) is not None:
+                await self.wakes.save(state)
 
     # ---- growing a module ------------------------------------------------------------------
 
@@ -521,9 +782,10 @@ class MainService:
 
     async def _tell(
         self, p: Proposal, text: str, data: dict[str, Any], answer: str | None = None, offer_again: bool = False
-    ) -> None:
+    ) -> str:
         """Say it in the proposal's thread and keep it there, with the tap that led to it if there was one.
-        With offer_again, it goes out as a fresh card for the same proposal (linked before it is sent)."""
+        With offer_again, it goes out as a fresh card for the same proposal (linked before it is sent). Returns the
+        message's id."""
         out = Envelope.child_of(data, "main") if data else Envelope(source="main")
         if offer_again:
             await self.proposals.add_card(out.id, p)
@@ -539,6 +801,7 @@ class MainService:
             [Turn(role=Role.USER, text=answer, ts=str(data.get("ts") or out.ts), id=data.get("id"))] if answer else []
         )
         await self.store.append(thread, *turns, Turn(role=Role.ASSISTANT, text=saved, ts=out.ts, id=out.id))
+        return out.id
 
     # ---- one turn ------------------------------------------------------------------------
 
@@ -909,6 +1172,16 @@ def _building(p: Proposal, position: int = 0) -> str:
     if p.is_change:
         return f"Changing {p.name}{ahead}. It runs as it is until the new version is ready; I'll tell you here."
     return f"Building {p.name}{ahead}. I'll tell you here when it's running."
+
+
+def _vote_of(raw: Any) -> int | None:
+    """A vote as a number: 1, -1; None for anything else (a channel that sends "up" never breaks the answer)."""
+    if isinstance(raw, bool) or not isinstance(raw, int | float | str):
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 def _read(model: type[M], msg: Message) -> M | None:

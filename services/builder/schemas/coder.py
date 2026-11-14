@@ -67,6 +67,9 @@ class ManifestDraft(BaseModel):
         default_factory=list, description="every request it answers, each described: Main reads these to call it"
     )
     interval_seconds: list[int] = Field(default_factory=list, description="periodic hooks, each at least 10")
+    daily: list[str] = Field(
+        default_factory=list, description='times in the user\'s day as "HH:MM", e.g. ["21:00"]: run by @mod.at("21:00")'
+    )
 
 
 class FileArg(BaseModel):

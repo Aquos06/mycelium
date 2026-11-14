@@ -64,6 +64,7 @@ class Proposal(BaseModel):
     decided: str | None = None
     build_id: str | None = None
     note: str | None = None  # the last thing that went wrong: why the builder would not start, where it failed
+    nudged: str | None = None  # when its card was shown once more, after waiting days without a tap (wake.py)
 
     @property
     def is_change(self) -> bool:
@@ -122,7 +123,7 @@ class ProposalStore:
         """Every card that still asks to delete this module: once it is deleted from anywhere, they are stale."""
         return [p for p in await self._all() if p.is_delete and p.name == name and p.status == ProposalStatus.PROPOSED]
 
-    async def offered(self, limit: int = 8) -> list[Proposal]:
+    async def offered(self, limit: int | None = 8) -> list[Proposal]:
         """The newest proposal of each name, newest first: what the planner reads so it does not offer the same
         module twice. A newer proposal of a name is the state of that idea (a card from another day is not)."""
         latest: dict[str, Proposal] = {}

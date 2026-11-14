@@ -12,11 +12,14 @@
     @mod.every(3600)
     async def hourly(): ...
 
+    @mod.at("21:00")
+    async def evening(): ...
+
     if __name__ == "__main__":
         mod.run()
 
 The runtime enforces the manifest: you can only emit events you declared,
-answer actions you declared, and run intervals you declared.
+answer actions you declared, and run intervals and daily times you declared.
 
 `mod.now()` and `mod.today()` are in the user's time zone (TZ, which the supervisor sets from MODULE_TZ):
 "today" is the user's day, not UTC's.
@@ -25,17 +28,20 @@ answer actions you declared, and run intervals you declared.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
 from collections.abc import Awaitable, Callable
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, date, datetime, time, tzinfo
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .bus import Bus, Message, NatsBus
+from .clock import next_daily, sleep_until
 from .manifest import Manifest, load_manifest
+from .observe import Observation, Severity
 from .subjects import OBSERVE, subject_matches
 
 log = logging.getLogger("mycelium.module")
@@ -44,7 +50,7 @@ EventHandler = Callable[[Message], Awaitable[None]]
 RequestHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 IntervalHandler = Callable[[], Awaitable[None]]
 
-SEVERITIES = ("info", "notice", "alert")
+SEVERITIES = tuple(s.value for s in Severity)
 
 
 class ContractViolation(RuntimeError):
@@ -82,6 +88,7 @@ class Module:
         self._events: list[tuple[str, EventHandler]] = []
         self._requests: dict[str, RequestHandler] = {}
         self._intervals: list[tuple[int, IntervalHandler]] = []
+        self._daily: list[tuple[time, IntervalHandler]] = []
         self._tasks: list[asyncio.Task] = []
         self._started = False
 
@@ -118,6 +125,17 @@ class Module:
 
         return deco
 
+    def at(self, hhmm: str) -> Callable[[IntervalHandler], IntervalHandler]:
+        """Every day at this time in the user's zone ("21:00"; declared under hooks.daily)."""
+        if hhmm not in self.manifest.hooks.daily:
+            raise ContractViolation(f"daily time {hhmm} is not in manifest.hooks.daily {self.manifest.hooks.daily}")
+
+        def deco(fn: IntervalHandler) -> IntervalHandler:
+            self._daily.append((time.fromisoformat(hhmm), fn))
+            return fn
+
+        return deco
+
     # ---- time ---------------------------------------------------------
     def now(self) -> datetime:
         """The current time in the user's zone."""
@@ -136,20 +154,19 @@ class Module:
     async def observe(
         self, type: str, summary: str, data: dict[str, Any] | None = None, severity: str = "info"
     ) -> None:
-        """Tell the brain something happened. This is how new modules get noticed without wiring."""
+        """Tell Main something happened (observe.py): `info` is for the record, `notice` is told to the user at the
+        next good moment, `alert` interrupts the user now. `summary` is what the user reads: one short sentence."""
         if severity not in SEVERITIES:
             raise ValueError(f"severity must be one of {SEVERITIES}")
-        await self.bus.publish(
-            OBSERVE,
-            {
-                "source": self.name,
-                "type": type,
-                "summary": summary,
-                "severity_hint": severity,
-                "data": data or {},
-                "ts": datetime.now(UTC).isoformat(),
-            },
+        kept = json.loads(json.dumps(data or {}, default=str))  # anything goes: a value JSON can't hold is its text
+        observation = Observation(
+            source=self.name,
+            type=type,
+            summary=summary,
+            severity_hint=Severity(severity),
+            data=kept if isinstance(kept, dict) else {"value": kept},
         )
+        await self.bus.publish(OBSERVE, observation)
 
     # ---- lifecycle ----------------------------------------------------
     async def start(self) -> None:
@@ -162,6 +179,8 @@ class Module:
             await self.bus.subscribe(self.manifest.rpc_subject(action), self._rpc(fn, action), queue=f"mod-{self.name}")
         for seconds, fn in self._intervals:
             self._tasks.append(asyncio.create_task(self._loop(seconds, fn)))
+        for at, fn in self._daily:
+            self._tasks.append(asyncio.create_task(self._each_day(at, fn)))
         self._started = True
         await self.bus.publish("sys.module.started", {"name": self.name, "version": self.manifest.version})
         log.info("module %s started", self.name)
@@ -219,8 +238,16 @@ class Module:
     async def _loop(self, seconds: int, fn: IntervalHandler) -> None:
         while True:
             await asyncio.sleep(seconds)
-            try:
-                await fn()
-            except Exception as e:
-                log.exception("interval hook failed")
-                await self.observe("hook.error", f"interval hook failed: {e}", severity="notice")
+            await self._hook(fn)
+
+    async def _each_day(self, at: time, fn: IntervalHandler) -> None:
+        while True:
+            await sleep_until(next_daily(self.now(), at), self.now)
+            await self._hook(fn)
+
+    async def _hook(self, fn: IntervalHandler) -> None:
+        try:
+            await fn()
+        except Exception as e:
+            log.exception("hook failed")
+            await self.observe("hook.error", f"{getattr(fn, '__name__', 'a hook')} failed: {e}", severity="notice")

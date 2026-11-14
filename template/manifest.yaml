@@ -14,6 +14,7 @@ views: {}             # how its data is seen, on its page and in the chat: a req
 #   entries: {title: Entries, request: history, path: expenses, show: table, fields: [day, description, {key: amount, format: money}]}
 hooks:
   interval_seconds: []
+  daily: []           # times in the user's day, quoted: ["21:00"] -> @mod.at("21:00")
 permissions:
   network: false
   actuation: false

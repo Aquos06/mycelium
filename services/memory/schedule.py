@@ -13,16 +13,9 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from mycelium_sdk.clock import next_daily, seconds_until, sleep_until
+
 log = logging.getLogger("mycelium.memory.schedule")
-
-
-def next_run(now: datetime, at: time, zone: ZoneInfo) -> datetime:
-    """The next `at` in `zone` strictly after `now`."""
-    local = now.astimezone(zone)
-    due = datetime.combine(local.date(), at, tzinfo=zone)
-    if due <= local:
-        due = datetime.combine(local.date() + timedelta(days=1), at, tzinfo=zone)
-    return due
 
 
 async def nightly(
@@ -35,14 +28,11 @@ async def nightly(
     """Call run(yesterday) at `at` local time every day until `stop` is set. A failed run is logged, not fatal."""
     zone = ZoneInfo(tz)
     while not stop.is_set():
-        due = next_run(now(), at, zone)
-        wait = max(0.0, (due - now().astimezone(zone)).total_seconds())
+        due = next_daily(now(), at, zone)
+        wait = seconds_until(due, now())
         log.info("next consolidation at %s (in %.0f min)", due.isoformat(timespec="minutes"), wait / 60)
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=wait)
+        if not await sleep_until(due, now, stop):
             return
-        except TimeoutError:
-            pass
         day = due.date() - timedelta(days=1)
         try:
             await run(day)

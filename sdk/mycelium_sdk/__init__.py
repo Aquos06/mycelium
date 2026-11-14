@@ -4,7 +4,9 @@
 - kv:        KV interface, NatsKV (JetStream KV) and InMemoryKV (tests)
 - envelope:  id / ts / source / cause / hops for every published message
 - manifest:  module manifest schema + validation
-- module:    Module base runtime (subscribe, answer requests, emit, observe, intervals)
+- module:    Module base runtime (subscribe, answer requests, emit, observe, intervals, daily times)
+- observe:   Observation and Severity, what a module tells Main on brain.observe and how loud
+- clock:     next_daily and sleep_until, a time of day in the user's zone (import mycelium_sdk.clock)
 - subjects:  subject naming helpers and wildcard matching
 - validation: one formatter for pydantic errors in rpc replies
 - schema:    a pydantic model as a tool's input_schema for a model
@@ -41,6 +43,7 @@ from .llm import (
 from .manifest import Manifest, ManifestError, RequestSpec, load_manifest, validate_manifest
 from .module import Module
 from .notes import NoteType
+from .observe import Observation, Severity
 from .prompt import Prompt
 from .rpc import Answer, NoAnswer, Refusal, Refused, ask
 from .schema import input_schema
@@ -92,6 +95,8 @@ __all__ = [
     "Answer",
     "ask",
     "NoteType",
+    "Observation",
+    "Severity",
     "ServiceSettings",
     "timezone",
 ]

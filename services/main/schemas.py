@@ -1,6 +1,7 @@
 """Main's messages and records: what it sends, what it publishes, what it holds while planning.
 
 Say, Ask                 -> out.say, out.ask        (envelopes; `ref` on Ask is its own id; `blocks`: mycelium_sdk.blocks)
+Notify                   -> out.notify              (told unasked, before Hansen has written anywhere: wake.py)
 Progress                 -> out.progress            (one message per job that changes in place: a build Main started)
 PlanTrace                -> trace.plan              (one per handled message; votes attach by reply_id)
 FeedbackTrace            -> trace.feedback
@@ -44,6 +45,14 @@ class Ask(Envelope):
     choices: list[str] = Field(min_length=2)
     ref: str  # what sense.feedback answers refer to: this message's own id
     blocks: list[Block] = Field(default_factory=list)
+
+
+class Notify(Envelope):
+    """out.notify: something Main tells before Hansen has written anywhere, so with no thread: the phone gets it, and
+    the app's home screen."""
+
+    source: str = "main"
+    text: str
 
 
 class StepState(StrEnum):
