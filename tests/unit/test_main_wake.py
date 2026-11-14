@@ -210,6 +210,7 @@ async def test_a_notice_is_told_in_the_thread_hansen_last_wrote_in(w):
     assert said["cause"] == obs.id
     thread = await w.svc.store.load("telegram", "123")
     assert thread.turns[-1].text == "expenses: Nothing logged today."  # a reply to it is read with it
+    assert thread.turns[-1].unasked and not thread.turns[-2].unasked
     (trace,) = traces(w)
     assert trace["reason"] == "notice" and trace["sent_today"] == 1
     assert trace["items"][0]["verdict"] == "sent" and trace["items"][0]["reply_id"] == said["id"]
@@ -503,6 +504,7 @@ async def test_a_card_waiting_for_days_is_shown_once_more(w):
     assert "The water module I offered on Sat 11-07 is still waiting: Track how much water you drink." in card["text"]
     assert (await w.svc.proposals.by_card(card["ref"])).id == "card1"  # a tap on it is a tap on the proposal
     assert (await w.svc.proposals.get("card1")).nudged
+    assert (await w.svc.store.load("web", "w1")).turns[-1].unasked
     w.clock.now += timedelta(days=1)
     await w.svc.wake_up("timer")
     assert len(w.bus.events("out.ask")) == 1

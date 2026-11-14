@@ -487,7 +487,7 @@ class MainService:
                 p = await self.proposals.get(item.ref or "")  # read again under the lock: a tap may have decided it
                 if p is None or p.status != ProposalStatus.PROPOSED or p.nudged:
                     raise LookupError(f"proposal {item.ref} is gone or decided")
-                card = await self._tell(p, item.text, {}, offer_again=True)
+                card = await self._tell(p, item.text, {}, offer_again=True, unasked=True)
                 p.nudged = now_iso()
                 await self.proposals.save(p)
             return card
@@ -499,7 +499,7 @@ class MainService:
         out = Envelope(source="main", cause=item.ref if item.kind == ItemKind.OBSERVE else None)
         await self.bus.publish("out.say", out.into(Say, channel=home.channel, thread=home.thread, text=item.text))
         # kept in the thread once a turn running there is done: an alert goes out now, never after the turn
-        self._spawn(self._keep(home, Turn(role=Role.ASSISTANT, text=item.text, ts=out.ts, id=out.id)))
+        self._spawn(self._keep(home, Turn(role=Role.ASSISTANT, text=item.text, ts=out.ts, id=out.id, unasked=True)))
         return out.id
 
     async def _keep(self, where: Home, turn: Turn) -> None:
@@ -781,11 +781,17 @@ class MainService:
         await self._tell(p, reply, data)
 
     async def _tell(
-        self, p: Proposal, text: str, data: dict[str, Any], answer: str | None = None, offer_again: bool = False
+        self,
+        p: Proposal,
+        text: str,
+        data: dict[str, Any],
+        answer: str | None = None,
+        offer_again: bool = False,
+        unasked: bool = False,
     ) -> str:
         """Say it in the proposal's thread and keep it there, with the tap that led to it if there was one.
-        With offer_again, it goes out as a fresh card for the same proposal (linked before it is sent). Returns the
-        message's id."""
+        With offer_again, it goes out as a fresh card for the same proposal (linked before it is sent); unasked, it
+        is kept marked as said on Main's own (a wake). Returns the message's id."""
         out = Envelope.child_of(data, "main") if data else Envelope(source="main")
         if offer_again:
             await self.proposals.add_card(out.id, p)
@@ -800,7 +806,8 @@ class MainService:
         turns = (
             [Turn(role=Role.USER, text=answer, ts=str(data.get("ts") or out.ts), id=data.get("id"))] if answer else []
         )
-        await self.store.append(thread, *turns, Turn(role=Role.ASSISTANT, text=saved, ts=out.ts, id=out.id))
+        kept = Turn(role=Role.ASSISTANT, text=saved, ts=out.ts, id=out.id, unasked=unasked)
+        await self.store.append(thread, *turns, kept)
         return out.id
 
     # ---- one turn ------------------------------------------------------------------------

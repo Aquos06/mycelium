@@ -93,6 +93,23 @@ def test_each_message_is_dated_in_mains_time_zone():
     ]
 
 
+def test_what_main_said_unasked_is_marked_with_its_time_apart_from_the_answer_before_it():
+    thread = Thread(
+        channel="web",
+        thread="t",
+        turns=[
+            Turn(role=Role.USER, text="hi", ts="2026-11-14T07:27:24+00:00"),
+            Turn(role=Role.ASSISTANT, text="Hi!", ts="2026-11-14T07:27:30+00:00"),
+            Turn(role=Role.ASSISTANT, text="hello has stopped.", ts="2026-11-14T07:33:17+00:00", unasked=True),
+            Turn(role=Role.ASSISTANT, text="a card", ts="later", unasked=True),
+        ],
+    )
+    assert [m.content for m in thread.messages(ZoneInfo("Asia/Taipei"))] == [
+        "[Sat 2026-11-14] hi",
+        "Hi!\n\n[unasked, Sat 2026-11-14 15:33] hello has stopped.\n\n[unasked] a card",
+    ]
+
+
 def test_a_build_result_after_a_tool_turn_keeps_roles_alternating():
     calls = [TurnCall(name="remember", input={"note": "mei"}, result='{"ok": true}')]
     thread = Thread(
