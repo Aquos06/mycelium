@@ -3,7 +3,8 @@
 # a tool). The case passes when the expected tool is called during the turn (`none`: no tool at all); `args`
 # checks the first valid call of that tool: a string or list means the value is one of them, `has:` means its
 # text contains one of them (case-insensitive). Names in `pack` and `modules` refer to `notes` and `modules`
-# below, built from the fixture vault (tests/fixtures/vault) plus a few people it does not have. A new tool gets
+# below, built from the fixture vault (tests/fixtures/vault) plus a few people it does not have; names in
+# `reminders` are the reminders set before the message, by id, and `time` is the clock when it comes. A new tool gets
 # its 20 cases here before it ships, and the suite runs before and after, so the old classes show a regression.
 #
 #   set -a; source .env; set +a
@@ -14,6 +15,7 @@
 # calls reach a model.
 
 today: 2026-11-03          # a Tuesday; "yesterday" is 2026-11-02
+time: "14:00:00"           # the clock when each message comes: "tonight" and "in 2 hours" are from here
 tz: Asia/Taipei
 
 modules:
@@ -206,6 +208,16 @@ notes:
     why: scored 0.48 for the question
     excerpt: |-
       - 2026-10-28 spent 112 on dinner and 25 on drinks
+
+reminders:  # set before a case's message (its `reminders`), by id; `at` is on Hansen's clock
+  rent01: {text: Time to pay the rent., at: "2026-11-06T09:00:00", repeat: monthly}
+  gym002: {text: Leave for the gym., at: "2026-11-03T18:00:00", repeat: weekdays}
+  mom003: {text: Call mom., at: "2026-11-04T20:00:00"}
+  plan04: {text: Plan the week., at: "2026-11-09T08:00:00", repeat: weekly}
+  meds05: {text: Take your meds., at: "2026-11-03T22:00:00", repeat: daily}
+  invc06: {text: Send the invoice to Acme., at: "2026-11-05T10:00:00"}
+  water7: {text: Water the plants., at: "2026-11-07T10:00:00", repeat: weekly}
+  zh0008: {text: 打電話給媽媽。, at: "2026-11-04T09:00:00"}
 
 cases:
   # ---- remember: a durable fact, or an explicit "remember" -------------------------------------------
@@ -1278,3 +1290,226 @@ cases:
     avoid: [delete_module]
     modules: [hello, ledger]
     args: {module: ledger}
+
+  # ---- remind: a time Hansen wants to be told something at (today is Tue 2026-11-03, 14:00) ----
+  - id: rmd-rent-friday
+    msg: remind me friday at 9 to pay rent
+    expect: remind
+    args: {at: {has: ["2026-11-06 09:00", "2026-11-06T09:00"]}, text: {has: [rent]}}
+  - id: rmd-in-20
+    msg: ping me in 20 minutes to take the laundry out
+    expect: remind
+    args: {text: {has: [laundry]}}
+  - id: rmd-tomorrow-8
+    msg: remind me tomorrow at 8am to call the bank
+    expect: remind
+    args: {at: {has: ["2026-11-04 08:00", "2026-11-04T08:00"]}, text: {has: [bank]}}
+  - id: rmd-tonight
+    msg: remind me tonight at 10 to take my meds
+    expect: remind
+    avoid: [remember]
+    args: {at: {has: ["2026-11-03 22:00", "2026-11-03T22:00"]}}
+  - id: rmd-every-monday
+    msg: every monday at 8 remind me to plan the week
+    expect: remind
+    args: {repeat: weekly, at: {has: ["2026-11-09 08:00", "2026-11-09T08:00"]}}
+  - id: rmd-daily-water
+    msg: remind me to drink water every day at 3pm
+    expect: remind
+    args: {repeat: daily, at: {has: ["15:00"]}}
+  - id: rmd-weekdays
+    msg: every weekday at 9:30 remind me about the standup
+    expect: remind
+    args: {repeat: weekdays, at: {has: ["09:30"]}}
+  - id: rmd-monthly-1st
+    msg: remind me on the 1st of every month to pay the credit card
+    expect: remind
+    args: {repeat: monthly, at: {has: ["2026-12-01"]}}
+  - id: rmd-in-2-hours
+    msg: in 2 hours remind me to check the oven
+    expect: remind
+    args: {text: {has: [oven]}}
+  - id: rmd-zh-tomorrow
+    msg: 明天早上九點提醒我打電話給媽媽
+    expect: remind
+    args: {at: {has: ["2026-11-04 09:00", "2026-11-04T09:00"]}}
+  - id: rmd-zh-in-30
+    msg: 30分鐘後提醒我關火
+    expect: remind
+    args: {text: {has: [火, stove, heat]}}
+  - id: rmd-dont-forget
+    msg: don't let me forget to send the invoice thursday at 10
+    expect: remind
+    args: {at: {has: ["2026-11-05 10:00", "2026-11-05T10:00"]}, text: {has: [invoice]}}
+  - id: rmd-date-explicit
+    msg: remind me on nov 20 at 18:00 that mei's birthday dinner is at 7
+    expect: remind
+    pack: [mei]
+    args: {at: {has: ["2026-11-20 18:00", "2026-11-20T18:00"]}}
+  - id: rmd-next-tuesday
+    msg: remind me next tuesday at noon to renew my scooter insurance
+    expect: remind
+    args: {at: {has: ["2026-11-10 12:00", "2026-11-10T12:00"]}}
+  - id: rmd-tell-me-at
+    msg: at 6pm tell me to leave for the gym
+    expect: remind
+    args: {at: {has: ["2026-11-03 18:00", "2026-11-03T18:00"]}}
+  - id: rmd-saturday
+    msg: saturday 10am remind me to water the plants
+    expect: remind
+    args: {at: {has: ["2026-11-07 10:00", "2026-11-07T10:00"]}}
+  - id: rmd-call-lin
+    msg: remind me to call lin back in an hour
+    expect: remind
+    pack: [lin]
+    args: {text: {has: [lin]}}
+  - id: rmd-time-after-asking  # Main asked when; this is the answer
+    msg: thursday 9pm
+    expect: remind
+    history:
+      - {role: user, text: "can you remind me to pay the electricity bill?"}
+      - {role: assistant, text: "Sure, when should I remind you?"}
+    args: {at: {has: ["2026-11-05 21:00", "2026-11-05T21:00"]}, text: {has: [electric]}}
+  - id: rmd-30th
+    msg: remind me on the 30th at 9 to send the rent receipt
+    expect: remind
+    args: {at: {has: ["2026-11-30 09:00", "2026-11-30T09:00"]}}
+  - id: rmd-zh-every-night
+    msg: 每天晚上十點提醒我吃藥
+    expect: remind
+    args: {repeat: daily, at: {has: ["22:00"]}}
+
+  # ---- cancel_reminder: one Hansen no longer wants (the ids are under Reminders) ----
+  - id: cxl-rent
+    msg: cancel the rent reminder
+    expect: cancel_reminder
+    reminders: [rent01, gym002, mom003]
+    args: {id: rent01}
+  - id: cxl-gym
+    msg: stop reminding me about the gym
+    expect: cancel_reminder
+    reminders: [rent01, gym002, mom003]
+    args: {id: gym002}
+  - id: cxl-mom-done
+    msg: I already called mom, no need to remind me
+    expect: cancel_reminder
+    reminders: [rent01, gym002, mom003]
+    args: {id: mom003}
+  - id: cxl-meds
+    msg: remove the meds reminder
+    expect: cancel_reminder
+    reminders: [meds05, mom003, plan04]
+    args: {id: meds05}
+  - id: cxl-invoice-sent
+    msg: the invoice is sent, drop that reminder
+    expect: cancel_reminder
+    reminders: [invc06, rent01]
+    args: {id: invc06}
+  - id: cxl-plants
+    msg: don't remind me to water the plants anymore
+    expect: cancel_reminder
+    reminders: [water7, plan04, meds05]
+    args: {id: water7}
+  - id: cxl-plan
+    msg: delete the monday planning reminder
+    expect: cancel_reminder
+    avoid: [delete_module]
+    reminders: [plan04, gym002]
+    args: {id: plan04}
+  - id: cxl-zh-mom
+    msg: 取消打電話給媽媽的提醒
+    expect: cancel_reminder
+    reminders: [zh0008, rent01]
+    args: {id: zh0008}
+  - id: cxl-zh-gym
+    msg: 不用再提醒我去健身房了
+    expect: cancel_reminder
+    reminders: [gym002, meds05]
+    args: {id: gym002}
+  - id: cxl-by-time
+    msg: cancel the one on thursday at 10
+    expect: cancel_reminder
+    reminders: [invc06, mom003, rent01]
+    args: {id: invc06}
+  - id: cxl-tonight
+    msg: cancel tonight's reminder
+    expect: cancel_reminder
+    reminders: [meds05, mom003, rent01]
+    args: {id: meds05}
+  - id: cxl-only-one
+    msg: never mind the reminder
+    expect: cancel_reminder
+    reminders: [mom003]
+    args: {id: mom003}
+  - id: cxl-that-one  # the reminder just set
+    msg: actually cancel that
+    expect: cancel_reminder
+    reminders: [invc06, rent01]
+    history:
+      - {role: user, text: "remind me thursday at 10 to send the invoice to acme"}
+      - role: assistant
+        text: "Set: Thu 2026-11-05 10:00, send the invoice to Acme."
+        calls: [{name: remind, input: {text: Send the invoice to Acme., at: "2026-11-05 10:00"}, result: {ok: true, id: invc06, when: Thu 2026-11-05 10:00, repeat: once}}]
+    args: {id: invc06}
+  - id: cxl-move  # moving one is cancel, then remind
+    msg: move the mom reminder to friday at 8pm
+    expect: cancel_reminder
+    also: [remind]
+    reminders: [mom003, rent01]
+    args: {id: mom003}
+  - id: cxl-move-zh
+    msg: 把繳房租的提醒改到週五早上十點
+    expect: cancel_reminder
+    also: [remind]
+    reminders: [rent01, gym002]
+    args: {id: rent01}
+  - id: cxl-quit-gym
+    msg: I quit the gym, cancel that reminder
+    expect: cancel_reminder
+    reminders: [gym002, water7]
+    args: {id: gym002}
+  - id: cxl-moved-out
+    msg: I moved out, I don't pay rent anymore. remove that reminder
+    expect: cancel_reminder
+    reminders: [rent01, plan04]
+    args: {id: rent01}
+  - id: cxl-plants-died
+    msg: the plants died lol, cancel the watering one
+    expect: cancel_reminder
+    reminders: [water7, meds05]
+    args: {id: water7}
+  - id: cxl-two  # either first
+    msg: cancel both the gym and the meds reminders
+    expect: cancel_reminder
+    reminders: [gym002, meds05, mom003]
+    args: {id: [gym002, meds05]}
+  - id: cxl-zh-invoice
+    msg: 發票的提醒不用了
+    expect: cancel_reminder
+    reminders: [invc06, zh0008]
+    args: {id: invc06}
+
+  # sounds like a reminder, is not one
+  - id: rmd-not-recall  # "remind me what" asks about the past
+    msg: remind me what mei recommended
+    expect: recall
+    avoid: [remind]
+    pack: [lin]
+  - id: rmd-not-a-plan  # a plan with a date is memory
+    msg: I have a dentist appointment friday at 9
+    expect: remember
+    avoid: [remind]
+  - id: rmd-no-time  # no time: ask when, in words
+    msg: remind me to buy milk
+    expect: none
+  - id: rmd-what-is-set  # answered from the Reminders list
+    msg: what reminders do I have?
+    expect: none
+    reminders: [rent01, mom003]
+  - id: rmd-when-is-rent
+    msg: when is my rent reminder?
+    expect: none
+    reminders: [rent01, gym002]
+  - id: rmd-nothing-set
+    msg: do I have any reminders?
+    expect: none

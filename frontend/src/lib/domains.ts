@@ -86,9 +86,10 @@ export interface Reading {
   meta: string; // the machine's side: subject, source, numbers
 }
 
-/** A wake of Main's own, in words: what it told, held and dropped. */
+/** A wake of Main's own, in words: what it told, held and dropped; a reminder, what it said. */
 function readWake(d: Record<string, unknown>): string {
   const items = Array.isArray(d.items) ? (d.items as Record<string, unknown>[]) : [];
+  if (d.reason === "reminder") return `Reminded you: ${str(items[0]?.text)}`;
   const told = items.filter((i) => i.verdict === "sent").length;
   const held = items.filter((i) => String(i.verdict ?? "").startsWith("held")).length;
   const dropped = items.length - told - held;
@@ -150,7 +151,10 @@ export function read(e: BusEvent, raw = false): Reading {
     case sub === "trace.feedback":
       return { text: d.answer ? `Recorded your answer ${quote(d.answer)}` : "Recorded your vote", meta: "trace.feedback" };
     case sub === "trace.wake":
-      return { text: readWake(d), meta: `trace.wake · ${str(d.reason)} · ${num(d.sent_today)} of ${num(d.budget)} today` };
+      return {
+        text: readWake(d),
+        meta: d.reason === "reminder" ? "trace.wake · reminder" : `trace.wake · ${str(d.reason)} · ${num(d.sent_today)} of ${num(d.budget)} today`,
+      };
     case sub === "brain.observe":
       return { text: str(d.summary ?? payload(d)), meta: `brain.observe · ${source}` };
     case sub.startsWith("sys.module."): {

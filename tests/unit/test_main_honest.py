@@ -271,7 +271,8 @@ def offer(i: int, name: str, status: ProposalStatus, channel="telegram", thread=
 
 def offered(world: World) -> list[str]:
     system = world.llm_requests[-1]["system"]
-    return system.split("Offered (modules and changes proposed to Hansen, not made yet):\n", 1)[1].splitlines()
+    section = system.split("Offered (modules and changes proposed to Hansen, not made yet):\n", 1)[1]
+    return section.split("\n\nReminders (", 1)[0].splitlines()
 
 
 async def test_the_prompt_lists_modules_offered_and_not_running(w):
@@ -316,4 +317,4 @@ async def test_a_module_built_then_retired_can_be_offered_again(w):
 async def test_nothing_offered_says_so(w):
     w.llm_script = [say("ok")]
     await w.send("sense.chat", chat("hi").data)
-    assert w.llm_requests[0]["system"].endswith("not made yet):\n(none)")
+    assert "not made yet):\n(none)\n\nReminders (" in w.llm_requests[0]["system"]

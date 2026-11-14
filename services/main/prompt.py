@@ -7,12 +7,14 @@ v0 has no snapshot and a fixed policy; both are plain text here until Main owns 
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from mycelium_sdk import Prompt
 
 from .proposals import Proposal, ProposalStatus
+from .reminders import SHOWN, Reminder
 from .schemas import ModuleInfo
 
 
@@ -132,6 +134,18 @@ def _delete_state(p: Proposal, since: str, here: tuple[str, str] | None) -> str:
             return f"it did not go through on {since} ({p.short_note()}): call `delete_module` again only if he asks"
 
 
+def render_reminders(reminders: list[Reminder], tz: str) -> str:
+    """The reminders set and not sent yet, the soonest first, with the id `cancel_reminder` takes."""
+    try:
+        zone = ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo("UTC")
+    lines = [f"- {r.line(zone)}" for r in reminders[:SHOWN]]
+    if len(reminders) > SHOWN:
+        lines.append(f"(and {len(reminders) - SHOWN} more, later)")
+    return "\n".join(lines) or "(none)"
+
+
 def planner_prompt(
     today: date,
     tz: str,
@@ -142,11 +156,13 @@ def planner_prompt(
     recall_error: str | None = None,
     proposals: list[Proposal] | None = None,
     thread: str | None = None,
+    now: time | None = None,
+    reminders: list[Reminder] | None = None,
 ) -> Prompt:
-    """One turn: the policy, today, the memory opened for this message, the modules and the ones offered; then the
-    message."""
+    """One turn: the policy, today and the time, the memory opened for this message, the modules, the ones offered
+    and the reminders set; then the message."""
     here = (channel, thread) if thread is not None else None
-    system = _system(today, tz, channel, pack, modules, recall_error, proposals or [], here)
+    system = _system(today, tz, channel, pack, modules, recall_error, proposals or [], here, now, reminders or [])
     return Prompt(system=system, user=text)
 
 
@@ -159,7 +175,10 @@ def _system(
     recall_error: str | None,
     proposals: list[Proposal],
     here: tuple[str, str] | None = None,
+    now: time | None = None,
+    reminders: list[Reminder] | None = None,
 ) -> str:
+    clock = f"\n\nIt is {now:%H:%M} now." if now is not None else ""  # last: what comes before changes once a day
     return f"""You are Main, Hansen's personal assistant (the project is called mycelium). You are talking with Hansen over {channel}.
 Today is {today.strftime("%A")} {today.isoformat()} ({tz}).
 
@@ -178,8 +197,10 @@ How you work:
 - Use `delete_module` when Hansen wants a whole module marked grown gone (delete it, remove it, get rid of the duplicate, he no longer uses it): only on his word, never because you think one is unused. Its card (Delete it / Keep it) is the only way to delete one, so never say it is deleted, or will be, in words. Taking an entry out of a module is `change_module`, not this; a module not marked grown cannot be deleted, so say so.
 - Use `propose_module` when Hansen wants something ongoing that no module above does: tracking or logging things over time, counts, totals, history. Draft it from his words; nothing is built until he chooses Build it. Offer a module only by calling `propose_module`: its card is the only way he can build it, so never offer to build or rebuild one in words.
 - When he logs money spent, a count or a reading that no module above tracks, `remember` it first, then `propose_module` to track it from now on (`propose_module` ends your turn, so what is not remembered by then is lost). If a module under "Offered" below covers it, only `remember` it and do what its line says.
+- Use `remind` when Hansen asks to be reminded, pinged or told something at a time (remind me, don't let me forget, at 9 tell me): `at` on Hansen's clock, worked out from today and the time at the end ("Friday" is the coming Friday, "tonight" is today), or `in_minutes` for "in 20 minutes"; `repeat` for every day, every weekday, every Monday or the same day each month. Write `text` as what you will say to Hansen then. With no time given, ask when in a line instead of guessing one. Set one only when Hansen asks for it: a plan with a date (a dentist appointment on Friday at 9) is `remember`, and you may offer a reminder for it in words.
+- The reminders set and not sent yet are under Reminders below: answer from there when Hansen asks what is set. To take one away, `cancel_reminder` it by its id; to change its time or words, cancel it and `remind` again.
 - Use `ask` when a decision is Hansen's.
-- Only say you saved, logged, noted or remembered something when a tool call did it in this turn. Never claim to have done something you did not do.
+- Only say you saved, logged, noted, remembered or set a reminder when a tool call did it in this turn. Never claim to have done something you did not do.
 - Never invent memories, events or people.
 
 Memory for this message:
@@ -189,4 +210,7 @@ Modules:
 {render_modules(modules)}
 
 Offered (modules and changes proposed to Hansen, not made yet):
-{render_proposals(proposals, {m.name for m in modules if m.status == "running"}, here)}"""
+{render_proposals(proposals, {m.name for m in modules if m.status == "running"}, here)}
+
+Reminders (set, not sent yet; the id first):
+{render_reminders(reminders or [], tz)}{clock}"""

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation, ValidationError
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, SkipValidation, ValidationErr
 from mycelium_sdk import Bus, ToolResult, ToolSpec, input_schema, llm, validation_message
 
 from ..blocks import TurnData
+from ..reminders import ReminderStore
 
 __all__ = ["Tool", "ToolContext", "ToolOutcome", "ToolRegistry", "ToolSpec", "input_schema", "validation_message"]
 
@@ -32,6 +34,13 @@ class ToolContext(BaseModel):
     # the running modules and their requests, for this turn; None when the supervisor did not say
     modules: dict[str, list[str]] | None = None
     turn: TurnData = Field(default_factory=TurnData)  # this turn's module replies and blocks (`show`); Main renews it
+    reminders: SkipValidation[ReminderStore] | None = None  # None: reminders are not kept here
+    tz: str = "UTC"  # Hansen's: the zone a reminder's `at` is in
+    # where this turn is and when (a reminder goes to its thread); Main sets them for each turn
+    channel: str = ""
+    thread: str = ""
+    now: datetime | None = None
+    cause: str | None = None
 
 
 Handler = Callable[[Any, ToolContext], Awaitable[dict[str, Any]]]
