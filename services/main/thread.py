@@ -38,6 +38,7 @@ class Turn(BaseModel):
     ts: str
     id: str | None = None  # the bus message id this turn came from
     calls: list[TurnCall] = Field(default_factory=list)  # an assistant turn's tool calls, in order
+    unasked: bool = False  # Main said it on its own (a wake), not as an answer
 
 
 class Thread(BaseModel):
@@ -54,10 +55,12 @@ class Thread(BaseModel):
         """The turns as the planner's earlier messages, from a user turn on, roles alternating.
 
         Each of Hansen's messages starts with its date ("[Tue 2026-10-27] today i spent 112"), so a "today" in an
-        old message means that day. An assistant turn that called tools replays them: its tool_use blocks, their
-        results, then what it said. Turns of the same role in a row (a build's result is an assistant turn of its
-        own; chat templates and Anthropic's API refuse two in a row) become one message, and a thread trimmed to
-        an assistant turn starts at the next user one."""
+        old message means that day. What Main said on its own starts with when, marked as unasked ("[unasked, Tue
+        2026-10-27 15:33] expenses: Nothing logged today."): it often follows an answer in the same message, and
+        without the mark the two read as one reply. An assistant turn that called tools replays them: its tool_use
+        blocks, their results, then what it said. Turns of the same role in a row (a build's result is an assistant
+        turn of its own; chat templates and Anthropic's API refuse two in a row) become one message, and a thread
+        trimmed to an assistant turn starts at the next user one."""
         out: list[tuple[Role, list[TextBlock | ToolUse | ToolResult]]] = []
 
         def add(role: Role, blocks: list[TextBlock | ToolUse | ToolResult]) -> None:
@@ -79,17 +82,18 @@ class Thread(BaseModel):
                     [ToolUse(id=i, name=c.name, input=c.input) for i, c in zip(ids, t.calls, strict=True)],
                 )
                 add(Role.USER, [ToolResult(tool_use_id=i, content=c.result) for i, c in zip(ids, t.calls, strict=True)])
-            add(Role.ASSISTANT, [TextBlock(text=t.text or "(no reply)")])
+            text = _dated(t, tz, "unasked, ", " %H:%M") if t.unasked else t.text
+            add(Role.ASSISTANT, [TextBlock(text=text or "(no reply)")])
         return [_message(role, blocks) for role, blocks in out]
 
 
-def _dated(turn: Turn, tz: tzinfo) -> str:
+def _dated(turn: Turn, tz: tzinfo, mark: str = "", clock: str = "") -> str:
     try:
         ts = datetime.fromisoformat(turn.ts)
     except ValueError:
-        return turn.text
+        return f"[{mark.rstrip(', ')}] {turn.text}" if mark else turn.text
     day = (ts if ts.tzinfo else ts.replace(tzinfo=UTC)).astimezone(tz)
-    return f"[{day:%a %Y-%m-%d}] {turn.text}"
+    return f"[{mark}{day.strftime('%a %Y-%m-%d' + clock)}] {turn.text}"
 
 
 def _message(role: Role, blocks: list[TextBlock | ToolUse | ToolResult]) -> ChatMessage:
