@@ -238,3 +238,12 @@ async def test_the_report_counts_per_class(suite):
 def test_the_same_provider_twice_keeps_two_labels():
     planners = unique_labels([planner(), planner(), planner()])
     assert [p.label for p in planners] == ["script", "script#2", "script#3"]
+
+
+async def test_a_cases_reminders_and_the_suites_clock_reach_main(suite):
+    c = Case(id="set", msg="what reminders do I have?", expect="none", modules=["hello"], reminders=["rent01"])
+    p = planner(say("ok"))
+    await run_case(suite, c, p, default_tools(), suite.today)
+    system = p.provider.requests[0].system  # type: ignore[attr-defined]
+    assert "Today is Tuesday 2026-11-03 (Asia/Taipei)." in system and system.endswith("\n\nIt is 14:00 now.")
+    assert "- rent01 Fri 2026-11-06 09:00, every month: Time to pay the rent." in system

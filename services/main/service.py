@@ -22,6 +22,9 @@ change build, which keeps the module running as it is until the new version depl
 with Delete it / Keep it, and a tap deletes the module while it waits (rpc.build.remove): its data is copied aside
 first and its code stays in git.
 
+Reminders: `remind` keeps one Hansen sets (reminders.py) and a loop sends each at its minute, in the thread it was
+set in, whatever the wake policy says: Hansen chose the time. It is traced as a trace.wake of reason `reminder`.
+
 Waking: besides a module's notice or alert, a timer wakes Main every MAIN_WAKE_EVERY minutes to look for a module
 that stopped running and a card left waiting for days. What it may say is decided in code (wake.py), never by the
 model, and one trace.wake says what it told, held or dropped and why.
@@ -37,7 +40,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Coroutine
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -78,12 +81,14 @@ from mycelium_sdk.build import (
     Stage,
     StartReply,
 )
+from mycelium_sdk.clock import sleep_until
 from mycelium_sdk.views import View, views_of
 
 from .blocks import TurnData
 from .progress import as_text, ended, running
 from .prompt import planner_prompt
 from .proposals import Proposal, ProposalKind, ProposalStatus, ProposalStore
+from .reminders import Reminder, ReminderStore, when
 from .schemas import (
     Ask,
     AskOutput,
@@ -161,6 +166,22 @@ CLAIM = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )  # not "nothing was saved", "I can remember it for you", or a module's own "logged 12 sessions"
 WRITES = ("add", "log", "record", "save", "store", "set", "update", "put", "track")  # a module request that keeps
+REMINDER_CLAIM = re.compile(
+    r"\bI(?:'ll| will) (?:also )?(?:remind|ping|nudge) you\b|\bI(?:'ve| have)? set (?:a|the|your|that|this) reminder\b"
+    r"|^(?:ok[,.!]? |done[,.!]? |got it[,.!]? )?reminder (?:set|added|scheduled)\b"
+    r"|(?<![不沒没])[會会]提醒你|提醒已[設设]",
+    re.IGNORECASE | re.MULTILINE,
+)  # a reminder promised in words: first person, or "Reminder set" opening a line; not "your rent reminder is set for
+# Friday" (one set before), "不會提醒你", or a question (_unbacked_reminder leaves those out)
+SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+|\n+")
+REMIND_RECHECK = (
+    "(A note from Main's code, not from Hansen.) Your reply says a reminder is set or will come, but no `remind` call "
+    "went through in this turn. If Hansen asked in this conversation to be reminded at a time and no reminder under "
+    "Reminders covers it, call `remind` now (with no time given, ask when). If one under Reminders covers it, or "
+    "Hansen did not ask for one, set none. Then write your reply to Hansen again from the start, as if this note had "
+    "not been sent, and do not mention it."
+)
+LATE_S = 300  # a reminder sent later than this after its time (Main was down, the bus was) shows when it was due
 RECHECK = (
     "(A note from Main's code, not from Hansen.) Your reply says something was saved, but no `remember` or module "
     "write (like `add`) went through in this turn. If something from his message belongs in memory, call `remember` now. If a module that "
@@ -186,6 +207,7 @@ class MainService:
         currency: str = "TWD",
         wake: WakePolicy | None = None,
         clock: Callable[[], datetime] | None = None,
+        remind_step_s: float = 30.0,
     ) -> None:
         self.bus = bus
         self.store = store
@@ -208,7 +230,8 @@ class MainService:
         self.delete_timeout = delete_timeout
         self._catch_up: asyncio.Task | None = None
         self.tools = tools or default_tools()
-        self.ctx = ToolContext(bus=bus, recall_budget=recall_budget)
+        self.reminders = ReminderStore(store.kv)  # the same bucket as the threads
+        self.ctx = ToolContext(bus=bus, recall_budget=recall_budget, reminders=self.reminders, tz=self.zone.key)
         self._tool_specs = self.tools.specs()
         self._tasks: set[asyncio.Task] = set()
         self._locks: dict[str, asyncio.Lock] = {}
@@ -221,6 +244,9 @@ class MainService:
         self._ticker: asyncio.Task | None = None
         self._notice_wake: asyncio.Task | None = None  # notices that come within notice_delay_s are one wake
         self._notice_pending = False  # a notice came that no wake has read yet
+        self.remind_step_s = remind_step_s  # how often the reminder loop looks at the clock; 0: no loop (tests)
+        self._reminding: asyncio.Task | None = None
+        self._reminded: dict[str, str] = {}  # reminder id -> the time it went out for, until it is moved on
 
     async def start(self) -> None:
         await self.bus.connect()
@@ -235,10 +261,12 @@ class MainService:
         self._catch_up = asyncio.create_task(self.catch_up())
         if self.wake.every_s:
             self._ticker = asyncio.create_task(self._tick())
+        if self.remind_step_s:
+            self._reminding = asyncio.create_task(self._remind_loop())
 
     async def stop(self) -> None:
         """The timers end; what is in flight is drain()'s."""
-        for task in (self._ticker, self._notice_wake, self._catch_up):
+        for task in (self._ticker, self._notice_wake, self._catch_up, self._reminding):
             if task is not None:
                 task.cancel()
 
@@ -476,6 +504,10 @@ class MainService:
     async def _where(self, item: Item) -> Home | None:
         if item.channel and item.thread:
             return Home(channel=item.channel, thread=item.thread)
+        return await self._home_thread()
+
+    async def _home_thread(self) -> Home | None:
+        """The thread Hansen last wrote in, on a channel of MAIN_WAKE_CHANNELS; None before Hansen has written."""
         if self._home is None:
             self._home = await self.wakes.home()
         return self._home
@@ -491,15 +523,21 @@ class MainService:
                 p.nudged = now_iso()
                 await self.proposals.save(p)
             return card
-        home = await self._where(item)
-        if home is None:  # Hansen has written nowhere yet: the phone and the app's home screen still get it
-            note = Notify(text=item.text)
+        cause = item.ref if item.kind == ItemKind.OBSERVE else None
+        return await self._say_at(await self._where(item), item.text, cause)
+
+    async def _say_at(self, where: Home | None, text: str, cause: str | None = None) -> str:
+        """Say something unasked in `where` now, and keep it there (marked unasked) once a turn running there is done:
+        an alert or a reminder goes out at once, never after the turn, and a reply to it is read with it. With no
+        thread (Hansen has written nowhere yet) it is an unaddressed out.notify: the phone and the app's home screen
+        still get it. Returns the message's id."""
+        if where is None:
+            note = Notify(text=text)
             await self.bus.publish("out.notify", note)
             return note.id
-        out = Envelope(source="main", cause=item.ref if item.kind == ItemKind.OBSERVE else None)
-        await self.bus.publish("out.say", out.into(Say, channel=home.channel, thread=home.thread, text=item.text))
-        # kept in the thread once a turn running there is done: an alert goes out now, never after the turn
-        self._spawn(self._keep(home, Turn(role=Role.ASSISTANT, text=item.text, ts=out.ts, id=out.id, unasked=True)))
+        out = Envelope(source="main", cause=cause)
+        await self.bus.publish("out.say", out.into(Say, channel=where.channel, thread=where.thread, text=text))
+        self._spawn(self._keep(where, Turn(role=Role.ASSISTANT, text=text, ts=out.ts, id=out.id, unasked=True)))
         return out.id
 
     async def _keep(self, where: Home, turn: Turn) -> None:
@@ -526,6 +564,73 @@ class MainService:
             state = await self.wakes.load()
             if self.wake.vote(state, ref, vote, self.clock()) is not None:
                 await self.wakes.save(state)
+
+    # ---- reminders -----------------------------------------------------------------------
+
+    async def _remind_loop(self) -> None:
+        """Send what is due, then sleep until the next one (on the wall clock, in steps: a host that slept is a step
+        late at most), or until one is set or cancelled."""
+        while True:
+            self.reminders.changed.clear()
+            try:
+                soonest = await self.remind_due()
+            except Exception:  # the next look tries again
+                log.exception("reminders failed")
+                soonest = None
+            until = soonest or self.clock() + timedelta(seconds=self.remind_step_s)
+            await sleep_until(until, self.clock, stop=self.reminders.changed, step=self.remind_step_s)
+
+    async def remind_due(self) -> datetime | None:
+        """Send every reminder whose time has come, and move it on; returns when the next one is due."""
+        now = self.clock()
+        soonest: datetime | None = None
+        for r in await self.reminders.all():
+            if (due := r.due_at()) > now:
+                soonest = due if soonest is None else min(soonest, due)
+                continue
+            try:
+                async with self.reminders.lock:  # read again under it: cancelled or moved meanwhile, it is not sent
+                    current = await self.reminders.get(r.id)
+                    if current is None or current.due != r.due:
+                        continue
+                    if self._reminded.get(r.id) != r.due:  # a move that failed is tried again, never the send
+                        await self._remind(current, now)
+                        self._reminded[r.id] = r.due
+                    await self._move_on(current, now)
+                    self._reminded.pop(r.id, None)
+            except Exception:  # left as it is: the next look sends it, or moves it
+                log.exception("could not send reminder %s", r.id)
+        return soonest
+
+    async def _remind(self, r: Reminder, now: datetime) -> None:
+        """Say it in the thread it was set in (the home thread when it was set from mctl, which nobody reads later).
+        Not as the answer to the message that set it: it is news now. A late one starts with when it was due."""
+        due = r.due_at()
+        late = (now - due).total_seconds() > LATE_S
+        text = f"⏰ ({when(due, self.zone)}) {r.text}" if late else f"⏰ {r.text}"
+        if r.channel in self.wake.channels:
+            where: Home | None = Home(channel=r.channel, thread=r.thread)
+        else:
+            where = await self._home_thread()
+        reply = await self._say_at(where, text)
+        sent = WakeOutcome(
+            kind=ItemKind.REMINDER, source=MAIN, text=r.text, verdict=Verdict.SENT, ref=r.id, reply_id=reply
+        )
+        await self.bus.publish("trace.wake", WakeTrace(reason="reminder", items=[sent]))
+
+    async def _move_on(self, r: Reminder, now: datetime) -> None:
+        """A repeating one to its next time after now (the times missed meanwhile are not sent one by one); else gone."""
+        if (nxt := r.after(now, self.zone)) is None:
+            await self.reminders.delete(r.id)
+        else:
+            await self.reminders.save(r.model_copy(update={"due": nxt.isoformat()}))
+
+    async def _reminder_list(self) -> list[Reminder]:
+        try:
+            return await self.reminders.all()
+        except Exception as e:  # the prompt goes without the list rather than the turn failing
+            log.info("could not read the reminders: %s", e)
+            return []
 
     # ---- growing a module ------------------------------------------------------------------
 
@@ -817,9 +922,10 @@ class MainService:
         t0 = time.monotonic()
 
         thread = await self.store.load(channel, thread_id)
-        (pack, recall_error), modules, offered = await asyncio.gather(
-            self._recall(text), self._modules(), self._offered()
+        (pack, recall_error), modules, offered, reminders = await asyncio.gather(
+            self._recall(text), self._modules(), self._offered(), self._reminder_list()
         )
+        now = self.clock()
         # the tools see this turn's modules: a call to one that is not running is refused at once
         turn = TurnData(
             formatter=Formatter(currency=self.currency, zone=self.zone, today=self.today()),
@@ -829,11 +935,25 @@ class MainService:
             update={
                 "modules": None if modules is None else {m.name: _actions(m) for m in modules if m.status == "running"},
                 "turn": turn,  # its own: what this turn's modules answered, and what `show` put on screen
+                "channel": channel,  # where a reminder set now goes, and when it is set
+                "thread": thread_id,
+                "now": now,
+                "cause": cause,
             }
         )
         modules = modules or []
         prompt = planner_prompt(
-            self.today(), self.tz, channel, text, pack, modules, recall_error, offered, thread=thread_id
+            self.today(),
+            self.tz,
+            channel,
+            text,
+            pack,
+            modules,
+            recall_error,
+            offered,
+            thread=thread_id,
+            now=now.astimezone(self.zone).time(),
+            reminders=reminders,
         )
         gone = _gone_since(thread, offered, modules, channel, thread_id) if modules else ""
         messages = [*thread.messages(self.zone), ChatMessage(role=Role.USER, content=gone + prompt.user)]
@@ -869,10 +989,12 @@ class MainService:
             llm_calls.append(LlmCall(model=r.model, usage=r.usage, cost_usd=r.cost_usd))
             if not r.tool_calls:
                 reply_text = r.text.strip()  # reasoning models lead with blank lines
-                if not claim_check and _round + 1 < self.max_rounds and _unbacked_claim(reply_text, tool_log, modules):
-                    claim_check = True  # once: asked again, it either calls remember or says it plainly
+                notes = (_unbacked_claim(reply_text, tool_log, modules), _unbacked_reminder(reply_text, tool_log))
+                recheck = "\n\n".join(n for n in notes if n)  # both, when it claims a save and a reminder
+                if not claim_check and _round + 1 < self.max_rounds and recheck:
+                    claim_check = True  # once: asked again, it either makes the call or says it plainly
                     messages.append(ChatMessage(role=Role.ASSISTANT, content=reply_text))
-                    messages.append(ChatMessage(role=Role.USER, content=RECHECK))
+                    messages.append(ChatMessage(role=Role.USER, content=recheck))
                     continue
                 break
 
@@ -1095,17 +1217,28 @@ def _actions(m: ModuleInfo) -> list[str]:
     return [r.removeprefix(f"{m.name}.") for r in m.requests]
 
 
-def _unbacked_claim(text: str, tools: list[ToolOutcome], modules: list[ModuleInfo]) -> bool:
-    """The reply says something was saved, nothing that saves went through (`remember`, a module's `add`), and it
-    names no module that hears the chat (one that logged the message itself, as the policy asks it to say)."""
+def _unbacked_claim(text: str, tools: list[ToolOutcome], modules: list[ModuleInfo]) -> str:
+    """RECHECK when the reply says something was saved, nothing that saves went through (`remember`, a module's
+    `add`), and it names no module that hears the chat (one that logged the message itself, as the policy asks it to
+    say); else ""."""
     if not CLAIM.search(text) or any(_kept_something(o) for o in tools):
-        return False
+        return ""
     lowered = text.lower()
-    return not any(m.name.lower() in lowered for m in modules if "sense.chat" in m.listens)
+    return "" if any(m.name.lower() in lowered for m in modules if "sense.chat" in m.listens) else RECHECK
+
+
+def _unbacked_reminder(text: str, tools: list[ToolOutcome]) -> str:
+    """REMIND_RECHECK when the reply promises a reminder and no `remind` went through; else "". A question ("should I
+    set a reminder for 9?") promises nothing."""
+    said = "\n".join(s for s in SENTENCE_END.split(text) if not s.rstrip().endswith(("?", "？")))
+    if not REMINDER_CLAIM.search(said) or any(o.name == "remind" and o.ok for o in tools):
+        return ""
+    return REMIND_RECHECK
 
 
 def _kept_something(o: ToolOutcome) -> bool:
-    """A call that saved something: `remember`, or a module request that writes (`expenses.add`)."""
+    """A call that saved something: `remember`, or a module request that writes (`expenses.add`). A reminder is not
+    one: "saved your appointment" after only a `remind` is asked again, so the plan reaches memory."""
     if not o.ok:
         return False
     if o.name == "remember":

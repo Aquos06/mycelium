@@ -184,6 +184,8 @@ def test_tool_specs_are_generated_from_the_argument_models():
         "propose_module",
         "change_module",
         "delete_module",
+        "remind",
+        "cancel_reminder",
     }
     remember = specs["remember"].input_schema
     assert remember["type"] == "object" and remember["required"] == ["note"]

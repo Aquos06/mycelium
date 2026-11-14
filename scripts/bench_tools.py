@@ -37,9 +37,11 @@ import statistics
 import sys
 import time
 from collections import Counter
-from datetime import date
+from datetime import date, datetime
+from datetime import time as daytime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -51,6 +53,7 @@ for p in (REPO / "services", REPO / "sdk"):
 from gateway.providers import Provider, ProviderError, build_provider  # noqa: E402
 from gateway.schemas import GatewayConfig, ProviderConfig  # noqa: E402
 from main.proposals import Proposal, ProposalStatus  # noqa: E402
+from main.reminders import Reminder, Repeat  # noqa: E402
 from main.schemas import PlanTrace  # noqa: E402
 from main.service import MainService  # noqa: E402
 from main.thread import Thread, ThreadStore, Turn, TurnCall  # noqa: E402
@@ -161,6 +164,14 @@ class FixtureProposal(BaseModel):
     day: date | None = None  # when it was offered; None: the suite's today
 
 
+class FixtureReminder(BaseModel):
+    """A reminder set before this message (Main's reminder store); its key under `reminders` is its id."""
+
+    text: str
+    at: datetime  # on Hansen's clock: 2026-11-06 09:00
+    repeat: Repeat = Repeat.NEVER
+
+
 class Case(BaseModel):
     id: str = Field(min_length=1)
     msg: str = Field(min_length=1)
@@ -172,15 +183,18 @@ class Case(BaseModel):
     retired: list[str] = Field(default_factory=list)  # modules the supervisor lists as retired (built, then removed)
     history: list[HistoryTurn] = Field(default_factory=list)
     proposals: list[FixtureProposal] = Field(default_factory=list)
+    reminders: list[str] = Field(default_factory=list)  # ids under `reminders`, set before this message
     args: dict[str, ArgCheck] = Field(default_factory=dict)
 
 
 class Suite(BaseModel):
     today: date
+    time: daytime = daytime(14, 0)  # the clock on `today` when each message comes: a reminder's "tonight" needs it
     tz: str = "Asia/Taipei"
     modules: dict[str, FixtureModule] = Field(default_factory=dict)
     default_modules: list[str] = Field(default_factory=list)
     notes: dict[str, NoteLine] = Field(default_factory=dict)
+    reminders: dict[str, FixtureReminder] = Field(default_factory=dict)
     cases: list[Case] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -198,6 +212,8 @@ class Suite(BaseModel):
                 raise ValueError(f"{c.id}: no notes {missing}")
             if missing := [m for m in (c.modules or []) if m not in self.modules]:
                 raise ValueError(f"{c.id}: no modules {missing}")
+            if missing := [r for r in c.reminders if r not in self.reminders]:
+                raise ValueError(f"{c.id}: no reminders {missing}")
         return self
 
     @classmethod
@@ -413,7 +429,30 @@ async def run_case(suite: Suite, case: Case, planner: Planner, tools: ToolRegist
         await store.append(Thread(channel=CHANNEL, thread=case.id), *turns)
     await StubStack(suite, case).attach(bus)
     await bus.subscribe("rpc.llm.complete", planner.handle)
-    main = MainService(bus, store, today=lambda: today, tz=suite.tz, llm_timeout=planner.timeout)
+    now = datetime.combine(today, suite.time, tzinfo=ZoneInfo(suite.tz))
+    main = MainService(
+        bus,
+        store,
+        today=lambda: today,
+        tz=suite.tz,
+        llm_timeout=planner.timeout,
+        clock=lambda: now,
+        remind_step_s=0,  # nothing is sent: only what the planner does with the message counts
+    )
+    for rid in case.reminders:
+        fr = suite.reminders[rid]
+        at = fr.at.replace(tzinfo=ZoneInfo(suite.tz)) if fr.at.tzinfo is None else fr.at
+        reminder = Reminder(
+            id=rid,
+            text=fr.text,
+            due=at.isoformat(),
+            repeat=fr.repeat,
+            day=at.day if fr.repeat == Repeat.MONTHLY else None,
+            channel=CHANNEL,
+            thread=case.id,
+            created=now.isoformat(),
+        )
+        await main.reminders.save(reminder)
     for i, fp in enumerate(case.proposals):
         offered = f"{(fp.day or today).isoformat()}T12:00:00+08:00"
         spec = f"# Spec: {fp.name}\n\n{fp.purpose}\n"

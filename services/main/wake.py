@@ -65,6 +65,7 @@ class ItemKind(StrEnum):
     OBSERVE = "observe"  # a module's notice or alert
     DOWN = "down"  # a module that should run and has not, at two wakes in a row
     CARD = "card"  # a proposal's card left waiting for days
+    REMINDER = "reminder"  # one Hansen set (reminders.py): sent at its time, never judged by the policy
 
 
 class Item(BaseModel):
@@ -233,7 +234,7 @@ class WakeOutcome(BaseModel):
 
 class WakeTrace(Envelope):
     source: str = MAIN
-    reason: str  # timer | notice | alert
+    reason: str  # timer | notice | alert | reminder
     items: list[WakeOutcome] = Field(default_factory=list)
     sent_today: int = 0
     budget: int = 0

@@ -436,8 +436,8 @@ undeclared events today.
 The judgment. Everything that decides, nothing that stores.
 
 **v0** (`services/main/`): `sense.chat` → recall pack from memory + the thread from NATS KV → planner
-through the gateway with seven tools (`remember`, `recall`, `ask_module`, `show`, `ask`, `propose_module`,
-`change_module`) →
+through the gateway with ten tools (`remember`, `recall`, `ask_module`, `show`, `ask`, `propose_module`,
+`change_module`, `delete_module`, `remind`, `cancel_reminder`) →
 `out.say`, or `out.ask` when the planner needs Hansen's choice → one `trace.plan` with the pack, the
 tool calls, usage and cost, linked by `cause`. `sense.feedback` answers continue the thread; votes are
 traced. When the gateway fails or the budget is spent, Main still replies that it cannot reach its model
@@ -529,8 +529,28 @@ the app's home screen). A 👍 on one clears its module's 👎s. Each wake that 
 publishes one `trace.wake` with every item and why. State: `wake/state` and `wake/home` in Main's KV; a held
 observation is kept without its data, five a module and twenty in all, and the state is saved after each message
 told, so a wake that stops halfway never tells one twice. A message goes out at once and is added to its thread when
-a turn running there ends. Not yet: the model reading what is held and the day's info to write a check-in, reminders
-Hansen sets in the chat, and checking an observation's `source` (modules share one bus login, §1).
+a turn running there ends, marked as said unasked with its time, so the planner tells it from its answers. Not yet:
+the model reading what is held and the day's info to write a check-in, and checking an observation's `source`
+(modules share one bus login, §1).
+**Reminders.** When Hansen asks to be reminded of something at a time, the planner calls `remind` with what to say
+then and when: `at` on Hansen's clock with a time of day (the prompt gives today, and the time at its end so the rest
+of it stays cached), or `in_minutes`, and a `repeat` (daily, weekdays, weekly, monthly). Only when asked: a plan with
+a date is remembered, and a reminder for it offered in words. Code refuses a time that has passed, a date with no
+time, or one more than a year away; moves a weekday one's first time off a weekend; and keeps one reminder for the
+same words at the same time, from whichever chat. It is kept under `reminder/<id>` in Main's KV (read once, then kept
+in memory: Main is the only writer) with the thread it was set in, and the result says the time back with its
+weekday, so the reply can repeat it. The prompt lists the reminders set, soonest first with their ids: "what is set"
+is answered from there, and `cancel_reminder` takes one away (moving one is a cancel and a new `remind`). A reply
+that promises a reminder no `remind` set (not a question, not "不會提醒你") is asked again once, like a claimed save;
+a reminder is not a save, so "saved your appointment" after only a `remind` gets the memory note. A loop in Main
+sleeps until the next one (on the wall clock, in 30 s steps, and woken when one is set or cancelled) and sends it as
+`⏰ <text>` in its thread, or the home thread when it was set from mctl, whatever the wake policy says: Hansen chose
+the time. It goes out as news, not as the answer to the message that set it, is kept in the thread as said unasked,
+and is traced as a `trace.wake` of reason `reminder`. Then a repeating one moves to its next time, built from its
+time of day on the wall clock (09:00 stays 09:00 across a summer-time change; a time the change skips is an hour later
+that day only), and a one-off is deleted; a cancel waits for a send under way, so it is never saved back. One that
+came due while Main (or the bus) was down goes out late, starting with when it was due, and a repeating one skips to
+its next time after now; if moving it on fails, the move is retried, never the send.
 
 Tools (`services/main/tools/`) are pydantic: one argument model and one async handler per tool,
 held in a `ToolRegistry`. The `input_schema` the planner sees is generated from the argument model,

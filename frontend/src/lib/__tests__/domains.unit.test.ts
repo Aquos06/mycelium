@@ -42,6 +42,7 @@ describe("domains", () => {
     const wake = { reason: "timer", sent_today: 1, budget: 3, items: [{ verdict: "sent" }, { verdict: "held: quiet hours" }, { verdict: "dropped: told already" }] };
     expect(t("trace.wake", wake)).toBe("Looked around: told you 1, held 1, dropped 1");
     expect(t("trace.wake", { reason: "notice", items: [] })).toBe("Looked around: nothing to say");
+    expect(t("trace.wake", { reason: "reminder", items: [{ kind: "reminder", text: "Time to pay the rent.", verdict: "sent" }] })).toBe("Reminded you: Time to pay the rent.");
     expect(t("sys.module.deployed", { name: "hello", image: "img" })).toBe("Started hello");
     expect(t("sys.module.stopped", { name: "hello" })).toBe("Stopped hello");
     expect(t("sys.module.removed", { name: "garden", data: "mycelium-data-garden-v0.1.0-removed-1" })).toBe("Deleted garden");
