@@ -88,7 +88,7 @@ from .blocks import TurnData
 from .progress import as_text, ended, running
 from .prompt import planner_prompt
 from .proposals import Proposal, ProposalKind, ProposalStatus, ProposalStore
-from .reminders import Reminder, ReminderStore, when
+from .reminders import Reminder, ReminderStore, Repeat, when
 from .schemas import (
     Ask,
     AskOutput,
@@ -112,6 +112,7 @@ from .tools import (
     DeleteArgs,
     ProposeArgs,
     RecallPayload,
+    RemindArgs,
     ToolContext,
     ToolOutcome,
     ToolRegistry,
@@ -184,10 +185,19 @@ REMIND_RECHECK = (
 LATE_S = 300  # a reminder sent later than this after its time (Main was down, the bus was) shows when it was due
 RECHECK = (
     "(A note from Main's code, not from Hansen.) Your reply says something was saved, but no `remember` or module "
-    "write (like `add`) went through in this turn. If something from his message belongs in memory, call `remember` now. If a module that "
+    "write (like `add`) went through in this turn. If something from Hansen's message belongs in memory, call `remember` now. If a module that "
     "listens to sense.chat logged it, say which one. Then write your reply to Hansen again from the start, as if "
     "this note had not been sent, and do not mention it."
 )
+# A reply with no words: a reasoning model sometimes leaves its whole answer in its thinking (vLLM's reasoning parser
+# reads all of it as thinking when the model leaves out the closing tag), so the reply comes back empty. Main asks once
+# more; if it is still empty, Main says what the turn's calls did (_done_reply).
+SAY_IT = (
+    "(A note from Main's code, not from Hansen.) Your reply came back empty: no words came after your thinking. "
+    "Everything you called in this turn went through; do not call it again. Write your reply to Hansen now, and do "
+    "not mention this note."
+)
+EMPTY_REPLY = "My reply came out empty this time. I kept your message: ask me again."
 
 
 class MainService:
@@ -966,20 +976,12 @@ class MainService:
         base_version: str | None = None  # a change or a deletion: the module's version when it was asked
         error: str | None = None
         claim_check = False
+        empty_check = False
+        hops = int(data.get("hops") or 0)
 
         for _round in range(self.max_rounds):
-            request = CompletionRequest(
-                slot="planner",
-                system=prompt.system,
-                messages=messages,
-                tools=self._tool_specs,
-                cause=cause,
-                hops=int(data.get("hops") or 0),
-                timeout=self.llm_timeout,
-                stream=True,  # the gateway publishes the text on stream.llm as it is written; the web app shows it
-            )
             try:
-                r = await ask(self.bus, "rpc.llm.complete", request, CompletionReply, self.llm_timeout + BUS_MARGIN_S)
+                r = await self._plan(prompt.system, messages, cause, hops)
             except NoAnswer as e:
                 error = f"gateway unreachable: {e}"
                 break
@@ -1019,6 +1021,9 @@ class MainService:
                 break
         else:
             error = f"{OUT_OF_ROUNDS} in {self.max_rounds} rounds"
+        if not (error or asked or proposed or reply_text):  # no words: asked once more, then what the calls did
+            empty_check = True
+            reply_text = await self._in_words(prompt.system, messages, cause, hops, llm_calls) or _done_reply(tool_log)
 
         out = Envelope.child_of(data, "main")
         output: SayOutput | AskOutput
@@ -1069,8 +1074,8 @@ class MainService:
             saved = f"{question}\n[choices: {' / '.join(asked.choices)}]"
             output = AskOutput(ask=asked)
         else:
-            if error or not reply_text:
-                reply_text = _failed_reply(error, tool_log) if error else "(no reply)"
+            if error:
+                reply_text = _failed_reply(error, tool_log)
             await self.bus.publish(
                 "out.say", out.into(Say, channel=channel, thread=thread_id, text=reply_text, blocks=blocks)
             )
@@ -1100,10 +1105,39 @@ class MainService:
                 reply_id=out.id,
                 proposal=proposed.name if proposed and not error else None,
                 claim_check=claim_check,
+                empty_check=empty_check,
                 error=error,
                 latency_ms=int((time.monotonic() - t0) * 1000),
             ),
         )
+
+    async def _plan(self, system: str, messages: list[ChatMessage], cause: str, hops: int) -> CompletionReply:
+        """One planner round through the gateway; NoAnswer or Refused when it fails."""
+        request = CompletionRequest(
+            slot="planner",
+            system=system,
+            messages=messages,
+            tools=self._tool_specs,  # the same in every round: the calls in the thread need them, and the cache does
+            cause=cause,
+            hops=hops,
+            timeout=self.llm_timeout,
+            stream=True,  # the gateway publishes the text on stream.llm as it is written; the web app shows it
+        )
+        return await ask(self.bus, "rpc.llm.complete", request, CompletionReply, self.llm_timeout + BUS_MARGIN_S)
+
+    async def _in_words(
+        self, system: str, messages: list[ChatMessage], cause: str, hops: int, calls: list[LlmCall]
+    ) -> str:
+        """The reply came back without words: asked once more, with SAY_IT after the last message. A call it makes
+        then is not run (the turn's calls went through already). "" when it writes nothing again or the model fails:
+        the turn's calls stand, so a failure here is no failed turn."""
+        try:
+            r = await self._plan(system, _noted(messages, SAY_IT), cause, hops)
+        except (NoAnswer, Refused) as e:
+            log.info("asked again for a reply in words, no answer: %s", e)
+            return ""
+        calls.append(LlmCall(model=r.model, usage=r.usage, cost_usd=r.cost_usd))
+        return r.text.strip()
 
     # ---- context -------------------------------------------------------------------------
 
@@ -1234,6 +1268,43 @@ def _unbacked_reminder(text: str, tools: list[ToolOutcome]) -> str:
     if not REMINDER_CLAIM.search(said) or any(o.name == "remind" and o.ok for o in tools):
         return ""
     return REMIND_RECHECK
+
+
+def _noted(messages: list[ChatMessage], note: str) -> list[ChatMessage]:
+    """`messages` with Main's note at the end of the last one, on Hansen's side (after its tool results, in the same
+    message), so no provider sees two of Hansen's messages in a row."""
+    last = messages[-1]
+    if last.role != Role.USER:
+        return [*messages, ChatMessage(role=Role.USER, content=note)]
+    blocks = [TextBlock(text=last.content)] if isinstance(last.content, str) else list(last.content)
+    return [*messages[:-1], ChatMessage(role=Role.USER, content=[*blocks, TextBlock(text=note)])]
+
+
+def _done_reply(tools: list[ToolOutcome]) -> str:
+    """The reply when the planner wrote no words twice: what the turn's calls did, from their results, so a save or a
+    reminder is not asked for twice; EMPTY_REPLY when they did nothing to tell (an answer read from a module is lost:
+    Hansen asks again)."""
+    said: list[str] = []
+    for o in tools:
+        if not o.ok:
+            continue
+        if o.name == "remember":
+            line = "Saved to memory."
+        elif o.name == "remind" and isinstance(o.args, RemindArgs):
+            repeat = o.result.get("repeat")
+            how = "" if repeat == Repeat.NEVER.words else f", {repeat}"
+            line = f"Reminder set for {o.result.get('when')}{how}: {o.args.text.strip()}"
+        elif o.name == "cancel_reminder":
+            line = f"Reminder cancelled: {o.result.get('cancelled')}"
+        elif _kept_something(o) and isinstance(o.args, AskModuleArgs):
+            line = f"Sent to {o.args.module} ({o.args.action})."
+        else:
+            continue
+        if line not in said:
+            said.append(line)
+    if any(o.ok and o.name == "show" for o in tools):
+        said.append("Here it is:")  # the blocks go under the reply
+    return " ".join(said) or EMPTY_REPLY
 
 
 def _kept_something(o: ToolOutcome) -> bool:
