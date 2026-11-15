@@ -181,6 +181,7 @@ async def test_steps_used_up_say_what_failed_last(w):
     w.llm_script = [
         call("ask_module", {"module": "groceries", "action": "add"}),
         call("ask_module", {"module": "groceries", "action": "add"}, id="t2"),
+        say(""),  # asked for words after the last step: none
     ]
     await w.send("sense.chat", chat("put it in").data)
     text = w.bus.events("out.say")[0][1]["text"]

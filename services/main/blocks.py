@@ -3,14 +3,15 @@ from a module's reply and how they read, are the SDK's (mycelium_sdk.blocks), sh
 
 `show` takes a module's view by name (`spending.week`: Main asks the module for that view's data itself), or a
 request the planner called this turn with ask_module and where in its reply the data is. Either way every number
-on screen is the module's.
+on screen is the module's. What the planner leaves out or gets wrong, Main fills in where only one answer fits
+(tools/show.py): the reply (the only one asked this turn, or of that module) and the path (where the fields are).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from mycelium_sdk.blocks import Block, BlockSpec, ChartType, FieldArg, Formatter, Kind
 from mycelium_sdk.views import View
@@ -55,14 +56,6 @@ class ShowArgs(BaseModel):
         default=ChartType.BAR, description="chart only: bar for amounts by name, line or area for over time"
     )
     goal: float | None = Field(default=None, description="meter only: the goal when the data has none (2000 for 2 l)")
-
-    @model_validator(mode="after")
-    def _view_or_data(self) -> ShowArgs:
-        if not self.view and (self.kind is None or not self.source):
-            raise ValueError(
-                "give a `view` listed under Modules, or `kind` and `source` (a request you asked this turn)"
-            )
-        return self
 
     def spec(self) -> BlockSpec:
         """How to see the data, as the planner asked (a view brings its own)."""

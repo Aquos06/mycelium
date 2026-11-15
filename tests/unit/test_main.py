@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from main.prompt import planner_prompt, render_pack
 from main.schemas import ModuleInfo, PlanTrace
-from main.service import MODEL_DOWN_REPLY, MainService
+from main.service import LAST_STEP, MODEL_DOWN_REPLY, MainService
 from main.thread import ThreadStore
 from main.tools import ToolContext, default_tools
 from mycelium_sdk import Envelope, InMemoryBus, InMemoryKV, Message
@@ -431,12 +431,47 @@ async def test_gateway_failure_gives_a_degraded_reply_and_keeps_the_turn(world):
     assert thread.turns[0].text == "hello"  # the message is kept even when the model is down
 
 
-async def test_tool_loop_stops_after_max_rounds(world):
+async def test_after_max_rounds_the_reply_is_asked_for_in_words(world):
     world.svc.max_rounds = 2
-    world.llm_script = [call("recall", {"query": "a"}), call("recall", {"query": "b"}, id="t2"), say("never reached")]
+    world.llm_script = [
+        call("recall", {"query": "a"}),
+        call("recall", {"query": "b"}, id="t2"),
+        say("Nothing about that in your notes."),
+    ]
     await world.send("sense.chat", chat("loop").data)
     trace = world.bus.events("trace.plan")[0][1]
-    assert trace["error"] == "planner did not finish in 2 rounds" and trace["rounds"] == 2
+    assert trace["error"] is None and trace["wrap_up"] is True and trace["rounds"] == 3
+    assert world.bus.events("out.say")[0][1]["text"] == "Nothing about that in your notes."
+    assert world.llm_requests[2]["messages"][-1]["content"][-1]["text"] == LAST_STEP
+
+
+@pytest.mark.parametrize(
+    "last",
+    [
+        call("recall", {"query": "c"}, id="t3", text="Let me look that up once more."),  # leads into a call
+        say("Saved it to memory."),  # no `remember` went through
+    ],
+)
+async def test_a_last_answer_that_is_no_reply_is_not_sent(world, last):
+    world.svc.max_rounds = 2
+    world.llm_script = [call("recall", {"query": "a"}), call("recall", {"query": "b"}, id="t2"), last]
+    await world.send("sense.chat", chat("loop").data)
+    trace = world.bus.events("trace.plan")[0][1]
+    assert trace["error"] == "planner did not finish in 2 rounds"
+    assert [t["input"]["query"] for t in trace["tools"]] == ["a", "b"]  # the last answer's call is not run
+    assert world.bus.events("out.say")[0][1]["text"].startswith("I couldn't finish this: I used all my steps")
+
+
+async def test_tool_loop_stops_after_max_rounds(world):
+    world.svc.max_rounds = 2
+    world.llm_script = [
+        call("recall", {"query": "a"}),
+        call("recall", {"query": "b"}, id="t2"),
+        call("recall", {"query": "c"}, id="t3"),  # asked for words, it calls again
+    ]
+    await world.send("sense.chat", chat("loop").data)
+    trace = world.bus.events("trace.plan")[0][1]
+    assert trace["error"] == "planner did not finish in 2 rounds" and trace["rounds"] == 3
     # the model was reached every round: running out of steps is said as that, not as an unreachable model
     assert world.bus.events("out.say")[0][1]["text"].startswith("I couldn't finish this: I used all my steps")
 

@@ -14,7 +14,7 @@ from main.thread import ThreadStore
 from main.tools import ToolContext, default_tools
 from mycelium_sdk import InMemoryBus, InMemoryKV, Message, validate_manifest
 from mycelium_sdk.blocks import Formatter
-from tests.unit.test_blocks import SPENDING
+from tests.unit.test_blocks import SPENDING, WATER
 from tests.unit.test_main import TODAY, World, call, chat, say
 
 FMT = Formatter(currency="TWD", zone=ZoneInfo("Asia/Taipei"), today=date(2026, 11, 7))
@@ -41,6 +41,111 @@ async def test_show_draws_only_on_what_a_module_answered_this_turn():
     assert len(turn.blocks) == 1
     bad = await run_show(turn, kind="chart", path="nowhere")
     assert bad.ok is False and "no 'nowhere'" in bad.result["error"] and len(turn.blocks) == 1
+
+
+async def test_a_request_named_as_a_view_or_no_source_shows_the_reply_asked():
+    turn = TurnData(formatter=FMT, replies={"spending.summary": SPENDING})
+    shown = "stats: Total NT$3,420, Count 6"
+    assert (await run_show(turn, kind="stats", source="", view="spending.summary")).result == {
+        "ok": True,
+        "shown": shown,
+    }
+    for named in ({"view": "spending"}, {}):  # Main chose: it says which
+        outcome = await run_show(turn, kind="stats", source="", **named)
+        assert outcome.result == {"ok": True, "shown": shown, "from": "spending.summary"}, named
+    both = await run_show(turn, kind="stats", source="spending.summary", view="spending.weak")
+    assert both.ok  # the source given, the view not listed
+
+
+@pytest.mark.parametrize(
+    "named",
+    [
+        {"source": "spending.history"},  # a request not asked yet (the supervisor silent: no module list)
+        {"source": "spending.histroy"},  # mistyped
+        {"view": "spending.week", "source": ""},  # a view not listed
+    ],
+)
+async def test_a_name_that_says_another_reply_is_never_swapped_for_the_one_asked(named):
+    turn = TurnData(formatter=FMT, replies={"spending.summary": SPENDING})
+    outcome = await run_show(turn, kind="table", **named)
+    assert outcome.ok is False and turn.blocks == []
+    if named.get("view"):
+        assert outcome.result["error"].startswith("no view 'spending.week'; the views under Modules: none. To show")
+    else:
+        assert outcome.result["error"].startswith(f"no reply from {named['source']} in this turn: call ask_module")
+
+
+async def test_with_two_replies_show_needs_the_one_meant():
+    turn = TurnData(formatter=FMT, replies={"spending.summary": SPENDING, "water.today": WATER})
+    outcome = await run_show(turn, kind="stats", source="")
+    assert outcome.result["error"] == "several replies this turn: name one as `source` (spending.summary, water.today)"
+    assert (await run_show(turn, kind="stats", source="water")).ok  # the only reply of that module
+    turn.replies["spending.history"] = SPENDING
+    mine = await run_show(turn, kind="stats", source="spending")
+    assert mine.result["error"] == (
+        "several replies from spending this turn: name one as `source` (spending.summary, spending.history)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "x", "series"),
+    [
+        ({"fields": ["day", "total"]}, "day", ["total"]),  # by_day: every field there
+        ({"fields": ["category", "total"]}, "category", ["value"]),  # by_category: one there, its value by position
+        ({"fields": ["category", "amount"]}, "category", ["amount"]),  # every field there wins: the expenses
+        ({"fields": ["day", "total"], "path": "spending.summary"}, "day", ["total"]),  # the source again
+        ({"fields": ["day", "total"], "path": "by_category"}, "category", ["value"]),  # a path given that fits stays
+    ],
+)
+async def test_a_chart_finds_its_data_where_its_fields_are(args, x, series):
+    turn = TurnData(formatter=FMT, replies={"spending.summary": SPENDING})
+    outcome = await run_show(turn, kind="chart", **args)
+    assert outcome.ok, outcome.result
+    (block,) = turn.blocks
+    assert (block.x.key, [s.key for s in block.series]) == (x, series)
+    if args.get("path") != "by_category":  # Main chose the place: it says which
+        assert outcome.result["from"].startswith("spending.summary, path ")
+
+
+async def test_a_table_or_stats_find_theirs_too():
+    turn = TurnData(formatter=FMT, replies={"spending.summary": SPENDING})
+    table = await run_show(turn, kind="table", fields=["day", "description", "category", "amount"])
+    assert table.ok and turn.blocks[0].total == 2  # the expenses
+    stats = await run_show(turn, kind="stats", path="total, count")
+    assert stats.result == {
+        "ok": True,
+        "shown": "stats: Total NT$3,420, Count 6",
+        "from": "spending.summary, the whole reply",
+    }
+
+
+async def test_an_empty_list_is_said_as_empty():
+    turn = TurnData(formatter=FMT, replies={"shopping.list": {"ok": True, "items": []}})
+    outcome = await run_show(turn, kind="table", source="shopping.list")
+    assert outcome.result == {"ok": False, "error": "nothing in the reply of shopping.list to show: items is empty"}
+
+
+async def test_a_reply_with_one_place_takes_the_fields_by_position():
+    stats = {"ok": True, "days": {"2026-11-01": 3, "2026-11-02": 5}}  # what hello.stats answers
+    turn = TurnData(formatter=FMT, replies={"hello.stats": stats})
+    outcome = await run_show(turn, kind="chart", source="hello.stats", fields=["date", "count"])
+    assert outcome.ok, outcome.result
+    assert [(c.key, c.label) for c in (turn.blocks[0].x, *turn.blocks[0].series)] == [
+        ("days", "Date"),
+        ("value", "Count"),
+    ]
+
+
+async def test_where_several_places_fit_show_names_them():
+    turn = TurnData(formatter=FMT, replies={"spending.summary": SPENDING})
+    outcome = await run_show(turn, kind="table")  # not a table of the reply's mixed top
+    assert outcome.result["error"] == (
+        "that fits several places in the reply of spending.summary: name one as `path` (by_category: category, "
+        "value; by_day: day, total; expenses: id, day, amount, category, description)"
+    )
+    missing = await run_show(turn, kind="chart", fields=["week", "steps"])
+    assert missing.result["error"].startswith("no place in the reply of spending.summary fits a chart of those fields")
+    assert turn.blocks == []
 
 
 async def test_show_stops_at_a_few_blocks():
@@ -195,8 +300,10 @@ async def test_a_view_that_is_not_listed_is_refused_with_the_ones_that_are(viewe
     assert viewed.bus.events("out.say")[-1][1]["blocks"] == []
 
 
-async def test_show_needs_a_view_or_a_source():
+async def test_show_needs_a_view_or_a_reply_asked_this_turn():
     outcome = await default_tools().call("show", {"title": "x"}, ToolContext(bus=InMemoryBus(), turn=TurnData()))
-    assert (
-        outcome.ok is False and "give a `view` listed under Modules, or `kind` and `source`" in outcome.result["error"]
-    )
+    assert outcome.result == {
+        "ok": False,
+        "error": "give a `view` listed under Modules, or a `source` you called with ask_module in this turn "
+        "(asked so far: none yet)",
+    }

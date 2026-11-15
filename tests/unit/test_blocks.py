@@ -15,10 +15,12 @@ from mycelium_sdk.blocks import (
     DetailsBlock,
     Format,
     Formatter,
+    Kind,
     MeterBlock,
     StatsBlock,
     TableBlock,
     auto,
+    places,
 )
 from mycelium_sdk.blocks import build as build_block
 
@@ -241,3 +243,39 @@ def test_a_record_without_numbers_is_its_details_and_a_bare_list_a_table():
     (table,) = auto({"ok": True, "entries": [{"day": "2026-11-02", "position": "B1-03"}]}, FMT, "history")
     assert (table.kind, table.title, table.total) == ("table", "Entries", 1)
     assert auto({"ok": True, "items": []}, FMT, "list") == []  # nothing to show: no empty card
+
+
+# ---- where a reply keeps its data (for a `show` that leaves its path out) --------------------------------------
+
+
+def test_places_lists_where_each_kind_of_block_finds_its_data():
+    assert places(SPENDING, Kind.CHART) == {
+        "by_category": ["category", "value"],
+        "by_day": ["day", "total"],
+        "expenses": ["id", "day", "amount", "category", "description"],
+    }  # not the reply's mixed top: totals beside lists
+    assert places(SPENDING, Kind.STATS) == {
+        "": ["total", "count"],
+        "by_category": ["coffee", "food", "transport", "other"],
+    }
+    assert places(WATER, Kind.TABLE) == {"": ["name", "value"]}  # a reply of plain values is a map itself
+    nested = {"ok": True, "week": {"total": 3, "days": [{"day": "2026-11-02", "n": 3}]}, "empty": []}
+    assert places(nested, Kind.TABLE) == {"week.days": ["day", "n"]}
+    assert places(nested, Kind.METER) == {"week": ["total"]}
+    assert places({"ok": True, "days": {"mon": 3, "tue": 5}}, Kind.CHART) == {"days": ["days", "value"]}  # no wrapper
+    assert places({"ok": True, "items": ["milk", "eggs"]}, Kind.TABLE) == {"items": ["value"]}  # a list of values
+    one = {"ok": True, "entries": [{"day": "2026-11-02", "position": "B1-03"}]}
+    assert places(one, Kind.DETAILS) == {"entries": ["day", "position"]}  # a list of one record
+    people = {"ok": True, "people": {"alice": {"age": 30}, "bob": {"age": 41}}, "by_ver": {"1.0": {"n": 1}}}
+    table = places(people, Kind.TABLE)
+    assert table["people"] == ["people", "age"] and "people.alice" not in table  # each record is no place of its own
+    assert "by_ver.1.0" not in places(people, Kind.STATS)  # a key with a dot is no path
+
+
+def test_a_meter_without_fields_takes_the_one_number_beside_its_goal():
+    meter = build(show("water.today", kind="meter"), {**WATER, "by_day": [{"day": "2026-11-07", "ml": 1500}]}, FMT)
+    assert (meter.value.v, meter.max.v) == (1500, 2000)
+    with pytest.raises(BlockError, match="a meter needs `fields`"):
+        build(show(kind="meter"), {"ok": True, "ml": 1, "cups": 2}, FMT)
+    asked = build(show("water.today", kind="meter", goal=2500), WATER, FMT)  # a goal given wins over the data's
+    assert (asked.value.v, asked.max.v) == (1500, 2500)
