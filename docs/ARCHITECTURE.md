@@ -453,6 +453,10 @@ date in Main's time zone, so a "today" in an old message, or a date an old reply
 A reply that still says something was saved, logged or noted when no `remember` went through in the turn,
 and names no module that hears the chat (one may have logged it itself), is not sent: Main asks the planner
 once more, and it either calls `remember` or says it plainly. The trace marks such a turn (`claim_check`).
+A reply that comes back with no words at all (a reasoning model can leave its whole answer in its thinking) is
+asked for once more, with a note that the turn's calls went through (a call it makes then is not run); if it is
+still empty, Main says what the calls did (saved, reminder set for…, here it is) or that its reply came out empty.
+The trace marks such a turn (`empty_check`).
 
 **Showing a module's data.** When a module's answer is something to see rather than read (its entries, totals
 by category or by day, a few figures, one record, a number against a goal), the planner calls `show`, with a

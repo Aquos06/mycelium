@@ -21,8 +21,8 @@ slot's active provider (PLANNER_PROVIDER) is measured. Cloud kinds read their ke
 
 Per case: the tools called in order, whether the expected one was among them (`none`: no tool at all) along with
 the case's `also` tools and none of its `avoid` ones, whether it came first, whether its arguments pass the case's
-checks, calls Main rejected as invalid, whether Main had to ask again after a reply claimed a save no tool made,
-rounds, latency.
+checks, calls Main rejected as invalid, whether Main had to ask again after a reply claimed a save no tool made
+or came back without words, rounds, latency.
 Per provider and expected class: those as counts, plus p50/p95 turn latency and a confusion table of the first
 decision.
 """
@@ -357,6 +357,7 @@ class Row(BaseModel):
     args_ok: bool | None = None  # its first valid call passes the checks; None: no checks, or never called
     invalid: int = 0  # calls Main rejected (unknown tool, bad arguments)
     claim_check: bool = False  # a reply claimed a save no `remember` made, and Main asked again
+    empty_check: bool = False  # the reply came back without words, and Main asked again
     rounds: int = 0
     latency_ms: int = 0
     tokens_in: int = 0
@@ -403,6 +404,7 @@ def score(case: Case, trace: PlanTrace, tools: ToolRegistry, provider: str, mode
         args_ok=args_ok,
         invalid=sum(not c.valid for c in calls),
         claim_check=trace.claim_check,
+        empty_check=trace.empty_check,
         rounds=trace.rounds,
         latency_ms=trace.latency_ms,
         tokens_in=sum(u.input_tokens for u in usage),
@@ -495,6 +497,7 @@ class Summary(BaseModel):
     args_ok: int
     invalid: int
     rechecked: int  # turns where Main asked again after a reply claimed a save no tool made
+    no_words: int  # turns where the reply came back without words and Main asked again
     errors: int
     rounds_mean: float
     p50_s: float
@@ -515,6 +518,7 @@ def summarise(provider: str, model: str, expect: str, rows: list[Row]) -> Summar
         args_ok=sum(r.args_ok is True for r in rows),
         invalid=sum(r.invalid for r in rows),
         rechecked=sum(r.claim_check for r in rows),
+        no_words=sum(r.empty_check for r in rows),
         errors=sum(r.error is not None for r in rows),
         rounds_mean=round(statistics.fmean(r.rounds for r in rows), 2) if rows else 0.0,
         p50_s=round(statistics.median(lat), 1),
@@ -550,14 +554,16 @@ def markdown(rows: list[Row], suite: Suite, today: date) -> str:
         classes = classes_of(mine)
         lines += [f"## {provider} ({mine[0].model})", ""]
         lines += [
-            "| expect | right tool | first call | args ok | invalid calls | asked again | errors | rounds | p50 | p95 | cost |",
-            "|---|---|---|---|---|---|---|---|---|---|---|",
+            "| expect | right tool | first call | args ok | invalid calls | asked again | no words | errors | rounds | p50 "
+            "| p95 | cost |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|",
         ]
         for s in summaries(mine):
             name = f"**{s.expect}**" if s.expect == "all" else s.expect
             lines.append(
                 f"| {name} | {pct(s.passed, s.n)} | {pct(s.first, s.n)} | {pct(s.args_ok, s.args_checked)} "
-                f"| {s.invalid} | {s.rechecked} | {s.errors} | {s.rounds_mean} | {s.p50_s}s | {s.p95_s}s | ${s.cost_usd} |"
+                f"| {s.invalid} | {s.rechecked} | {s.no_words} | {s.errors} | {s.rounds_mean} | {s.p50_s}s | {s.p95_s}s "
+                f"| ${s.cost_usd} |"
             )
         cols = [*classes, ERROR]
         lines += ["", "First decision (rows: expected, columns: what Main did first):", ""]
