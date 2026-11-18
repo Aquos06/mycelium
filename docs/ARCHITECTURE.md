@@ -457,6 +457,9 @@ A reply that comes back with no words at all (a reasoning model can leave its wh
 asked for once more, with a note that the turn's calls went through (a call it makes then is not run); if it is
 still empty, Main says what the calls did (saved, reminder set for…, here it is) or that its reply came out empty.
 The trace marks such a turn (`empty_check`).
+A turn whose every round (four) called a tool gets one more call for its words, with a note that no more calls
+run (`wrap_up` in the trace). Its answer is sent only when it is words alone: text beside a call leads into that
+call, and a claim of a save or a reminder no call made cannot be asked again; then Main says it used all its steps.
 
 **Showing a module's data.** When a module's answer is something to see rather than read (its entries, totals
 by category or by day, a few figures, one record, a number against a goal), the planner calls `show`, with a
@@ -465,7 +468,11 @@ or a line or area over time, up to four series, each with its table view), **sta
 **meter**, sent with the reply as `blocks` on `out.say` / `out.ask` (`mycelium_sdk/blocks.py`). `show` names a
 view, or the request it called this turn and where in the reply the data is; Main builds the block from the module's own
 reply, so no number on screen was written by the model, and tells the planner what it showed so the reply says
-what it means instead of repeating it. Main formats every value once (money in `MAIN_CURRENCY`, dates in its
+what it means instead of repeating it. What the planner leaves out or gets wrong, Main fills in where only one
+answer fits: the reply (a request asked this turn named as a view, a module's name, or none: the only reply of that
+module, or of the turn) and the path (left out or mistyped: the one place in the reply with the fields named; when
+several fit, the error lists each place and its fields). A name that says another reply (a request not asked yet, a
+view not listed) is never swapped for the one asked, and when Main chose, `show`'s result says what it drew on. Main formats every value once (money in `MAIN_CURRENCY`, dates in its
 zone) and sends each as data and as it reads; the web app places them, Telegram gets each block's monospace
 text as its own message after the reply, and `mctl chat` prints it.
 

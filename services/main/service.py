@@ -185,9 +185,9 @@ REMIND_RECHECK = (
 LATE_S = 300  # a reminder sent later than this after its time (Main was down, the bus was) shows when it was due
 RECHECK = (
     "(A note from Main's code, not from Hansen.) Your reply says something was saved, but no `remember` or module "
-    "write (like `add`) went through in this turn. If something from Hansen's message belongs in memory, call `remember` now. If a module that "
-    "listens to sense.chat logged it, say which one. Then write your reply to Hansen again from the start, as if "
-    "this note had not been sent, and do not mention it."
+    "write (like `add`) went through in this turn. If something from Hansen's message belongs in memory, call "
+    "`remember` now. If a module that listens to sense.chat logged it, say which one. Then write your reply to Hansen "
+    "again from the start, as if this note had not been sent, and do not mention it."
 )
 # A reply with no words: a reasoning model sometimes leaves its whole answer in its thinking (vLLM's reasoning parser
 # reads all of it as thinking when the model leaves out the closing tag), so the reply comes back empty. Main asks once
@@ -198,6 +198,12 @@ SAY_IT = (
     "not mention this note."
 )
 EMPTY_REPLY = "My reply came out empty this time. I kept your message: ask me again."
+# Every round called a tool (a `show` that failed twice and fit the third time, say): its data is on hand, only the
+# words are missing. Main asks for them instead of failing the turn.
+LAST_STEP = (
+    "(A note from Main's code, not from Hansen.) That was your last step in this turn: no more calls. Write your reply "
+    "to Hansen now from what you have (say plainly what you could not do), and do not mention this note."
+)
 
 
 class MainService:
@@ -977,6 +983,7 @@ class MainService:
         error: str | None = None
         claim_check = False
         empty_check = False
+        wrap_up = False
         hops = int(data.get("hops") or 0)
 
         for _round in range(self.max_rounds):
@@ -1019,11 +1026,17 @@ class MainService:
             if asked or proposed:
                 reply_text = r.text.strip()  # reasoning models lead with blank lines
                 break
-        else:
-            error = f"{OUT_OF_ROUNDS} in {self.max_rounds} rounds"
+        else:  # each round called a tool: one more, for the words only
+            wrap_up = True
+            reply_text = await self._in_words(
+                prompt.system, messages, cause, hops, llm_calls, tool_log, modules, LAST_STEP
+            )
+            if not reply_text:
+                error = f"{OUT_OF_ROUNDS} in {self.max_rounds} rounds"
         if not (error or asked or proposed or reply_text):  # no words: asked once more, then what the calls did
             empty_check = True
-            reply_text = await self._in_words(prompt.system, messages, cause, hops, llm_calls) or _done_reply(tool_log)
+            words = await self._in_words(prompt.system, messages, cause, hops, llm_calls, tool_log, modules)
+            reply_text = words or _done_reply(tool_log)
 
         out = Envelope.child_of(data, "main")
         output: SayOutput | AskOutput
@@ -1106,6 +1119,7 @@ class MainService:
                 proposal=proposed.name if proposed and not error else None,
                 claim_check=claim_check,
                 empty_check=empty_check,
+                wrap_up=wrap_up,
                 error=error,
                 latency_ms=int((time.monotonic() - t0) * 1000),
             ),
@@ -1126,18 +1140,35 @@ class MainService:
         return await ask(self.bus, "rpc.llm.complete", request, CompletionReply, self.llm_timeout + BUS_MARGIN_S)
 
     async def _in_words(
-        self, system: str, messages: list[ChatMessage], cause: str, hops: int, calls: list[LlmCall]
+        self,
+        system: str,
+        messages: list[ChatMessage],
+        cause: str,
+        hops: int,
+        calls: list[LlmCall],
+        tools: list[ToolOutcome],
+        modules: list[ModuleInfo],
+        note: str = SAY_IT,
     ) -> str:
-        """The reply came back without words: asked once more, with SAY_IT after the last message. A call it makes
-        then is not run (the turn's calls went through already). "" when it writes nothing again or the model fails:
-        the turn's calls stand, so a failure here is no failed turn."""
+        """The reply in words, asked for once more with `note` after the last message: when it came back without
+        words (SAY_IT), or when every round called a tool (LAST_STEP). "" when it writes nothing again, the model
+        fails, or the answer is no reply to send: text beside a call (a call then is not run, and its text leads
+        into it: "Let me look again."), or one saying something was saved or set that no call did (there is no
+        round left to ask again)."""
         try:
-            r = await self._plan(system, _noted(messages, SAY_IT), cause, hops)
+            r = await self._plan(system, _noted(messages, note), cause, hops)
         except (NoAnswer, Refused) as e:
             log.info("asked again for a reply in words, no answer: %s", e)
             return ""
         calls.append(LlmCall(model=r.model, usage=r.usage, cost_usd=r.cost_usd))
-        return r.text.strip()
+        text = r.text.strip()
+        if r.tool_calls:
+            log.info("asked for words only, it called %s: not sent", [c.name for c in r.tool_calls])
+            return ""
+        if _unbacked_claim(text, tools, modules) or _unbacked_reminder(text, tools):
+            log.info("asked for words only, it claims what no call did: not sent")
+            return ""
+        return text
 
     # ---- context -------------------------------------------------------------------------
 

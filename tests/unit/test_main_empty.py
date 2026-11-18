@@ -41,16 +41,16 @@ async def test_an_empty_first_answer_gets_the_note_after_hansens_message(w):
     assert "hello" in last["content"][0]["text"]
 
 
-async def test_a_call_made_on_the_second_ask_is_not_run(w):
+async def test_a_call_made_on_the_second_ask_is_not_run_nor_its_text_sent(w):
     w.llm_script = [
         call("remember", {"note": "hansen", "fact": "motorcycle broke down"}),
         say(""),
-        call("remember", {"note": "hansen", "fact": "motorcycle broke down"}, text="Saved."),
+        call("remember", {"note": "hansen", "fact": "motorcycle broke down"}, text="Let me save that."),
     ]
     await w.send("sense.chat", chat("my motorcycle broke down").data)
 
     assert len(w.remembered) == 1  # once
-    assert replies(w) == ["Saved."]
+    assert replies(w) == ["Saved to memory."]  # what the calls did
 
 
 async def test_still_empty_it_says_what_the_calls_did(w):

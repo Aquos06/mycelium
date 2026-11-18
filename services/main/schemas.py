@@ -169,6 +169,7 @@ class PlanTrace(Envelope):
     proposal: str | None = None  # the module proposed, when the turn ended in a proposal (its card is the ask)
     claim_check: bool = False  # a reply said something was saved that no `remember` did, so Main asked again
     empty_check: bool = False  # the reply came back without words, so Main asked once more
+    wrap_up: bool = False  # every round called a tool, so Main asked for the reply in words once more
     error: str | None = None
     latency_ms: int = 0
 

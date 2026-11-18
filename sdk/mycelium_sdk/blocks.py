@@ -423,6 +423,56 @@ def _fields(asked: list[FieldArg], keys: list[str], names: tuple[str, str] | Non
     return out
 
 
+def places(reply: Mapping[str, Any], kind: Kind) -> dict[str, list[str]]:
+    """Where in a module's reply a block of `kind` can find its data, by `path` ("" for the reply itself), with the
+    fields there as `build` names them: for a table or a chart each list (of records or of values) and each map
+    (names to values, or to records); for stats, details or a meter each object of named values, or a list of one.
+    At the top of the reply, and one level into an object that is none of those (a wrapper: {"week": {"total": 3,
+    "days": [...]}}). A key with a dot cannot be a path, so it is never offered."""
+    out: dict[str, list[str]] = {}
+
+    def add(path: str, value: Any) -> None:
+        if fields := _fields_at(path, value, kind):
+            out[path] = fields
+
+    data = {k: v for k, v in reply.items() if k != "ok"}
+    if not (len(data) == 1 and isinstance(next(iter(data.values())), Mapping | list)):  # not a wrapper: {"days": ...}
+        add("", data)
+    for key, value in data.items():
+        if "." in key:
+            continue
+        add(key, value)
+        if isinstance(value, Mapping) and key not in out:
+            for inner, deeper in value.items():
+                if "." not in inner:
+                    add(f"{key}.{inner}", deeper)
+    return out
+
+
+def _fields_at(path: str, value: Any, kind: Kind) -> list[str]:
+    """The fields a block of `kind` would find in `value` at `path`; [] when it is not data for one. The first 50
+    entries tell, as they do in `_keys`."""
+    if not value:
+        return []
+    if kind in (Kind.TABLE, Kind.CHART):
+        if isinstance(value, list):
+            head: Any = value[:50]
+            items = head
+        elif isinstance(value, Mapping):
+            head = dict(list(value.items())[:50])
+            items = list(head.values())
+        else:
+            return []
+        if all(isinstance(v, Mapping) for v in items) or not any(isinstance(v, Mapping | list) for v in items):
+            return _keys(_rows(head, _names(BlockSpec(kind=kind, path=path), value)))
+        return []
+    if isinstance(value, list) and len(value) == 1:
+        value = value[0]  # one record, as `_record` takes it
+    if isinstance(value, Mapping):
+        return [k for k, v in value.items() if k != "ok" and not isinstance(v, Mapping | list)]
+    return []
+
+
 # ---- building a block -------------------------------------------------------------------------------------
 
 
@@ -539,11 +589,22 @@ def _figures(args: BlockSpec, data: Any, fmt: Formatter, title: str, stats: bool
     return DetailsBlock(title=title, items=figures)
 
 
+def _gauge(record: Mapping[str, Any], goal: float | None) -> list[FieldArg]:
+    """A meter with no fields named: the record's one value, or its one number beside its goal (a number whose name
+    says goal or target: ml and goal_ml). A `goal` given wins over the data's: then only the value is taken."""
+    if len(record) == 1:
+        return [FieldArg(key=next(iter(record)))]
+    numbers = [k for k, v in record.items() if _number(v) is not None]
+    goals = [k for k in numbers if "goal" in k.lower() or "target" in k.lower()]
+    values = [k for k in numbers if k not in goals]
+    if len(values) != 1 or len(goals) > 1:
+        raise BlockError("a meter needs `fields`: the value, then the goal's field (or `goal`)")
+    return [FieldArg(key=values[0]), *(FieldArg(key=g) for g in goals if goal is None)]
+
+
 def _meter(args: BlockSpec, data: Any, fmt: Formatter, title: str) -> MeterBlock:
     record = _record(data) if not isinstance(data, int | float) else {"value": data}
-    if not args.fields and len(record) != 1:
-        raise BlockError("a meter needs `fields`: the value, then the goal's field (or `goal`)")
-    fields = _fields(args.fields, list(record)) if args.fields else [FieldArg(key=next(iter(record)))]
+    fields = _fields(args.fields, list(record)) if args.fields else _gauge(record, args.goal)
     value_field = fields[0]
     value = _number(_value(record, value_field.key))
     if value is None:
