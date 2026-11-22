@@ -11,9 +11,21 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from mycelium_sdk import RequestSpec
+from mycelium_sdk.views import WRITE_VERBS, is_write
+
 from .base import Tool, ToolContext
 
 NAME = r"^[a-z][a-z0-9_-]{0,40}$"  # a module or request name; also keeps the subject clean
+
+
+def may_write(action: str, spec: RequestSpec | None = None) -> bool:
+    """For a turn nobody asked for (a check-in), where a write must never happen: a request is a read only when it
+    declares so (`writes: false`), or when its name does not even begin with a write verb (`addexpense`,
+    `logwater` count as writes). A read named like a write is given up there; a write let through is not."""
+    if spec is not None and spec.writes is not None:
+        return spec.writes
+    return is_write(action) or any(action.startswith(v) for v in WRITE_VERBS)
 
 
 class AskModuleArgs(BaseModel):
@@ -43,6 +55,8 @@ async def ask_module(args: AskModuleArgs, ctx: ToolContext) -> dict[str, Any]:
         if args.action not in ctx.modules[args.module]:
             actions = ", ".join(ctx.modules[args.module]) or "none"
             return {"ok": False, "error": f"{args.module} has no request {args.action!r}; its requests: {actions}"}
+    if ctx.read_only and may_write(args.action):
+        return {"ok": False, "error": f"{args.module}.{args.action} changes data: nobody asked for it now, only read"}
     reply = await ctx.bus.request(f"rpc.mod.{args.module}.{args.action}", args.args, timeout=10.0)
     if reply.get("ok") is not False:
         ctx.turn.replies[f"{args.module}.{args.action}"] = reply  # what `show` may put on screen

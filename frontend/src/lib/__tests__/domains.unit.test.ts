@@ -43,6 +43,11 @@ describe("domains", () => {
     expect(t("trace.wake", wake)).toBe("Looked around: told you 1, held 1, dropped 1");
     expect(t("trace.wake", { reason: "notice", items: [] })).toBe("Looked around: nothing to say");
     expect(t("trace.wake", { reason: "reminder", items: [{ kind: "reminder", text: "Time to pay the rent.", verdict: "sent" }] })).toBe("Reminded you: Time to pay the rent.");
+    const checkin = (verdict: string, text: string) => t("trace.wake", { reason: "checkin", items: [{ kind: "checkin", text, verdict }] });
+    expect(checkin("sent", "Nothing in expenses today: anything to log?")).toBe("Checked in: Nothing in expenses today: anything to log?");
+    expect(checkin("dropped: nothing worth saying", "nothing is open")).toBe("Checked in and stayed quiet: nothing is open");
+    expect(checkin("held: quiet hours", "the 21:00 check-in")).toBe("Skipped the 21:00 check-in (quiet hours)");
+    expect(t("trace.plan", { checkin: "21:00", tools: [{ name: "stay_quiet" }] })).toBe("Looked in for the 21:00 check-in and stayed quiet");
     expect(t("sys.module.deployed", { name: "hello", image: "img" })).toBe("Started hello");
     expect(t("sys.module.stopped", { name: "hello" })).toBe("Stopped hello");
     expect(t("sys.module.removed", { name: "garden", data: "mycelium-data-garden-v0.1.0-removed-1" })).toBe("Deleted garden");

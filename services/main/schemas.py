@@ -170,6 +170,7 @@ class PlanTrace(Envelope):
     claim_check: bool = False  # a reply said something was saved that no `remember` did, so Main asked again
     empty_check: bool = False  # the reply came back without words, so Main asked once more
     wrap_up: bool = False  # every round called a tool, so Main asked for the reply in words once more
+    checkin: str | None = None  # a check-in's time (HH:MM): a turn Main started, with no message from Hansen
     error: str | None = None
     latency_ms: int = 0
 

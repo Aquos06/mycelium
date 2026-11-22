@@ -247,3 +247,47 @@ async def test_a_cases_reminders_and_the_suites_clock_reach_main(suite):
     system = p.provider.requests[0].system  # type: ignore[attr-defined]
     assert "Today is Tuesday 2026-11-03 (Asia/Taipei)." in system and system.endswith("\n\nIt is 14:00 now.")
     assert "- rent01 Fri 2026-11-06 09:00, every month: Time to pay the rent." in system
+
+
+# ---- check-ins ---------------------------------------------------------------------------------------------
+
+
+def test_twenty_check_in_cases_that_speak_or_stay_quiet(suite):
+    checkins = [c for c in suite.cases if c.checkin is not None]
+    assert len(checkins) >= 20 and {c.expect for c in checkins} == {"speak", "quiet"}
+
+
+def test_a_case_is_a_message_or_a_check_in():
+    with pytest.raises(ValueError, match="a `msg` or a `checkin`"):
+        Case(id="x", expect="none")
+    with pytest.raises(ValueError, match="expects speak or quiet"):
+        Case(id="x", checkin="21:00", expect="remember")
+
+
+async def test_a_check_in_case_runs_main_s_own_check_in_and_is_scored_on_speaking(suite):
+    today = date(2026, 11, 3)
+    spoke = planner(
+        call("ask_module", module="spending", action="summary"), say("Nothing in spending today: anything?")
+    )
+    row = await run_case(suite, case(suite, "ci-eve-nothing-logged"), spoke, default_tools(), today)
+    assert (row.passed, row.got, row.tools, row.invalid) == (True, "speak", ["ask_module"], 0)
+    request = spoke.provider.requests[0]  # type: ignore[attr-defined]
+    assert {t.name for t in request.tools} == {"recall", "ask_module", "show", "stay_quiet"}
+    assert "at 21:00" in request.system
+
+    quiet = planner(call("stay_quiet", why="today's spending is logged"))
+    row = await run_case(suite, case(suite, "ci-eve-logged-today"), quiet, default_tools(), today)
+    assert (row.passed, row.got, row.invalid) == (True, "quiet", 0)
+
+    missed = planner(call("stay_quiet", why="nothing"))
+    row = await run_case(suite, case(suite, "ci-eve-said-no-spending"), missed, default_tools(), today)
+    assert row.passed  # quiet was right: Hansen said so in the chat it goes to
+    history = missed.provider.requests[0].messages  # type: ignore[attr-defined]
+    assert "no spending today" in str(history[0].content)
+
+
+async def test_a_check_in_that_decided_nothing_passes_neither_class(suite):
+    today = date(2026, 11, 3)
+    empty = planner(say(""), say(""))  # asked once more for a choice: empty again
+    row = await run_case(suite, case(suite, "ci-eve-logged-today"), empty, default_tools(), today)
+    assert (row.passed, row.got) == (False, "undecided")  # quiet in the chat, but not a choice

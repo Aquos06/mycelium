@@ -11,6 +11,7 @@ delete.py    delete_module         -> the same, to delete a module the builder g
 lookup.py    what the supervisor and the builder say of one module, for change_module and delete_module
 show.py      show                  -> a module's data this turn as a block under the reply (../blocks.py)
 remind.py    remind, cancel_reminder -> a reminder kept in Main's KV (../reminders.py), sent by Main's loop
+quiet.py     stay_quiet            -> a check-in's "nothing to say" (check-ins only, checkin_tools)
 
 Adding a tool is one argument model, one async handler and one Tool(...) in the registry.
 """
@@ -20,8 +21,9 @@ from .base import Tool, ToolContext, ToolOutcome, ToolRegistry, ToolSpec, input_
 from .change import CHANGE_MODULE, ChangeArgs
 from .delete import DELETE_MODULE, DeleteArgs
 from .memory import RECALL, REMEMBER, NoteType, RecallArgs, RecallPayload, RememberArgs, RememberPayload
-from .modules import ASK_MODULE, AskModuleArgs
+from .modules import ASK_MODULE, AskModuleArgs, may_write
 from .propose import PROPOSE_MODULE, ProposeArgs
+from .quiet import STAY_QUIET, StayQuietArgs
 from .remind import CANCEL_REMINDER, REMIND, CancelReminderArgs, RemindArgs
 from .show import SHOW, ShowArgs
 
@@ -41,12 +43,15 @@ __all__ = [
     "RemindArgs",
     "CancelReminderArgs",
     "ShowArgs",
+    "StayQuietArgs",
     "NoteType",
     "RecallArgs",
     "RecallPayload",
     "RememberArgs",
     "RememberPayload",
     "default_tools",
+    "checkin_tools",
+    "may_write",
 ]
 
 
@@ -54,3 +59,9 @@ def default_tools() -> ToolRegistry:
     return ToolRegistry.of(
         REMEMBER, RECALL, ASK_MODULE, SHOW, ASK, PROPOSE_MODULE, CHANGE_MODULE, DELETE_MODULE, REMIND, CANCEL_REMINDER
     )
+
+
+def checkin_tools() -> ToolRegistry:
+    """A check-in's: it looks (memory, a module's numbers, read only), may put them on screen, or stays quiet. It never
+    writes memory, sets a reminder or offers a module: nobody asked."""
+    return ToolRegistry.of(RECALL, ASK_MODULE, SHOW, STAY_QUIET)

@@ -77,7 +77,7 @@ modules:
         params: {year: optional number}
         returns: {books: list}
     reply: {id: 3, books: [{title: Project Hail Mary, author: Andy Weir, finished: "2026-10-12"}]}
-  spending:  # a grown tracker whose replies are worth looking at: entries, totals by category and by day
+  spending: &spending  # a grown tracker whose replies are worth looking at: entries, totals by category and by day
     purpose: Tracks Hansen's spending, one entry per expense, with totals by category and by day.
     grown: true
     requests:
@@ -107,7 +107,7 @@ modules:
         - {day: "2026-10-31", amount: 520, category: transport, description: taxi}
         - {day: "2026-10-31", amount: 460, category: food, description: hotpot}
         - {day: "2026-10-30", amount: 240, category: other, description: haircut}
-  water:
+  water: &water
     purpose: Logs the water Hansen drinks, in ml, against his daily goal, and answers today and the last days.
     grown: true
     requests:
@@ -128,6 +128,35 @@ modules:
         - {day: "2026-11-01", ml: 900}
         - {day: "2026-11-02", ml: 1700}
         - {day: "2026-11-03", ml: 1500}
+  spending-today:  # spending with entries today (2026-11-03): nothing to ask about tonight
+    <<: *spending
+    name: spending
+    reply:
+      total: 530
+      count: 2
+      by_category: {food: 410, coffee: 120}
+      by_day: [{day: "2026-11-03", total: 530}]
+      expenses:
+        - {day: "2026-11-03", amount: 120, category: coffee, description: latte}
+        - {day: "2026-11-03", amount: 410, category: food, description: lunch with the team}
+  spending-none-today:  # spending with nothing today: every request answers as if asked about today
+    <<: *spending
+    name: spending
+    reply:
+      from: "2026-11-03"
+      to: "2026-11-03"
+      total: 0
+      count: 0
+      by_category: {}
+      by_day: []
+      expenses: []
+  water-met:  # water with today's goal reached
+    <<: *water
+    name: water
+    reply:
+      ml: 2150
+      goal_ml: 2000
+      by_day: [{day: "2026-11-02", ml: 1700}, {day: "2026-11-03", ml: 2150}]
   steps:  # declares its views: `show` can name one, and Main gets the data
     purpose: Counts Hansen's steps per day from his phone, against his daily goal.
     grown: true
@@ -203,6 +232,21 @@ notes:
     excerpt: |-
       Hansen's personal assistant system: services on a NATS bus, modules grown from specs.
       - 2026-11-02 the builder grows a module from a spec
+  dentist-today:
+    note: hansen.md
+    why: dated 2026-11-03
+    excerpt: |-
+      - 2026-11-03 dentist appointment at 16:00, Dr. Lin's clinic on Anhe Road
+  flight-tomorrow:
+    note: hansen.md
+    why: dated 2026-11-04
+    excerpt: |-
+      - 2026-11-04 flight to Tokyo at 07:10 from Taoyuan T2, for the conference
+  mei-birthday:
+    note: people/mei.md
+    why: Mei's birthday is November 3
+    excerpt: |-
+      Friend from the climbing gym, lives in [[taipei]]. Birthday: November 3.
   expense-log:
     note: things/expense-log.md
     why: scored 0.48 for the question
@@ -218,6 +262,9 @@ reminders:  # set before a case's message (its `reminders`), by id; `at` is on H
   invc06: {text: Send the invoice to Acme., at: "2026-11-05T10:00:00"}
   water7: {text: Water the plants., at: "2026-11-07T10:00:00", repeat: weekly}
   zh0008: {text: 打電話給媽媽。, at: "2026-11-04T09:00:00"}
+  dent09: {text: "Leave for the dentist: 16:00, Anhe Road.", at: "2026-11-03T15:30:00"}
+  airp10: {text: "Leave for the airport: the flight to Tokyo is at 07:10.", at: "2026-11-04T05:00:00"}
+  trsh11: {text: Take out the trash., at: "2026-11-03T21:30:00"}
 
 cases:
   # ---- remember: a durable fact, or an explicit "remember" -------------------------------------------
@@ -1513,3 +1560,115 @@ cases:
   - id: rmd-nothing-set
     msg: do I have any reminders?
     expect: none
+
+  # ---- check-ins: no message; at 08:30 or 21:00 Main writes one (speak) or stays quiet (quiet) ----------------
+  # evening: what is still open today, what comes first tomorrow
+  - id: ci-eve-nothing-logged  # a daily tracker with nothing today: ask
+    checkin: "21:00:00"
+    expect: speak
+    modules: [spending-none-today]
+  - id: ci-eve-logged-today
+    checkin: "21:00:00"
+    expect: quiet
+    modules: [spending-today]
+  - id: ci-eve-water-short  # 1,500 of 2,000 ml, three hours left
+    checkin: "21:00:00"
+    expect: speak
+    modules: [water]
+  - id: ci-eve-water-met
+    checkin: "21:00:00"
+    expect: quiet
+    modules: [water-met]
+  - id: ci-eve-said-no-spending  # Hansen said so today already
+    checkin: "21:00:00"
+    expect: quiet
+    modules: [spending-none-today]
+    history:
+      - {role: user, text: "no spending today, stayed home all day"}
+      - {role: assistant, text: "Got it, nothing to log today."}
+  - id: ci-eve-climbing-only  # logged now and then: nothing today is no news
+    checkin: "21:00:00"
+    expect: quiet
+    modules: [climbing]
+  - id: ci-eve-hello-only
+    checkin: "21:00:00"
+    expect: quiet
+    modules: [hello]
+  - id: ci-eve-nothing-at-all
+    checkin: "21:00:00"
+    expect: quiet
+    modules: []
+  - id: ci-eve-flight-tomorrow  # an early plan tomorrow, no reminder for it
+    checkin: "21:00:00"
+    expect: speak
+    modules: []
+    pack: [flight-tomorrow]
+  - id: ci-eve-flight-reminded  # the reminder will say it
+    checkin: "21:00:00"
+    expect: quiet
+    modules: []
+    pack: [flight-tomorrow]
+    reminders: [airp10]
+  - id: ci-eve-water-told-already
+    checkin: "21:00:00"
+    expect: quiet
+    modules: [water]
+    history:
+      - {role: user, text: "how's my water today?"}
+      - {role: assistant, text: "1,500 ml so far, 500 to go before your 2 l."}
+  - id: ci-eve-zh-nothing-logged
+    checkin: "21:00:00"
+    expect: speak
+    modules: [spending-none-today]
+    history:
+      - {role: user, text: 今天好累}
+      - {role: assistant, text: 辛苦了，早點休息。}
+  - id: ci-eve-trash-tonight  # a reminder comes at 21:30 by itself
+    checkin: "21:00:00"
+    expect: quiet
+    modules: []
+    reminders: [trsh11]
+  # morning: the day ahead
+  - id: ci-mor-dentist
+    checkin: "08:30:00"
+    expect: speak
+    modules: []
+    pack: [dentist-today]
+  - id: ci-mor-dentist-reminded
+    checkin: "08:30:00"
+    expect: quiet
+    modules: []
+    pack: [dentist-today]
+    reminders: [dent09]
+  - id: ci-mor-nothing  # numbers this early mean little
+    checkin: "08:30:00"
+    expect: quiet
+    modules: [spending, water]
+    pack: [hansen]
+  - id: ci-mor-past-plan  # a lunch last week is no news today
+    checkin: "08:30:00"
+    expect: quiet
+    modules: []
+    pack: [jason]
+  - id: ci-mor-birthday
+    checkin: "08:30:00"
+    expect: speak
+    modules: []
+    pack: [mei-birthday]
+  - id: ci-mor-steps
+    checkin: "08:30:00"
+    expect: quiet
+    modules: [steps]
+  - id: ci-mor-meeting-moved  # said yesterday, about today
+    checkin: "08:30:00"
+    expect: speak
+    modules: []
+    history:
+      - {role: user, text: "the meeting with kevin moved to tomorrow at 10", day: 2026-11-02}
+      - {role: assistant, text: "Got it: the meeting with Kevin is tomorrow at 10.", day: 2026-11-02}
+  - id: ci-mor-gym-reminded  # the gym reminder at 18:00 covers it
+    checkin: "08:30:00"
+    expect: quiet
+    modules: []
+    pack: [hansen]
+    reminders: [gym002]

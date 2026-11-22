@@ -59,7 +59,8 @@ RULES = """\
   are the builder's and are put back after you.
 - The builder sets the manifest's name, version, permissions (no network, no actuation) and resources.
 - Every request is described in manifest.yaml: `description`, `params` and `returns`, each field `name: type`
-  (`optional <type>` when it may be left out). Main calls the module from these alone; the build fails without.
+  (`optional <type>` when it may be left out), and `writes: true` on one that changes the data or `writes: false`
+  on one that only reads. Main calls the module from these alone; the build fails without a description.
 - Declare two to four `views` in manifest.yaml (CONTRACT.md): how Hansen sees the data on the module's page and in
   the chat. Each reads with a request that only reads, takes only the args that request takes, and its `path` is a
   field that request returns; the build fails on one that does not fit.

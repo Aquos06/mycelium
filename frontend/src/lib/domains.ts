@@ -48,6 +48,7 @@ const TOOL_WORDS: Record<string, string> = {
   "sys.list": "checked the modules",
   "sys.health": "checked the modules' health",
   ask: "asked you",
+  stay_quiet: "stayed quiet",
 };
 const toolWords = (name: string) => TOOL_WORDS[name] ?? (name.startsWith("mod.") ? `asked ${name.split(".")[1]}` : `used ${name}`);
 
@@ -90,6 +91,12 @@ export interface Reading {
 function readWake(d: Record<string, unknown>): string {
   const items = Array.isArray(d.items) ? (d.items as Record<string, unknown>[]) : [];
   if (d.reason === "reminder") return `Reminded you: ${str(items[0]?.text)}`;
+  if (d.reason === "checkin") {
+    const verdict = String(items[0]?.verdict ?? "");
+    if (verdict === "sent") return `Checked in: ${str(items[0]?.text)}`;
+    if (verdict === "dropped: nothing worth saying") return `Checked in and stayed quiet: ${str(items[0]?.text)}`;
+    return `Skipped ${str(items[0]?.text) || "a check-in"} (${verdict.split(": ").pop() || verdict})`;
+  }
   const told = items.filter((i) => i.verdict === "sent").length;
   const held = items.filter((i) => String(i.verdict ?? "").startsWith("held")).length;
   const dropped = items.length - told - held;
@@ -123,7 +130,8 @@ export function read(e: BusEvent, raw = false): Reading {
       return { text: `Told you ${quote(d.text)}`, meta: `out.notify · ${source}` };
     case sub === "trace.plan": {
       const tools = (d.tools as { name: string }[] | undefined)?.map((t) => toolWords(t.name)) ?? [];
-      const text = d.error ? `Could not answer: ${str(d.error, 90)}` : tools.length ? `Planned a reply and ${tools.join(", ")}` : "Planned a reply";
+      const planned = d.checkin ? `Looked in for the ${str(d.checkin)} check-in` : "Planned a reply";
+      const text = d.error ? `Could not answer: ${str(d.error, 90)}` : tools.length ? `${planned} and ${tools.join(", ")}` : planned;
       return {
         text,
         meta: `trace.plan · ${d.rounds ?? 0} round${d.rounds === 1 ? "" : "s"} · ${money(d.cost_usd)} · ${d.latency_ms ?? 0} ms`,

@@ -112,7 +112,7 @@ async def test_list_serves_what_each_request_takes(sup, tmp_path):
     await bus.request("rpc.sys.deploy", {"name": "alpha"})
     manifest = (await bus.request("rpc.sys.list", {}))["modules"][0]["manifest"]
     assert manifest["requests"] == ["add", "total"]
-    assert manifest["request_specs"]["add"] == {**add, "returns": {}}
+    assert manifest["request_specs"]["add"] == {**add, "returns": {}, "writes": None}  # None: its name tells
     assert manifest["request_specs"]["total"]["description"] == "Totals, all time by default."
 
 

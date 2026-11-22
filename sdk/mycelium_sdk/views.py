@@ -34,18 +34,23 @@ from pydantic import Field, field_validator
 from .blocks import BlockSpec
 
 if TYPE_CHECKING:
-    from .manifest import Manifest
+    from .manifest import Manifest, RequestSpec
 
 VIEW_ID = re.compile(r"^[a-z][a-z0-9_]{0,40}\Z")
 DATE_WORD = re.compile(r"^\$(today|yesterday|week_start|month_start|year_start|(\d{1,3})_days_ago)\Z")
 WRITE_VERBS = {
     "add", "log", "record", "save", "store", "set", "update", "put", "track", "delete", "remove", "clear", "reset",
     "drop", "create", "insert", "edit", "undo", "import", "send", "start", "stop", "run", "trigger", "write", "mark",
+    "complete", "finish", "cancel", "move", "rename", "archive", "restore", "toggle", "increment", "decrement",
+    "append", "upsert", "patch", "post", "submit", "upload", "sync", "purge", "wipe", "replace",
 }  # fmt: skip
 
 
-def is_write(action: str) -> bool:
-    """`add`, `log_water`, `delete-entry`: a request whose name says it changes something."""
+def is_write(action: str, spec: RequestSpec | None = None) -> bool:
+    """A request that changes something: as its description declares (`writes`), or else as its name says (`add`,
+    `log_water`, `delete-entry`)."""
+    if spec is not None and spec.writes is not None:
+        return spec.writes
     return re.split(r"[-_]", action)[0] in WRITE_VERBS
 
 
@@ -101,9 +106,9 @@ def problem(manifest: Manifest, view_id: str, view: View) -> str | None:
         return f"view {view_id!r}: name it in lowercase letters, digits and _"
     if view.request not in manifest.requests:
         return f"view {view_id!r}: no request {view.request!r}; its requests: {', '.join(manifest.requests) or 'none'}"
-    if is_write(view.request):
-        return f"view {view_id!r}: {view.request!r} changes data; a view only reads (a page that opens changes nothing)"
     spec = manifest.request_specs.get(view.request)
+    if is_write(view.request, spec):
+        return f"view {view_id!r}: {view.request!r} changes data; a view only reads (a page that opens changes nothing)"
     if spec is None:
         return None
     if unknown := sorted(set(view.args) - set(spec.params)):
@@ -133,7 +138,7 @@ def readable(manifest: Manifest) -> list[str]:
     out = []
     for action in manifest.requests:
         spec = manifest.request_specs.get(action)
-        if spec is None or action == "health" or is_write(action):
+        if spec is None or action == "health" or is_write(action, spec):
             continue
         if all(t.startswith("optional") for t in spec.params.values()):
             out.append(action)
