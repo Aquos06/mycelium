@@ -12,7 +12,8 @@ Each wake gathers what it could say (an Item) and the policy decides each one in
     expired   a notice held longer than 10 hours: dropped, it was about a moment that has passed
     sent      an alert, at most one per module an hour: told even in quiet hours, mid-conversation or over the budget
     repeat    the same thing was told already: the same summary from the same module that day (any error the SDK
-              reported for a module counts as one a day, since an exception's text changes each time): dropped
+              reported for a module counts as one a day, since an exception's text changes each time), or the same
+              `once` of a module's type (a period, an entry: told once, remembered for weeks): dropped
     held      quiet hours, a chat in progress in that thread, or the day's budget (MAIN_WAKE_BUDGET) spent: tried
               again at the next wake
     sent      none of the above
@@ -43,6 +44,7 @@ from mycelium_sdk.observe import ERRORS
 
 STATE_KEY = kv_key("wake", "state")
 HOME_KEY = kv_key("wake", "home")
+ONCE = "once"  # the key of an observation told once by its `once` (a period, an entry)
 MAIN = "main"  # the source of what Main itself noticed (a module down, a card waiting): never muted
 CHECKIN = (
     "main.checkin"  # the source of a check-in: two 👎 on them in a week mute them like a module (no module has a dot)
@@ -86,21 +88,28 @@ class Item(BaseModel):
     text: str
     since: str  # when it became true (an observation: when it was made)
     alert: bool = False
+    once: bool = False  # keyed by the observation's `once`: the same news whatever its words, kept for weeks
     ref: str | None = None  # the observation's id, the proposal's id, the module's name
     channel: str | None = None  # where it goes: a card goes to its own thread; None: home
     thread: str | None = None
 
     @classmethod
     def of(cls, obs: Observation, zone: tzinfo) -> Item:
-        """The same summary from a module on the same day is one thing, and so are the SDK's error reports for it."""
-        what = "" if obs.type in ERRORS else "/" + hashlib.sha1(obs.summary.encode()).hexdigest()[:12]
+        """The same `once` of a module's type is one thing, whatever it says and whenever; without one, the same
+        summary from a module on the same day is, and so are the SDK's error reports for it."""
+        if obs.once:
+            key = f"{ONCE}/{obs.source}/{obs.type}/{obs.once}"
+        else:
+            what = "" if obs.type in ERRORS else "/" + hashlib.sha1(obs.summary.encode()).hexdigest()[:12]
+            key = f"observe/{obs.source}/{obs.type}{what}/{local_day(obs.ts, zone)}"
         return cls(
             kind=ItemKind.OBSERVE,
-            key=f"observe/{obs.source}/{obs.type}{what}/{local_day(obs.ts, zone)}",
+            key=key,
             source=obs.source,
             text=f"{obs.source}: {one_line(obs.summary, SUMMARY_SHOWN)}",
             since=obs.ts,
             alert=obs.severity_hint == Severity.ALERT,
+            once=bool(obs.once),
             ref=obs.id,
         )
 
@@ -138,6 +147,7 @@ class WakePolicy(BaseModel):
     hold_s: float = 10 * 3600.0
     busy_s: float = 300.0  # Hansen wrote in the thread this recently: not now
     repeat_s: float = 20 * 3600.0
+    once_s: float = 40 * 86400.0  # a `once` told is remembered this long: a month's news is not told again that month
     alerts_per_hour: int = 1
     mute_after: int = 2  # 👎 in a week
     vote_days: int = 7
@@ -157,7 +167,11 @@ class WakePolicy(BaseModel):
         day = now.astimezone(zone).date().isoformat()
         if state.day != day:
             state.day, state.sent = day, 0
-        state.told = {k: t for k, t in state.told.items() if age_s(t, now) < self.repeat_s}
+        state.told = {
+            k: t
+            for k, t in state.told.items()
+            if age_s(t, now) < (self.once_s if k.startswith(f"{ONCE}/") else self.repeat_s)
+        }
         state.alerts = {m: k for m, ts in state.alerts.items() if (k := [t for t in ts if age_s(t, now) < 3600])}
         week = self.vote_days * 86400
         state.downvotes = {
@@ -187,6 +201,8 @@ class WakePolicy(BaseModel):
             return Verdict.MUTED
         if item.kind == ItemKind.OBSERVE and age_s(item.since, now) > self.hold_s:
             return Verdict.EXPIRED
+        if item.once and item.key in state.told:
+            return Verdict.REPEAT  # the same news, alert or not
         if item.alert and not votes and len(state.alerts.get(item.source, [])) < self.alerts_per_hour:
             return Verdict.SENT  # an event, not a state: the same words an hour later are news again
         if item.key in state.told:

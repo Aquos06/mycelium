@@ -359,7 +359,7 @@ Everything the system grows. One container each, one job each, contract in `temp
 |---|---|
 | Owns | its own data in `/data` (SQLite), its handlers, its tests, later its UI panel |
 | Listens | declared `subscribes` |
-| Publishes | `mod.<name>.<event>` (declared), `brain.observe` summaries (info, notice or alert: how loud) |
+| Publishes | `mod.<name>.<event>` (declared), `brain.observe` summaries (info, notice or alert: how loud; a notice or alert only for what its spec asks, with `once` naming the same news: CONTRACT.md §6) |
 | Answers | `rpc.mod.<name>.<action>` (declared), `health` automatic |
 | Kinds | **plain** (re-created from scratch), **wrap** (thin module + backend container running open software), **bridge** (hand-written host adapter, e.g. Home Assistant → `sense.iot`) |
 
@@ -531,7 +531,9 @@ module the registry says should run whose container does not, at two looks in a 
 again), and a card to build or change a module that has waited 3 to 14 days without a tap (shown once more, in its
 thread; a deletion is never pushed). Each thing it could say is decided in code, never by the model: dropped when
 two of its module's messages got 👎 this week, when a notice has waited over 10 hours, or when the same thing was
-told already (the same summary from the module that day; the SDK's error reports for a module, one a day); told at
+told already (the same summary from the module that day; the SDK's error reports for a module, one a day; or the
+same `once` of a module's type, a period or an entry, remembered 40 days, so a module observes it each time it is
+true and one dropped for waiting too long is told the next time); told at
 once when it is an alert within its module's one an hour (one 👎 makes its alerts notices); otherwise held during quiet hours (`MAIN_QUIET_HOURS`, 23:00-08:00), while Hansen is in a conversation there (a turn
 running, or a message in the last 5 minutes) and once the day's budget is spent (`MAIN_WAKE_BUDGET`, 3, alerts
 included), and told at the first wake that lets it through. A module's notice is told as `<module>: <summary>` in

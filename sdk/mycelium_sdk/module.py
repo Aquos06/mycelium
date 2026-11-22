@@ -152,10 +152,17 @@ class Module:
         await self.bus.publish(self.manifest.event_subject(event), data)
 
     async def observe(
-        self, type: str, summary: str, data: dict[str, Any] | None = None, severity: str = "info"
+        self,
+        type: str,
+        summary: str,
+        data: dict[str, Any] | None = None,
+        severity: str = "info",
+        once: str | None = None,
     ) -> None:
         """Tell Main something happened (observe.py): `info` is for the record, `notice` is told to the user at the
-        next good moment, `alert` interrupts the user now. `summary` is what the user reads: one short sentence."""
+        next good moment, `alert` interrupts the user now. `summary` is what the user reads: one short sentence.
+        `once` is what makes it the same news (a period, an entry): Main tells it once, so observe it each time it
+        is true."""
         if severity not in SEVERITIES:
             raise ValueError(f"severity must be one of {SEVERITIES}")
         kept = json.loads(json.dumps(data or {}, default=str))  # anything goes: a value JSON can't hold is its text
@@ -165,6 +172,7 @@ class Module:
             summary=summary,
             severity_hint=Severity(severity),
             data=kept if isinstance(kept, dict) else {"value": kept},
+            once=once,
         )
         await self.bus.publish(OBSERVE, observation)
 
@@ -238,6 +246,15 @@ class Module:
     async def _loop(self, seconds: int, fn: IntervalHandler) -> None:
         while True:
             await asyncio.sleep(seconds)
+            await self._hook(fn)
+
+    async def run_at(self, hhmm: str) -> None:
+        """Run the handlers of a daily time now, as the clock would (tests: `await mod.run_at("21:00")`)."""
+        at = time.fromisoformat(hhmm)
+        handlers = [fn for t, fn in self._daily if t == at]
+        if not handlers:
+            raise ContractViolation(f"no @mod.at({hhmm!r}) handler")
+        for fn in handlers:
             await self._hook(fn)
 
     async def _each_day(self, at: time, fn: IntervalHandler) -> None:
