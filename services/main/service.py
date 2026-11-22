@@ -392,7 +392,9 @@ class MainService:
             log.warning("an observation claims to be Main's (%s): ignored", obs.type)
             return
         async with self._wake_lock:
-            state = await self.wakes.load()
+            state = self.wake.tidy(await self.wakes.load(), self.clock(), self.zone)
+            if obs.once and Item.of(obs, self.zone).key in state.told:
+                return  # the same news, told already: a module observes it each time it is true
             if not self.wake.hold(state, obs, self.zone):
                 return  # the same thing is waiting already
             await self.wakes.save(state)

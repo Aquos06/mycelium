@@ -67,16 +67,35 @@ Do not create files outside this folder. Do not edit CONTRACT.md.
 5. **No network access** unless `permissions.network: true` (and then justify it in `purpose`).
    **No real-world actions** (home devices, messages, money) unless `permissions.actuation: true`;
    such modules need human approval before deploy.
-6. **Observe what matters, at the right loudness.** `mod.observe(type, summary, data, severity)` tells Main, and
-   the `summary` is what the user reads, as you wrote it: one short sentence addressed to the user.
-   - `info`: for the record (an entry added, a total changed). Nobody is told. Most observations are this.
-   - `notice`: worth telling the user at the next good moment ("Nothing logged today: anything to add?", "Spending this
-     week is twice last week's"). Main tells it unless it is night, the user is mid-conversation, or has had enough
-     messages today. The same summary twice in a day is told once.
-   - `alert`: worth interrupting the user now, even at night (a door opened at 3am). One an hour per module; more are told
-     as notices. Never for anything routine.
-   A check the user would want once a day ("nothing logged by evening") is a `hooks.daily` time whose handler looks
-   at the data and observes a `notice` only when there is something to say.
+6. **Observe what matters; tell the user only what the spec asks for.** `mod.observe(type, summary, data,
+   severity, once)` tells Main, and the `summary` is what the user reads, as you wrote it.
+   - **How loud.** `info`: for the record (an entry added, a total changed); nobody is told, and the nightly memory
+     and the event feed read it. `notice`: worth telling the user at the next good moment. `alert`: worth
+     interrupting the user now, even at night (a door opened at 3am); one an hour per module, more are told as
+     notices; never for money, goals or anything routine.
+   - **Only what the spec asks.** A `notice` or an `alert` is for what the spec says the user wants to hear about: a
+     budget passed, a goal missed, something expected that did not come, an expense over a line. A spec that asks for
+     none of that gets none.
+   - **Its shape.** `type` is a stable snake_case name of the kind of news (`budget_passed`), the same each time.
+     `summary` is one short sentence to the user with the numbers and the period, since Main tells it as
+     `<module>: <summary>`: "NT$31,200 spent in November, over your NT$30,000 budget." `data` holds the numbers
+     behind it: `{"spent": 31200, "budget": 30000, "month": "2026-11"}`.
+   - **`once`: what makes it the same news.** For something that stays true, the period: `once="2026-11"`. For an
+     event, the entry: `once=f"expense-{id}"`. Main tells one `once` of a type once and remembers it for weeks, so do
+     not keep your own record of what was told: observe it **each time you find it true** (after every `add` while
+     the month is over budget). Main waits for a good moment (not at night, not mid-conversation, not over the
+     day's few messages) but lets go of a notice held about 10 hours; the next time you observe it, it is told then.
+   - **Check where it can change.** After anything that moves the total or the line: `add` and `delete`, and the
+     request that sets the line. Count an entry in its own period (an expense dated in October counts toward
+     October, and the summary says "in October").
+   - **The line.** One the spec gives ("over 3000") is the default; one the user should be able to change is kept
+     by a request that writes (`set_budget {amount: number}`, `writes: true`; its reply says what is set now) and
+     read by one that reads. With no line at all, it tells nothing.
+   - **Something that did not happen by a time** ("nothing logged by evening") is a `hooks.daily` time whose handler
+     looks at the data and observes a `notice` (with `once` = the day) only when there is something to say.
+   - **Test each one.** In tests, `bus.events("brain.observe")` lists `(subject, data)` pairs; a notice's data has
+     `type`, `summary`, `severity_hint` ("notice") and `once`. Test that it is observed when true and not before,
+     with the `once` you meant. `await mod.run_at("21:00")` runs that daily time's handlers now.
 7. **Request handlers return a dict.** The SDK adds `ok: true`. Raise an exception for errors;
    the SDK turns it into `{"ok": false, "error": ...}`. Validate inputs.
 8. **Handlers must not crash the module.** The SDK catches exceptions, but write defensive code.

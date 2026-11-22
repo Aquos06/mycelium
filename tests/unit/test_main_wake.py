@@ -579,3 +579,49 @@ async def test_the_timer_runs_on_its_own(w):
         await asyncio.sleep(0.01)
     await svc.stop()
     assert calls[:2] == ["timer", "timer"]
+
+
+# ---- `once`: the same news, whatever its words ---------------------------------------------------------------
+
+
+async def test_the_same_once_is_told_once_whatever_it_says_and_whenever(w):
+    await write(w)
+    await observe(w, "NT$31,200 spent in November, over your budget.", type="budget_passed", once="2026-11")
+    w.clock.now = T0 + timedelta(days=3)
+    await observe(w, "NT$32,050 spent in November, over your budget.", type="budget_passed", once="2026-11")
+    assert [o["text"] for o in unasked(w)] == ["expenses: NT$31,200 spent in November, over your budget."]
+    assert len(traces(w)) == 1  # the second never woke Main
+    await observe(w, "NT$30,400 spent in December, over your budget.", type="budget_passed", once="2026-12")
+    assert len(unasked(w)) == 2
+
+
+async def test_a_once_let_go_after_waiting_too_long_is_told_the_next_time(w):
+    await write(w)
+    state = await w.svc.wakes.load()
+    state.day, state.sent = T0.date().isoformat(), 3  # the day's messages are spent: it waits
+    await w.svc.wakes.save(state)
+    await observe(w, "Over budget.", type="budget_passed", once="2026-11")
+    w.clock.now = (T0 + timedelta(days=1)).replace(hour=9)  # a new day's budget, but held 21 hours: let go
+    await w.svc.wake_up("timer")
+    assert unasked(w) == []
+    await observe(w, "Still over budget.", type="budget_passed", once="2026-11")  # the module finds it true again
+    assert [o["text"] for o in unasked(w)] == ["expenses: Still over budget."]
+
+
+async def test_an_alert_with_a_once_is_told_once(w):
+    await write(w)
+    for _ in range(2):
+        await observe(w, "Door opened at 03:00.", severity="alert", type="door", once="door-41")
+        w.clock.now += timedelta(hours=2)
+    assert len(unasked(w)) == 1
+
+
+def test_a_once_is_remembered_for_weeks_and_then_let_go():
+    policy, state = WakePolicy(), WakeState()
+    state.told = {
+        "once/expenses/budget_passed/2026-11": T0.isoformat(),
+        "observe/expenses/a/x/2026-11-11": T0.isoformat(),
+    }
+    kept = policy.tidy(state.model_copy(deep=True), T0 + timedelta(days=2), TPE).told
+    assert list(kept) == ["once/expenses/budget_passed/2026-11"]  # the day's repeat is gone, the month's is not
+    assert policy.tidy(state, T0 + timedelta(days=41), TPE).told == {}

@@ -254,3 +254,24 @@ async def test_observe_takes_any_data(tmp_path):
 
 async def _noop():
     return None
+
+
+async def test_observe_carries_what_makes_it_the_same_news(tmp_path):
+    mod, bus = make(tmp_path)
+    await mod.observe("budget_passed", "NT$31,200 spent in November.", {"spent": 31200}, "notice", once="2026-11")
+    ((_, data),) = bus.events("brain.observe")
+    assert (data["type"], data["severity_hint"], data["once"]) == ("budget_passed", "notice", "2026-11")
+
+
+async def test_run_at_runs_a_daily_time_now_for_tests(tmp_path):
+    mod, _ = make(tmp_path, hooks={"daily": ["21:00"]})
+    ran = []
+
+    @mod.at("21:00")
+    async def evening():
+        ran.append("evening")
+
+    await mod.run_at("21:00")
+    assert ran == ["evening"]
+    with pytest.raises(ContractViolation, match="no @mod.at"):
+        await mod.run_at("08:00")

@@ -33,9 +33,11 @@ def build(**kwargs) -> Module:            # keep this shape: tests call build(ma
     async def evening(): ...
 
     await mod.emit("expense.logged", {...})                           # publishes mod.<name>.expense.logged
-    await mod.observe("big_expense", "One sentence for the user.", {...}, severity="notice")
-    # info: for the record, nobody is told (most observations) | notice: told at the next good moment
-    # alert: interrupts the user now, even at night; never for anything routine
+    await mod.observe("expense_added", "Added 350 for dinner.", {...})   # info: for the record, nobody is told
+    await mod.observe("budget_passed", "NT$31,200 spent in November, over your NT$30,000 budget.",
+                      {"spent": 31200, "budget": 30000, "month": "2026-11"}, severity="notice", once="2026-11")
+    # notice/alert only for what the spec asks (CONTRACT.md 6); `once` = the same news (a period, an entry): Main
+    # tells it once, so observe it each time it is true. alert: interrupts now; never for money, goals or routine
     return mod
 
 if __name__ == "__main__":
@@ -46,7 +48,8 @@ In tests: `bus = InMemoryBus()`, `mod = build(manifest_path=ROOT / "manifest.yam
 `await mod.start()`, then `await bus.publish("sense.chat", {"text": "dinner 350"})`,
 `reply = await bus.request("rpc.mod.<name>.summary", {})` (the SDK adds `"ok": True`, or gives
 `{"ok": False, "error": ...}` when the handler raised), `bus.events("mod.<name>.expense.logged")` lists
-`(subject, data)` pairs, and `await mod.stop()` at the end. Use `Module(..., tz="Asia/Taipei")` when a test
+`(subject, data)` pairs (`bus.events("brain.observe")`: what was observed), `await mod.run_at("21:00")` runs a
+daily time's handlers now, and `await mod.stop()` at the end. Use `Module(..., tz="Asia/Taipei")` when a test
 depends on the day. asyncio mode is auto: `async def test_...` needs no decorator.
 """
 
