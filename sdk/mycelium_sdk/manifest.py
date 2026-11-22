@@ -86,6 +86,9 @@ class RequestSpec(BaseModel):
     description: str = Field(min_length=8, max_length=300)
     params: dict[str, str] = Field(default_factory=dict)
     returns: dict[str, str] = Field(default_factory=dict)
+    # true: it changes the module's data (adds, deletes, sets); false: it only reads. Left out, its name tells
+    # (views.is_write). A page or a check-in never calls one that writes.
+    writes: bool | None = None
 
     @field_validator("params", "returns", mode="before")
     @classmethod

@@ -4,6 +4,7 @@ What wakes Main:
     the timer (MAIN_WAKE_EVERY)   modules that stopped running, cards left waiting, anything held
     a module's notice             within a couple of minutes: notices that come together are one wake
     a module's alert              at once
+    a check-in (MAIN_CHECKINS)    at those times of day: one model turn that writes Hansen a message or stays quiet
 An `info` observation never wakes it (mycelium_sdk.observe).
 
 Each wake gathers what it could say (an Item) and the policy decides each one in code, in this order:
@@ -18,9 +19,11 @@ Each wake gathers what it could say (an Item) and the policy decides each one in
 A held observation is kept short (its summary, not its data), five a module and twenty in all, so one noisy module
 never pushes out another's and the state stays a small KV value.
 
-Nothing here calls the model. A module's notice is told as the module wrote it, in the thread Hansen last wrote in
-(on a channel of MAIN_WAKE_CHANNELS), or as an unaddressed out.notify before Hansen has written anywhere; a card is
-shown again in its own thread. Each wake that told, dropped or newly held something publishes one trace.wake.
+Only a check-in calls the model, and only once the policy lets it through (muted, told already today, quiet hours,
+a chat in progress, the budget: a chat in progress puts it off a few minutes, up to an hour late). A module's notice
+is told as the module wrote it, in the thread Hansen last wrote in (on a channel of MAIN_WAKE_CHANNELS), or as an
+unaddressed out.notify before Hansen has written anywhere; a card is shown again in its own thread. Each wake that
+told, dropped or newly held something publishes one trace.wake, and so does each check-in.
 
 Keys in Main's bucket:
     wake/state    WakeState: today's count, what is held, what was told, modules seen down, 👎 per module
@@ -41,6 +44,9 @@ from mycelium_sdk.observe import ERRORS
 STATE_KEY = kv_key("wake", "state")
 HOME_KEY = kv_key("wake", "home")
 MAIN = "main"  # the source of what Main itself noticed (a module down, a card waiting): never muted
+CHECKIN = (
+    "main.checkin"  # the source of a check-in: two 👎 on them in a week mute them like a module (no module has a dot)
+)
 HELD_MAX = 20  # observations kept waiting; the oldest go first
 HELD_PER_SOURCE = 5  # of them from one module: its own oldest go first
 REPLIES_KEPT = 50  # messages remembered for the 👎 on them
@@ -55,6 +61,8 @@ class Verdict(StrEnum):
     REPEAT = "dropped: told already"
     EXPIRED = "dropped: held too long"
     MUTED = "dropped: its module was voted down"
+    NOTHING = "dropped: nothing worth saying"  # a check-in that chose to stay quiet
+    FAILED = "dropped: could not be sent"  # a check-in's message the bus would not take
 
     @property
     def held(self) -> bool:
@@ -66,6 +74,7 @@ class ItemKind(StrEnum):
     DOWN = "down"  # a module that should run and has not, at two wakes in a row
     CARD = "card"  # a proposal's card left waiting for days
     REMINDER = "reminder"  # one Hansen set (reminders.py): sent at its time, never judged by the policy
+    CHECKIN = "checkin"  # a check-in at one of MAIN_CHECKINS: the model writes it, or stays quiet
 
 
 class Item(BaseModel):
@@ -134,6 +143,8 @@ class WakePolicy(BaseModel):
     vote_days: int = 7
     card_after_s: float = 3 * 86400.0  # a card waiting this long is shown once more
     card_until_s: float = 14 * 86400.0  # and one older than this is left alone
+    checkins: tuple[time, ...] = ()  # on Hansen's clock (MAIN_CHECKINS: 08:30 and 21:00); none unless given
+    checkin_late_s: float = 3600.0  # a check-in put off by a chat in progress is let go this late
 
     def is_quiet(self, local: time) -> bool:
         if self.quiet is None:
@@ -234,7 +245,7 @@ class WakeOutcome(BaseModel):
 
 class WakeTrace(Envelope):
     source: str = MAIN
-    reason: str  # timer | notice | alert | reminder
+    reason: str  # timer | notice | alert | reminder | checkin
     items: list[WakeOutcome] = Field(default_factory=list)
     sent_today: int = 0
     budget: int = 0

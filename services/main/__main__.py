@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from mycelium_sdk import NatsBus, NatsKV
 
 from .service import MainService
-from .settings import MainSettings, quiet_hours
+from .settings import MainSettings, checkin_times, quiet_hours
 from .thread import ThreadStore
 from .wake import WakePolicy
 
@@ -38,17 +38,19 @@ async def main() -> None:
             quiet=quiet_hours(s.quiet_hours),
             budget=s.wake_budget,
             channels=tuple(c.strip() for c in s.wake_channels.split(",") if c.strip()),
+            checkins=checkin_times(s.checkins),
         ),
     )
     await service.start()
     log.info(
-        "main ready: tz=%s llm_timeout=%ss currency=%s wake every %s min, quiet %s, budget %s",
+        "main ready: tz=%s llm_timeout=%ss currency=%s wake every %s min, quiet %s, budget %s, check-ins %s",
         s.tz,
         s.llm_timeout,
         s.currency.upper(),
         s.wake_every,
         s.quiet_hours or "never",
         s.wake_budget,
+        s.checkins or "none",
     )
 
     stop = asyncio.Event()

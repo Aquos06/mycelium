@@ -169,6 +169,7 @@ services:
       MAIN_QUIET_HOURS: ${MAIN_QUIET_HOURS-23:00-08:00} # only an alert is told then; empty: never quiet
       MAIN_WAKE_BUDGET: ${MAIN_WAKE_BUDGET:-3}          # messages a day Main sends unasked; alerts count, never held
       MAIN_WAKE_CHANNELS: ${MAIN_WAKE_CHANNELS:-telegram,web}  # where Main may write first: the last one used
+      MAIN_CHECKINS: ${MAIN_CHECKINS-08:30,21:00}       # check-ins: Main writes or stays quiet; empty: none
     networks: [mesh]
     depends_on:
       nats: { condition: service_healthy }

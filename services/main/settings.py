@@ -48,17 +48,40 @@ class MainSettings(ServiceSettings):
         validation_alias="MAIN_WAKE_CHANNELS",
         description="channels Main may write to first: the one Hansen last wrote in, of these",
     )
+    checkins: str = Field(
+        default="08:30,21:00",
+        validation_alias="MAIN_CHECKINS",
+        description="HH:MM times in MAIN_TZ when Main looks at the day and writes Hansen a message, or stays quiet; "
+        "each counts against MAIN_WAKE_BUDGET; empty: none",
+    )
 
     @field_validator("tz")
     @classmethod
     def _tz(cls, v: str) -> str:
         return timezone(v)
 
+    @field_validator("checkins")
+    @classmethod
+    def _checkins(cls, v: str) -> str:
+        checkin_times(v)
+        return v
+
     @field_validator("quiet_hours")
     @classmethod
     def _quiet(cls, v: str) -> str:
         quiet_hours(v)
         return v.strip()
+
+
+def checkin_times(v: str) -> tuple[time, ...]:
+    """Check-in times: 08:30,21:00 -> (08:30, 21:00), sorted and once each; empty -> ()."""
+    try:
+        times = {time.fromisoformat(p.strip()) for p in v.split(",") if p.strip()}
+    except ValueError as e:
+        raise ValueError(f"check-ins {v!r}: HH:MM times separated by commas, like 08:30,21:00") from e
+    if any(t.tzinfo for t in times):
+        raise ValueError(f"check-ins {v!r}: times in MAIN_TZ, without a zone of their own")
+    return tuple(sorted(times))
 
 
 def quiet_hours(v: str) -> tuple[time, time] | None:

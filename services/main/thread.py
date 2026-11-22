@@ -51,7 +51,7 @@ class Thread(BaseModel):
     def key(self) -> str:
         return kv_key("thread", self.channel, self.thread)
 
-    def messages(self, tz: tzinfo = UTC) -> list[ChatMessage]:
+    def messages(self, tz: tzinfo = UTC, calls: bool = True) -> list[ChatMessage]:
         """The turns as the planner's earlier messages, from a user turn on, roles alternating.
 
         Each of Hansen's messages starts with its date ("[Tue 2026-10-27] today i spent 112"), so a "today" in an
@@ -60,7 +60,8 @@ class Thread(BaseModel):
         without the mark the two read as one reply. An assistant turn that called tools replays them: its tool_use
         blocks, their results, then what it said. Turns of the same role in a row (a build's result is an assistant
         turn of its own; chat templates and Anthropic's API refuse two in a row) become one message, and a thread
-        trimmed to an assistant turn starts at the next user one."""
+        trimmed to an assistant turn starts at the next user one. Without `calls`, only what was said (for a turn
+        whose tools are others than the ones those calls used)."""
         out: list[tuple[Role, list[TextBlock | ToolUse | ToolResult]]] = []
 
         def add(role: Role, blocks: list[TextBlock | ToolUse | ToolResult]) -> None:
@@ -75,7 +76,7 @@ class Thread(BaseModel):
             if t.role == Role.USER:
                 add(Role.USER, [TextBlock(text=_dated(t, tz))])
                 continue
-            if t.calls:
+            if t.calls and calls:
                 ids = [f"h{n:04d}c{i:03d}" for i in range(len(t.calls))]  # 9 characters: some templates insist
                 add(
                     Role.ASSISTANT,

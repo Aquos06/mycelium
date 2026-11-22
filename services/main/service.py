@@ -41,10 +41,11 @@ import re
 import time
 from collections.abc import Callable, Coroutine
 from datetime import UTC, date, datetime, timedelta
+from datetime import time as daytime
 from typing import Any, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from mycelium_sdk import (
     Bus,
@@ -67,7 +68,7 @@ from mycelium_sdk import (
     now_iso,
     validation_message,
 )
-from mycelium_sdk.blocks import Formatter
+from mycelium_sdk.blocks import Block, Formatter
 from mycelium_sdk.build import (
     BuildDone,
     BuildFailed,
@@ -81,12 +82,12 @@ from mycelium_sdk.build import (
     Stage,
     StartReply,
 )
-from mycelium_sdk.clock import sleep_until
-from mycelium_sdk.views import View, views_of
+from mycelium_sdk.clock import next_daily, sleep_until
+from mycelium_sdk.views import View, is_write, views_of
 
 from .blocks import TurnData
 from .progress import as_text, ended, running
-from .prompt import planner_prompt
+from .prompt import checkin_prompt, planner_prompt
 from .proposals import Proposal, ProposalKind, ProposalStatus, ProposalStore
 from .reminders import Reminder, ReminderStore, Repeat, when
 from .schemas import (
@@ -113,13 +114,19 @@ from .tools import (
     ProposeArgs,
     RecallPayload,
     RemindArgs,
+    StayQuietArgs,
     ToolContext,
     ToolOutcome,
     ToolRegistry,
+    ToolSpec,
+    checkin_tools,
     default_tools,
+    may_write,
 )
 from .tools.lookup import SysList
+from .tools.quiet import STAY_QUIET
 from .wake import (
+    CHECKIN,
     MAIN,
     DownModule,
     Home,
@@ -166,7 +173,6 @@ CLAIM = re.compile(
     r"|已記住|已记住|記下了|记下了|記住了|记住了|已記錄|已记录|已儲存|已保存|存好了|幫你記|帮你记",
     re.IGNORECASE | re.MULTILINE,
 )  # not "nothing was saved", "I can remember it for you", or a module's own "logged 12 sessions"
-WRITES = ("add", "log", "record", "save", "store", "set", "update", "put", "track")  # a module request that keeps
 REMINDER_CLAIM = re.compile(
     r"\bI(?:'ll| will) (?:also )?(?:remind|ping|nudge) you\b|\bI(?:'ve| have)? set (?:a|the|your|that|this) reminder\b"
     r"|^(?:ok[,.!]? |done[,.!]? |got it[,.!]? )?reminder (?:set|added|scheduled)\b"
@@ -200,10 +206,26 @@ SAY_IT = (
 EMPTY_REPLY = "My reply came out empty this time. I kept your message: ask me again."
 # Every round called a tool (a `show` that failed twice and fit the third time, say): its data is on hand, only the
 # words are missing. Main asks for them instead of failing the turn.
+# A check-in's answer with no words and no stay_quiet: no choice was made. Asked once more for one.
+CHOOSE = (
+    "(A note from Main's code, not from Hansen.) Your answer came back empty. Write the one message Hansen should get "
+    "now, or call `stay_quiet` with why."
+)
 LAST_STEP = (
     "(A note from Main's code, not from Hansen.) That was your last step in this turn: no more calls. Write your reply "
     "to Hansen now from what you have (say plainly what you could not do), and do not mention this note."
 )
+
+
+class CheckIn(BaseModel):
+    """What a check-in's model turn came to: the message and what it shows, or why it stays quiet."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    text: str = ""
+    blocks: list[Block] = Field(default_factory=list)
+    calls: list[TurnCall] = Field(default_factory=list)  # what it looked at: kept with the message in its thread
+    why: str = ""  # quiet: the model's stay_quiet, or Main's reason (no words, every round used, no model)
 
 
 class MainService:
@@ -249,6 +271,8 @@ class MainService:
         self.reminders = ReminderStore(store.kv)  # the same bucket as the threads
         self.ctx = ToolContext(bus=bus, recall_budget=recall_budget, reminders=self.reminders, tz=self.zone.key)
         self._tool_specs = self.tools.specs()
+        self.checkin_tools = checkin_tools()  # a check-in only looks, shows or stays quiet
+        self._checkin_specs = self.checkin_tools.specs()
         self._tasks: set[asyncio.Task] = set()
         self._locks: dict[str, asyncio.Lock] = {}
         self._deleting: set[str] = set()  # proposals whose deletion runs now, outside their thread's lock
@@ -263,6 +287,7 @@ class MainService:
         self.remind_step_s = remind_step_s  # how often the reminder loop looks at the clock; 0: no loop (tests)
         self._reminding: asyncio.Task | None = None
         self._reminded: dict[str, str] = {}  # reminder id -> the time it went out for, until it is moved on
+        self._checking_in: asyncio.Task | None = None
 
     async def start(self) -> None:
         await self.bus.connect()
@@ -279,10 +304,12 @@ class MainService:
             self._ticker = asyncio.create_task(self._tick())
         if self.remind_step_s:
             self._reminding = asyncio.create_task(self._remind_loop())
+        if self.wake.checkins:
+            self._checking_in = asyncio.create_task(self._check_ins())
 
     async def stop(self) -> None:
         """The timers end; what is in flight is drain()'s."""
-        for task in (self._ticker, self._notice_wake, self._catch_up, self._reminding):
+        for task in (self._ticker, self._notice_wake, self._catch_up, self._reminding, self._checking_in):
             if task is not None:
                 task.cancel()
 
@@ -440,6 +467,199 @@ class MainService:
             trace = WakeTrace(reason=reason, items=outcomes, sent_today=state.sent, budget=self.wake.budget)
             await self.bus.publish("trace.wake", trace)
 
+    async def _check_ins(self) -> None:
+        """Each check-in at its time on Hansen's clock, in order and each once: the next one is the first time after
+        the last one's, so one missed meanwhile (the host asleep, a check-in put off past it) still comes, as too
+        late, and is traced."""
+        last = self.clock()
+        while True:
+            due, slot = min((next_daily(last, t, self.zone), t) for t in self.wake.checkins)
+            await sleep_until(due, self.clock)
+            last = due
+            try:
+                await self.check_in(slot, due)
+            except Exception:  # the next one comes anyway
+                log.exception("the %s check-in failed", slot)
+
+    async def check_in(self, slot: daytime, due: datetime | None = None) -> None:
+        """One check-in (`due`: when it was meant to run; default today's `slot`). The policy first, in code: too late
+        (over checkin_late_s past its time: an evening look at what is open is wrong the next morning), check-ins
+        voted down, this one told already that day, quiet hours, the day's budget; a chat in progress where it would
+        go puts it off by busy_s, up to checkin_late_s. Then one model turn in the thread Hansen last wrote in, which
+        writes a message or calls stay_quiet. The policy is asked again before a message goes out (the turn takes a
+        while); a check-in that chose quiet stays traced as quiet. Traced as a trace.plan (what it looked at) and a
+        trace.wake (what became of it)."""
+        if due is None:
+            due = datetime.combine(self.clock().astimezone(self.zone).date(), slot, tzinfo=self.zone)
+        item = Item(
+            kind=ItemKind.CHECKIN,
+            key=f"checkin/{due.astimezone(self.zone).date().isoformat()}/{slot:%H:%M}",
+            source=CHECKIN,
+            text=f"the {slot:%H:%M} check-in",
+            since=due.isoformat(),
+        )
+        waited = 0.0  # put off so far: a frozen clock (a test, the benchmark) still ends the wait
+        while True:
+            late = max(age_s(item.since, self.clock()), waited)
+            if late > self.wake.checkin_late_s:
+                verdict, where, state = Verdict.EXPIRED, None, await self._wake_state()
+                break
+            verdict, where, state = await self._judge_now(item)
+            if verdict != Verdict.BUSY or late + self.wake.busy_s > self.wake.checkin_late_s:
+                break
+            await asyncio.sleep(self.wake.busy_s)
+            waited += self.wake.busy_s
+        reply: str | None = None
+        text = item.text
+        if verdict == Verdict.SENT:
+            looked, plan = await self._look_in(slot, where)
+            if not looked.text:
+                verdict, text = Verdict.NOTHING, looked.why
+            else:
+                async with self._wake_lock:
+                    now = self.clock()
+                    state = self.wake.tidy(await self.wakes.load(), now, self.zone)
+                    verdict = self.wake.judge(item, state, now, self.zone, busy=await self._busy(where, now))
+                    if verdict == Verdict.SENT:
+                        try:
+                            reply = await self._say_at(where, looked.text, blocks=looked.blocks, calls=looked.calls)
+                        except Exception:
+                            log.exception("could not send the %s check-in", slot)
+                            verdict = Verdict.FAILED
+                        else:
+                            text = looked.text
+                            self.wake.record(state, item, verdict, now, reply)
+                            await self.wakes.save(state)
+            await self.bus.publish("trace.plan", plan.model_copy(update={"reply_id": reply or ""}))
+        outcome = WakeOutcome(kind=item.kind, source=item.source, text=text, verdict=verdict, reply_id=reply)
+        trace = WakeTrace(reason="checkin", items=[outcome], sent_today=state.sent, budget=self.wake.budget)
+        await self.bus.publish("trace.wake", trace)
+
+    async def _wake_state(self) -> WakeState:
+        async with self._wake_lock:
+            return self.wake.tidy(await self.wakes.load(), self.clock(), self.zone)
+
+    async def _judge_now(self, item: Item) -> tuple[Verdict, Home | None, WakeState]:
+        async with self._wake_lock:
+            now = self.clock()
+            state = self.wake.tidy(await self.wakes.load(), now, self.zone)
+            where = await self._where(item)
+            return self.wake.judge(item, state, now, self.zone, busy=await self._busy(where, now)), where, state
+
+    async def _look_in(self, slot: daytime, where: Home | None) -> tuple[CheckIn, PlanTrace]:
+        """A check-in's model turn, in the thread it would go to (read as words only: its earlier calls need tools a
+        check-in does not have), with the memory opened for yesterday, today and tomorrow, the modules' requests that
+        only read, and the reminders. It ends in words (the message), in stay_quiet (any call of it, even one that
+        does not read), or quiet anyway: no words, every round used, the model not answering, or a message that
+        claims something saved or set (nothing can be, here). Its own round loop, not _turn's: here every way of
+        failing is the same safe answer, quiet, so none of _turn's asking again applies."""
+        t0 = time.monotonic()
+        channel, thread_id = (where.channel, where.thread) if where else ("", "")
+        thread = await self.store.load(channel, thread_id) if where else None
+        today = self.today()
+        days = ", ".join(d.isoformat() for d in (today - timedelta(days=1), today, today + timedelta(days=1)))
+        query = f"{days}: plans, appointments, birthdays and things to do"
+        (pack, recall_error), listed, reminders = await asyncio.gather(
+            self._recall(query), self._modules(), self._reminder_list()
+        )
+        turn, ctx = self._turn_tools(listed, channel, thread_id, self.clock(), None, read_only=True)
+        modules = [_reads_only(m) for m in listed or []]
+        prompt = checkin_prompt(today, self.tz, slot, channel, pack, modules, recall_error, reminders)
+        earlier = thread.messages(self.zone, calls=False) if thread else []
+        messages = [*earlier, ChatMessage(role=Role.USER, content=prompt.user)]
+        tool_log: list[ToolOutcome] = []
+        llm_calls: list[LlmCall] = []
+        text, why, error = "", "", None
+        quiet = chose_again = False
+        for _round in range(self.max_rounds):
+            try:
+                r = await self._plan(prompt.system, messages, None, 0, self._checkin_specs)
+            except (NoAnswer, Refused) as e:
+                error, why = str(e), "the model did not answer"
+                break
+            llm_calls.append(LlmCall(model=r.model, usage=r.usage, cost_usd=r.cost_usd))
+            if not r.tool_calls:
+                text = r.text.strip()
+                if not text and not chose_again and _round + 1 < self.max_rounds:
+                    chose_again = True  # once: an empty answer is no choice (a reasoning model's lost words)
+                    messages = _noted(messages, CHOOSE)
+                    continue
+                break
+            content: list[TextBlock | ToolUse] = [TextBlock(text=r.text)] if r.text else []
+            content += [ToolUse(id=c.id, name=c.name, input=c.input) for c in r.tool_calls]
+            messages.append(ChatMessage(role=Role.ASSISTANT, content=content))
+            results = []
+            for c in r.tool_calls:
+                outcome = await self.checkin_tools.call(c.name, c.input, ctx)
+                tool_log.append(outcome)
+                results.append(outcome.tool_result(c.id, MAX_TOOL_RESULT_CHARS))
+                if c.name == STAY_QUIET.name:  # its choice, whatever its arguments
+                    quiet = True
+                    said = outcome.args.why.strip() if isinstance(outcome.args, StayQuietArgs) else ""
+                    why = said or "it chose to stay quiet"
+            messages.append(ChatMessage(role=Role.USER, content=results))
+            if quiet:
+                break
+        else:
+            why = f"no message after {self.max_rounds} rounds"
+        if text and (_unbacked_claim(text, tool_log, modules) or _unbacked_reminder(text, tool_log)):
+            why, text = "its message said something was saved or set", ""
+        if not text and not why:
+            why = "it wrote nothing"
+        looked = CheckIn(text=text, blocks=turn.blocks if text else [], why=why, calls=_kept(tool_log) if text else [])
+        plan = Envelope(source="main").into(
+            PlanTrace,
+            channel=channel,
+            thread=thread_id,
+            input=prompt.user,
+            pack=PackSummary.from_reply(pack),
+            recall_error=recall_error,
+            modules=[m.name for m in modules],
+            tools=tool_log,
+            llm_calls=llm_calls,
+            cost_usd=round(sum(c.cost_usd for c in llm_calls), 6),
+            rounds=len(llm_calls),
+            output=SayOutput(say=text),
+            reply_id="",
+            error=error,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            checkin=f"{slot:%H:%M}",
+        )
+        return looked, plan
+
+    def _turn_tools(
+        self,
+        listed: list[ModuleInfo] | None,
+        channel: str,
+        thread_id: str,
+        now: datetime,
+        cause: str | None,
+        read_only: bool = False,
+    ) -> tuple[TurnData, ToolContext]:
+        """What a turn's tools work with: the running modules and their requests (only those that read, for a turn
+        nobody asked for: a call to one not listed is refused at once), a TurnData of its own (what its modules
+        answered, what `show` put on screen), and where and when the turn is (a reminder set now goes there)."""
+        running = [m for m in listed or [] if m.status == "running"]
+        turn = TurnData(
+            formatter=Formatter(currency=self.currency, zone=self.zone, today=self.today()),
+            views={m.name: m.views for m in running if m.views},
+        )
+        actions = None
+        if listed is not None:
+            actions = {m.name: _actions(_reads_only(m) if read_only else m) for m in running}
+        ctx = self.ctx.model_copy(
+            update={
+                "modules": actions,
+                "turn": turn,
+                "channel": channel,
+                "thread": thread_id,
+                "now": now,
+                "cause": cause,
+                "read_only": read_only,
+            }
+        )
+        return turn, ctx
+
     async def _down(self, state: WakeState, now: datetime) -> list[Item]:
         """Modules that should be running (the registry says so) and whose container is not, at two wakes in a row: a
         restart or a deploy in between is not news. Told once until it runs again. A supervisor that does not answer
@@ -542,7 +762,14 @@ class MainService:
         cause = item.ref if item.kind == ItemKind.OBSERVE else None
         return await self._say_at(await self._where(item), item.text, cause)
 
-    async def _say_at(self, where: Home | None, text: str, cause: str | None = None) -> str:
+    async def _say_at(
+        self,
+        where: Home | None,
+        text: str,
+        cause: str | None = None,
+        blocks: list[Block] | None = None,
+        calls: list[TurnCall] | None = None,
+    ) -> str:
         """Say something unasked in `where` now, and keep it there (marked unasked) once a turn running there is done:
         an alert or a reminder goes out at once, never after the turn, and a reply to it is read with it. With no
         thread (Hansen has written nowhere yet) it is an unaddressed out.notify: the phone and the app's home screen
@@ -552,8 +779,10 @@ class MainService:
             await self.bus.publish("out.notify", note)
             return note.id
         out = Envelope(source="main", cause=cause)
-        await self.bus.publish("out.say", out.into(Say, channel=where.channel, thread=where.thread, text=text))
-        self._spawn(self._keep(where, Turn(role=Role.ASSISTANT, text=text, ts=out.ts, id=out.id, unasked=True)))
+        say = out.into(Say, channel=where.channel, thread=where.thread, text=text, blocks=blocks or [])
+        await self.bus.publish("out.say", say)
+        turn = Turn(role=Role.ASSISTANT, text=text, ts=out.ts, id=out.id, unasked=True, calls=calls or [])
+        self._spawn(self._keep(where, turn))
         return out.id
 
     async def _keep(self, where: Home, turn: Turn) -> None:
@@ -942,21 +1171,7 @@ class MainService:
             self._recall(text), self._modules(), self._offered(), self._reminder_list()
         )
         now = self.clock()
-        # the tools see this turn's modules: a call to one that is not running is refused at once
-        turn = TurnData(
-            formatter=Formatter(currency=self.currency, zone=self.zone, today=self.today()),
-            views={m.name: m.views for m in modules or [] if m.status == "running" and m.views},
-        )
-        ctx = self.ctx.model_copy(
-            update={
-                "modules": None if modules is None else {m.name: _actions(m) for m in modules if m.status == "running"},
-                "turn": turn,  # its own: what this turn's modules answered, and what `show` put on screen
-                "channel": channel,  # where a reminder set now goes, and when it is set
-                "thread": thread_id,
-                "now": now,
-                "cause": cause,
-            }
-        )
+        turn, ctx = self._turn_tools(modules, channel, thread_id, now, cause)
         modules = modules or []
         prompt = planner_prompt(
             self.today(),
@@ -1125,13 +1340,21 @@ class MainService:
             ),
         )
 
-    async def _plan(self, system: str, messages: list[ChatMessage], cause: str, hops: int) -> CompletionReply:
-        """One planner round through the gateway; NoAnswer or Refused when it fails."""
+    async def _plan(
+        self,
+        system: str,
+        messages: list[ChatMessage],
+        cause: str | None,
+        hops: int,
+        tools: list[ToolSpec] | None = None,
+    ) -> CompletionReply:
+        """One planner round through the gateway (with Main's tools, or a check-in's); NoAnswer or Refused when it
+        fails."""
         request = CompletionRequest(
             slot="planner",
             system=system,
             messages=messages,
-            tools=self._tool_specs,  # the same in every round: the calls in the thread need them, and the cache does
+            tools=self._tool_specs if tools is None else tools,  # the same each round: the thread's calls need them
             cause=cause,
             hops=hops,
             timeout=self.llm_timeout,
@@ -1277,6 +1500,12 @@ def _gone_since(
     )
 
 
+def _reads_only(m: ModuleInfo) -> ModuleInfo:
+    """A module as a check-in sees it: only its requests that read (may_write), so it is never offered a write."""
+    keep = [r for r in m.requests if not may_write(r.removeprefix(f"{m.name}."), m.specs.get(r))]
+    return m.model_copy(update={"requests": keep, "specs": {r: s for r, s in m.specs.items() if r in keep}})
+
+
 def _actions(m: ModuleInfo) -> list[str]:
     """`expenses.add` -> `add`: the names a module answers on."""
     return [r.removeprefix(f"{m.name}.") for r in m.requests]
@@ -1345,8 +1574,7 @@ def _kept_something(o: ToolOutcome) -> bool:
         return False
     if o.name == "remember":
         return True
-    action = o.args.action if isinstance(o.args, AskModuleArgs) else ""
-    return o.name == "ask_module" and re.split(r"[-_]", action)[0] in WRITES
+    return o.name == "ask_module" and isinstance(o.args, AskModuleArgs) and is_write(o.args.action)
 
 
 def _kept(tools: list[ToolOutcome]) -> list[TurnCall]:

@@ -58,7 +58,8 @@ from main.reminders import Reminder, Repeat  # noqa: E402
 from main.schemas import PlanTrace  # noqa: E402
 from main.service import MainService  # noqa: E402
 from main.thread import Thread, ThreadStore, Turn, TurnCall  # noqa: E402
-from main.tools import ToolRegistry, default_tools  # noqa: E402
+from main.tools import ToolRegistry, checkin_tools, default_tools  # noqa: E402
+from main.wake import Home, WakePolicy  # noqa: E402
 from mycelium_sdk import (  # noqa: E402
     CompletionReply,
     CompletionRequest,
@@ -70,6 +71,10 @@ from mycelium_sdk import (  # noqa: E402
 )
 
 NONE = "none"  # the expected class for "answer without a tool"
+SPEAK = "speak"  # a check-in case: Main should write Hansen a message
+QUIET = "quiet"  # a check-in case: Main should stay quiet (the model calls stay_quiet)
+UNDECIDED = "undecided"  # a check-in that neither wrote nor called stay_quiet (no words, every round used): quiet
+# anyway, but no decision, so it passes neither class
 ERROR = "error"  # what the first decision is when the turn failed before any call
 CHANNEL = "web"
 PROVIDERS_YAML = REPO / "services" / "gateway" / "providers.yaml"
@@ -87,6 +92,7 @@ class NoteLine(BaseModel):
 
 
 class FixtureModule(BaseModel):
+    name: str | None = None  # the module it is, when not its key: the same module with other data (water-met: water)
     purpose: str
     requests: list[str] | dict[str, Any] = Field(min_length=1)  # named, or described as a manifest would
     subscribes: list[str] = Field(default_factory=list)  # Main's prompt says what a module listens to
@@ -175,8 +181,9 @@ class FixtureReminder(BaseModel):
 
 class Case(BaseModel):
     id: str = Field(min_length=1)
-    msg: str = Field(min_length=1)
-    expect: str  # a tool name, or "none"
+    msg: str = ""  # Hansen's message; empty for a check-in
+    checkin: daytime | None = None  # a check-in at this time instead of a message: `expect` is speak or quiet
+    expect: str  # a tool name, or "none"; a check-in's: speak or quiet
     also: list[str] = Field(default_factory=list)  # tools that must be called too
     avoid: list[str] = Field(default_factory=list)  # tools that must not be called
     pack: list[str] = Field(default_factory=list)  # names under `notes`
@@ -186,6 +193,14 @@ class Case(BaseModel):
     proposals: list[FixtureProposal] = Field(default_factory=list)
     reminders: list[str] = Field(default_factory=list)  # ids under `reminders`, set before this message
     args: dict[str, ArgCheck] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _a_message_or_a_check_in(self) -> Case:
+        if self.checkin is None and not self.msg.strip():
+            raise ValueError(f"{self.id}: a case is a `msg` or a `checkin`")
+        if self.checkin is not None and (self.msg or self.expect not in (SPEAK, QUIET)):
+            raise ValueError(f"{self.id}: a check-in has no `msg` and expects {SPEAK} or {QUIET}")
+        return self
 
 
 class Suite(BaseModel):
@@ -213,6 +228,8 @@ class Suite(BaseModel):
                 raise ValueError(f"{c.id}: no notes {missing}")
             if missing := [m for m in (c.modules or []) if m not in self.modules]:
                 raise ValueError(f"{c.id}: no modules {missing}")
+            if len(self.modules_for(c)) < len(self.default_modules if c.modules is None else c.modules):
+                raise ValueError(f"{c.id}: two fixtures of one module")
             if missing := [r for r in c.reminders if r not in self.reminders]:
                 raise ValueError(f"{c.id}: no reminders {missing}")
         return self
@@ -226,13 +243,19 @@ class Suite(BaseModel):
 
     def modules_for(self, case: Case) -> dict[str, FixtureModule]:
         names = self.default_modules if case.modules is None else case.modules
-        return {n: self.modules[n] for n in names}
+        return {self.modules[n].name or n: self.modules[n] for n in names}
 
 
 def check_suite(suite: Suite, tools: ToolRegistry) -> list[str]:
     """Problems that make a case unscorable: an unknown expected tool, or an args check on a field it lacks."""
     problems = []
     for c in suite.cases:
+        if c.checkin is not None:
+            if unknown := sorted({*c.also, *c.avoid} - checkin_tools().names):
+                problems.append(f"{c.id}: also/avoid name tools a check-in does not have: {unknown}")
+            if c.args:
+                problems.append(f"{c.id}: a check-in takes no args checks")
+            continue
         if unknown := sorted({*c.also, *c.avoid} - tools.names):
             problems.append(f"{c.id}: also/avoid name tools Main does not have: {unknown}")
         if c.expect == NONE:
@@ -372,8 +395,9 @@ class Row(BaseModel):
 
 def score(case: Case, trace: PlanTrace, tools: ToolRegistry, provider: str, model: str) -> Row:
     calls: list[Call] = []
+    registry = checkin_tools() if case.checkin is not None else tools
     for t in trace.tools:
-        tool = tools.get(t.name)
+        tool = registry.get(t.name)
         parsed = None
         if tool is not None:
             try:
@@ -383,7 +407,11 @@ def score(case: Case, trace: PlanTrace, tools: ToolRegistry, provider: str, mode
         calls.append(Call(name=t.name, input=t.input, valid=parsed is not None, parsed=parsed))
     names = [c.name for c in calls]
     got = names[0] if names else (ERROR if trace.error else NONE)
-    if case.expect == NONE:
+    if case.checkin is not None:  # what counts is what it chose: to write, or stay_quiet
+        said = trace.output.model_dump().get("say")
+        got = ERROR if trace.error else SPEAK if said else QUIET if "stay_quiet" in names else UNDECIDED
+        passed = got == case.expect
+    elif case.expect == NONE:
         passed = not names and not trace.error
     else:
         passed = case.expect in names
@@ -436,7 +464,7 @@ async def run_case(suite: Suite, case: Case, planner: Planner, tools: ToolRegist
         await store.append(Thread(channel=CHANNEL, thread=case.id), *turns)
     await StubStack(suite, case).attach(bus)
     await bus.subscribe("rpc.llm.complete", planner.handle)
-    now = datetime.combine(today, suite.time, tzinfo=ZoneInfo(suite.tz))
+    now = datetime.combine(today, case.checkin or suite.time, tzinfo=ZoneInfo(suite.tz))
     main = MainService(
         bus,
         store,
@@ -445,7 +473,10 @@ async def run_case(suite: Suite, case: Case, planner: Planner, tools: ToolRegist
         llm_timeout=planner.timeout,
         clock=lambda: now,
         remind_step_s=0,  # nothing is sent: only what the planner does with the message counts
+        wake=WakePolicy(every_s=0, checkins=(), checkin_late_s=0),  # its own check-in, below; never put off
     )
+    if case.checkin is not None:
+        await main.wakes.set_home(Home(channel=CHANNEL, thread=case.id))  # its history is the chat it goes to
     for rid in case.reminders:
         fr = suite.reminders[rid]
         at = fr.at.replace(tzinfo=ZoneInfo(suite.tz)) if fr.at.tzinfo is None else fr.at
@@ -477,7 +508,12 @@ async def run_case(suite: Suite, case: Case, planner: Planner, tools: ToolRegist
             )
         )
     await main.start()
-    await bus.publish("sense.chat", {"id": f"bench-{case.id}", "channel": CHANNEL, "thread": case.id, "text": case.msg})
+    if case.checkin is not None:
+        await main.check_in(case.checkin)
+    else:
+        await bus.publish(
+            "sense.chat", {"id": f"bench-{case.id}", "channel": CHANNEL, "thread": case.id, "text": case.msg}
+        )
     await main.drain()
     traces = bus.events("trace.plan")
     if not traces:
@@ -584,7 +620,7 @@ def markdown(rows: list[Row], suite: Suite, today: date) -> str:
             lines.append(f"| {cls} | " + " | ".join(cells) + " |" + (f" +{other} other" if other else ""))
         misses = [r for r in mine if not r.passed or r.args_ok is False]
         if misses:
-            msgs = {c.id: c.msg for c in suite.cases}
+            msgs = {c.id: c.msg or f"(the {c.checkin:%H:%M} check-in)" for c in suite.cases}
             lines += ["", "Misses:", "", "| case | message | expect | tools called | reply |", "|---|---|---|---|---|"]
             for r in misses:
                 called = " → ".join(r.tools) or "none"

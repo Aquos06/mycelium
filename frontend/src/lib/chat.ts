@@ -181,6 +181,7 @@ export function fromEvents(events: BusEvent[], thread: string): ChatItem[] {
         break;
       }
       case "trace.plan": {
+        if (d.checkin) break; // a check-in's look is not part of the talk: only its message is, as out.say
         const m = planTraceSchema.safeParse(d);
         if (m.success) items.push({ kind: "trace", id: m.data.id, ts: m.data.ts ?? e.received, cause: m.data.cause, trace: m.data });
         break;

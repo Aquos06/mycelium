@@ -27,14 +27,17 @@ Do not create files outside this folder. Do not edit CONTRACT.md.
    - `subscribes`: full subjects or patterns, e.g. `sense.chat`, `mod.receipts.parsed`
    - `emits`: relative event names -> published as `mod.<name>.<event>`
    - `requests`: relative action names -> answered on `rpc.mod.<name>.<action>`, each **described**:
-     a `description`, the `params` it takes and what it `returns`, as `name: type` (`optional <type>` when it may be left out).
-     Main reads these to call the module, so a request it cannot read is a request it guesses at:
+     a `description`, the `params` it takes and what it `returns`, as `name: type` (`optional <type>` when it may be left out),
+     and `writes: true` on one that changes the data (adds, deletes, sets) or `writes: false` on one that only reads.
+     Main reads these to call the module, so a request it cannot read is a request it guesses at; a page, or Main
+     looking on its own, never calls one that writes:
      ```yaml
      requests:
        add:
          description: Store one expense.
          params: {amount: number, description: string, day: optional date}
          returns: {id: number}
+         writes: true
      ```
    - `views`: how Hansen sees the module's data, on its page in the web app and when Main shows it in the chat.
      Each names a request that **only reads** (never `add`, `delete`, ...: opening a page changes nothing), the

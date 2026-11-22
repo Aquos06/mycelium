@@ -384,8 +384,9 @@ field that may be left out, since YAML refuses `{day?: date}`). The SDK keeps th
 reader of them is unchanged, and the descriptions in `request_specs`; the supervisor stores the manifest in its
 `modules` table and serves it on `rpc.sys.list`, and Main's prompt shows each request with its fields
 (`expenses.add {amount: number, day: optional date}: Store one expense.`), so it calls a module from what the
-module says rather than guessing. A grown module must describe every request: the builder's manifest check
-fails the round otherwise. `hello` is described the same way, as the example every coder reads. **Still to
+module says rather than guessing. A request may declare `writes` (true when it changes the data, false when it
+only reads); left out, its name tells (`views.is_write`), and a page or a check-in never calls one that writes. A
+grown module must describe every request: the builder's manifest check fails the round otherwise. `hello` is described the same way, as the example every coder reads. **Still to
 come:** described `emits` with payloads checked by the SDK, `storage`, and `rpc.sys.catalog` (today
 `rpc.sys.list` carries the same manifests).
 
@@ -541,8 +542,27 @@ publishes one `trace.wake` with every item and why. State: `wake/state` and `wak
 observation is kept without its data, five a module and twenty in all, and the state is saved after each message
 told, so a wake that stops halfway never tells one twice. A message goes out at once and is added to its thread when
 a turn running there ends, marked as said unasked with its time, so the planner tells it from its answers. Not yet:
-the model reading what is held and the day's info to write a check-in, and checking an observation's `source`
-(modules share one bus login, §1).
+checking an observation's `source` (modules share one bus login, §1).
+
+**Check-ins.** At the times of `MAIN_CHECKINS` (08:30 and 21:00 on Hansen's clock; empty for none) Main looks at
+the day and writes Hansen one message, or stays quiet. The policy decides first, in code, so a check-in that could
+not go out never reaches the model: over an hour past its time (a host that slept through the evening one does not
+send it the next morning; one missed meanwhile is still traced, as too late), told already that day, quiet hours,
+the budget (a check-in counts against it), or check-ins voted down (two 👎 on them in a week mute them, like a
+module; their source is `main.checkin`). A chat in progress where it would go puts it off a few minutes at a time,
+up to that hour. Then one model turn in the thread Hansen last wrote in (its conversation as words only, with its
+dates; the memory opened for yesterday, today and tomorrow; the modules; the reminders), with its own tools:
+`recall`, `ask_module`, `show` and `stay_quiet {why}`. It sees and may call only the requests that read: those that
+declare `writes: false`, or whose name does not even begin with a write verb (a read named like one is given up,
+never a write let through). The morning one looks at the day ahead (a plan or a date today that no reminder
+covers), the evening one at what is still open (a daily tracker with nothing today, a goal still short, a plan early
+tomorrow); what the chat said today or a reminder will say is no reason to write. It ends quiet unless it ends in
+words: any `stay_quiet` call, no words, every round used, the model not answering, or a message claiming a save
+(nothing can be saved there). The policy is asked again before a message goes out, as `out.say` with what `show`
+made, kept in the thread as said unasked with the calls behind it. A check-in is traced as a `trace.plan` (with
+`checkin`: what it looked at; the web chat leaves it out, only the message is the talk) and a `trace.wake` of
+reason `checkin` (sent, quiet and why, or skipped and why). The tool benchmark has 21 check-in cases (`checkin`
+instead of `msg`, expecting `speak` or `quiet`: a turn that neither wrote nor called `stay_quiet` passes neither).
 **Reminders.** When Hansen asks to be reminded of something at a time, the planner calls `remind` with what to say
 then and when: `at` on Hansen's clock with a time of day (the prompt gives today, and the time at its end so the rest
 of it stays cached), or `in_minutes`, and a `repeat` (daily, weekdays, weekly, monthly). Only when asked: a plan with

@@ -24,6 +24,14 @@ describe("a conversation from the bus", () => {
     expect(ask.kind === "ask" && ask.answered).toBe("yes");
   });
 
+  it("shows a check-in's message but not its look", () => {
+    const events = [
+      ev("trace.plan", { ...env("t1", "2026-10-26T21:00:06Z"), channel: "web", thread: "web", rounds: 2, tools: [], checkin: "21:00" }),
+      ev("out.say", { ...env("a1", "2026-10-26T21:00:07Z"), channel: "web", thread: "web", text: "Nothing in expenses today: anything to log?" }),
+    ];
+    expect(fromEvents(events, "web").map((i) => i.kind + ":" + i.id)).toEqual(["assistant:a1"]);
+  });
+
   it("skips a malformed message rather than crashing the thread", () => {
     const items = fromEvents([ev("out.say", { channel: "web", thread: "web", text: "no id" }), ev("sense.chat", { ...env("u1", "t"), channel: "web", thread: "web", text: "" })], "web");
     expect(items).toEqual([]);

@@ -41,6 +41,7 @@ class ToolContext(BaseModel):
     thread: str = ""
     now: datetime | None = None
     cause: str | None = None
+    read_only: bool = False  # a turn Main started (a check-in): a module is only read, never written
 
 
 Handler = Callable[[Any, ToolContext], Awaitable[dict[str, Any]]]
