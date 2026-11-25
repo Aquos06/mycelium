@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from mycelium_sdk import NoteType  # the same list memory files notes by
 
-from .base import Tool, ToolContext
+from .base import Saved, Tool, ToolContext
 
 # ---- remember --------------------------------------------------------------------------------------
 
@@ -134,9 +134,53 @@ async def unclear(note: str, ctx: ToolContext) -> str:
     return _guess(note, folder, same, where) if len(same) > 1 and folder not in spoken else ""
 
 
+WORD = re.compile(r"[^\W\d_]+|\d+")  # a run of letters or of digits (in CJK, which has no spaces: each character)
+CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+SAME = 0.75  # the share of words two wordings of one fact have in common, at least
+
+
+def _words(fact: str) -> set[str]:
+    out: set[str] = set()
+    for w in WORD.findall(ISO_DAY.sub(" ", fact.lower())):
+        out.update(CJK.findall(w), CJK.sub(" ", w).split())
+    return out
+
+
+def same_fact(a: str, b: str) -> bool:
+    """Two wordings of one fact: the same numbers, and three in four of their words shared, a date in them aside
+    ("finished reading Project Hail Mary and loved it (2026-11-02)", "finished reading Project Hail Mary last night
+    and loved it"). "ran 5 km" and "ran 10 km" are two facts; so are "likes the shoyu ramen" and "likes the miso
+    ramen"."""
+    wa, wb = _words(a), _words(b)
+    if not wa or not wb:
+        return a.strip().lower() == b.strip().lower()
+    if {w for w in wa if w.isdigit()} != {w for w in wb if w.isdigit()}:
+        return False
+    return len(wa & wb) / len(wa | wb) >= SAME
+
+
+def _saved_before(args: RememberArgs, ctx: ToolContext) -> Saved | None:
+    """The fact this turn already wrote to the note that `args.fact` says again (a day left out matches any)."""
+    if not args.fact:
+        return None
+    for s in ctx.saved:
+        if (
+            s.note == args.note
+            and (s.day is None or args.day is None or s.day == args.day)
+            and same_fact(s.fact, args.fact)
+        ):
+            return s
+    return None
+
+
 async def remember(args: RememberArgs, ctx: ToolContext) -> dict[str, Any]:
     if why := await unclear(args.note, ctx):
         return {"ok": False, "error": why}
+    if before := _saved_before(args, ctx):  # said twice: write only what else the call carries (aliases, a summary)
+        if not args.aliases and args.summary is None:
+            return {"ok": True, "path": before.result.get("path"), "already_saved": before.fact}
+        args = args.model_copy(update={"fact": None, "day": None})
     payload = RememberPayload(
         note=args.note,
         source=ctx.source,
@@ -145,7 +189,12 @@ async def remember(args: RememberArgs, ctx: ToolContext) -> dict[str, Any]:
         fact=FactPayload(text=args.fact, day=args.day) if args.fact else None,
         summary=args.summary,
     )
-    return await ctx.bus.request("rpc.memory.remember", payload.model_dump(mode="json", exclude_none=True), timeout=5.0)
+    result = await ctx.bus.request(
+        "rpc.memory.remember", payload.model_dump(mode="json", exclude_none=True), timeout=5.0
+    )
+    if args.fact and result.get("ok"):
+        ctx.saved.append(Saved(note=args.note, fact=args.fact, day=args.day, result=result))
+    return result
 
 
 REMEMBER = Tool(
