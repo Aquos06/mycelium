@@ -16,6 +16,7 @@ from mycelium_sdk import KV, ChatMessage, Role, TextBlock, ToolResult, ToolUse, 
 
 RESULT_KEPT = 200  # characters of a tool's result kept in the thread: enough to show it went through
 INPUT_KEPT = 300  # characters of each text argument kept (a proposal's spec parts are long)
+RECENT = 4  # turns a "he" or "she" looks back over: the last two exchanges
 
 
 class TurnCall(BaseModel):
@@ -50,6 +51,10 @@ class Thread(BaseModel):
     @property
     def key(self) -> str:
         return kv_key("thread", self.channel, self.thread)
+
+    def recent(self, turns: int = RECENT) -> str:
+        """What the last few turns said, both sides, as one text: whom a "she" or "he" in the next message can mean."""
+        return "\n".join(t.text for t in self.turns[-turns:] if t.text)
 
     def messages(self, tz: tzinfo = UTC, calls: bool = True) -> list[ChatMessage]:
         """The turns as the planner's earlier messages, from a user turn on, roles alternating.

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from datetime import date
+from pathlib import PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -68,7 +70,73 @@ class RememberPayload(BaseModel):
     summary: str | None = None
 
 
+KINDS = {"people": "person", "places": "place"}  # a vault folder, as the refusal names it
+
+
+def opened_in(pack: Mapping[str, Any] | None) -> dict[str, str]:
+    """The notes a recall opened, for whatever reason, each with its folder: {"jason": "people", "hansen": ""}."""
+    out: dict[str, str] = {}
+    for item in (pack or {}).get("items") or []:
+        path = PurePosixPath(str(item.get("note") or ""))
+        if path.stem:
+            out[path.stem] = str(path.parent).strip(".")
+    return out
+
+
+def named_in(pack: Mapping[str, Any] | None) -> dict[str, str]:
+    """The notes a recall found by name (its `used.names`), each with its folder: {"jason": "people"}. A note the
+    pack opened for another reason (a date, a link, near in meaning) is not named."""
+    names = set(((pack or {}).get("used") or {}).get("names") or [])
+    return {n: f for n, f in opened_in(pack).items() if n in names}
+
+
+async def _named_before(ctx: ToolContext) -> dict[str, str]:
+    """What memory finds named in the last few messages, asked once a turn. A memory that does not answer names
+    nothing, and the write goes on as it went before."""
+    heard = ctx.heard
+    if heard.named_before is None:
+        pack = None
+        if heard.before:
+            try:
+                payload = RecallPayload(query=heard.before, budget=ctx.recall_budget)
+                pack = await ctx.bus.request("rpc.memory.recall", payload, timeout=5.0)
+            except Exception:
+                pack = None
+        heard.named_before = named_in(pack if pack and pack.get("ok", True) else None)
+    return heard.named_before
+
+
+def _guess(note: str, folder: str, same: list[str], where: str) -> str:
+    names = f"{', '.join(same[:-1])} and {same[-1]}"
+    return (
+        f"not saved: Hansen's message does not name the {KINDS.get(folder, 'note')} it is about, and {names} {where}, "
+        f"so {note} is a guess. Call `ask` with them as the choices, and remember it once Hansen picks."
+    )
+
+
+async def unclear(note: str, ctx: ToolContext) -> str:
+    """Why writing to `note` is a guess, or "". Hansen's message names no note of its kind, and the note is one of
+    two or more of that kind named just before ("remember he got promoted", after lunch with Jason and Kevin), or,
+    with none of them named before, one of two or more people or places memory opened for the message ("she got the
+    job", with Mei and Lin in memory). The one note of its kind named just before is who a "he" means. Hansen's own
+    note is never a guess, and memory is asked about the thread only for a note the message does not name."""
+    heard = ctx.heard
+    if note == ctx.source or note in heard.named:
+        return ""
+    spoken = set(heard.named.values())  # the message names one of that kind: the note is that one, or another
+    before = await _named_before(ctx)
+    if (folder := before.get(note)) is not None:
+        same, where = [n for n, f in before.items() if f == folder], "were all named just before"
+    elif (folder := heard.opened.get(note)) in KINDS:
+        same, where = [n for n, f in heard.opened.items() if f == folder], "all came up in memory"
+    else:
+        return ""
+    return _guess(note, folder, same, where) if len(same) > 1 and folder not in spoken else ""
+
+
 async def remember(args: RememberArgs, ctx: ToolContext) -> dict[str, Any]:
+    if why := await unclear(args.note, ctx):
+        return {"ok": False, "error": why}
     payload = RememberPayload(
         note=args.note,
         source=ctx.source,
@@ -86,7 +154,8 @@ REMEMBER = Tool(
         "Write to long-term memory. Use when Hansen states a durable fact about a person, place, project, "
         "routine, thing or himself, or asks you to remember something. The note is the entity "
         "(lowercase slug: mei, ramen-place-xinyi, hansen); the fact is one dated line about it. "
-        "Put [[other-note]] around names of other notes."
+        "Put [[other-note]] around names of other notes. Only about the one Hansen's words name or can only mean: "
+        "when a she, he or that place could be more than one, call `ask` first instead of picking one."
     ),
     args=RememberArgs,
     handler=remember,

@@ -45,7 +45,9 @@ class RemindArgs(BaseModel):
         except ValueError:
             raise ValueError("write `at` as YYYY-MM-DD HH:MM") from None
         if not WITH_TIME.match(v):
-            raise ValueError("`at` needs a time of day, YYYY-MM-DD HH:MM: if Hansen gave none, ask when") from None
+            raise ValueError(
+                "`at` needs a time of day, YYYY-MM-DD HH:MM: if Hansen gave none, call `ask` with a few times"
+            ) from None
         return v
 
     @model_validator(mode="after")

@@ -19,7 +19,27 @@ from mycelium_sdk import Bus, ToolResult, ToolSpec, input_schema, llm, validatio
 from ..blocks import TurnData
 from ..reminders import ReminderStore
 
-__all__ = ["Tool", "ToolContext", "ToolOutcome", "ToolRegistry", "ToolSpec", "input_schema", "validation_message"]
+__all__ = [
+    "Heard",
+    "Tool",
+    "ToolContext",
+    "ToolOutcome",
+    "ToolRegistry",
+    "ToolSpec",
+    "input_schema",
+    "validation_message",
+]
+
+
+class Heard(BaseModel):
+    """Who and what Hansen's message names, what memory opened for it, and the thread just before it: `remember`
+    tells a note Hansen named from one the planner picked out of several ("he got promoted", after lunch with Jason
+    and Kevin; "she got the job", with Mei and Lin in memory)."""
+
+    named: dict[str, str] = Field(default_factory=dict)  # the notes memory found named in the message: slug -> folder
+    opened: dict[str, str] = Field(default_factory=dict)  # every note memory opened for the message: slug -> folder
+    before: str = ""  # the last few messages of the thread, both sides: memory is asked about them only when needed
+    named_before: dict[str, str] | None = None  # what memory found named in `before`, once asked (once a turn)
 
 
 class ToolContext(BaseModel):
@@ -42,6 +62,7 @@ class ToolContext(BaseModel):
     now: datetime | None = None
     cause: str | None = None
     read_only: bool = False  # a turn Main started (a check-in): a module is only read, never written
+    heard: Heard = Field(default_factory=Heard)  # Hansen's message: what it names, and what came before it
 
 
 Handler = Callable[[Any, ToolContext], Awaitable[dict[str, Any]]]

@@ -1546,9 +1546,10 @@ cases:
     msg: I have a dentist appointment friday at 9
     expect: remember
     avoid: [remind]
-  - id: rmd-no-time  # no time: ask when, in words
+  - id: rmd-no-time  # no time: an `ask` card of a few times, not a guessed one
     msg: remind me to buy milk
-    expect: none
+    expect: ask
+    avoid: [remind]
   - id: rmd-what-is-set  # answered from the Reminders list
     msg: what reminders do I have?
     expect: none

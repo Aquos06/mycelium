@@ -111,6 +111,7 @@ from .tools import (
     AskModuleArgs,
     ChangeArgs,
     DeleteArgs,
+    Heard,
     ProposeArgs,
     RecallPayload,
     RemindArgs,
@@ -122,6 +123,8 @@ from .tools import (
     checkin_tools,
     default_tools,
     may_write,
+    named_in,
+    opened_in,
 )
 from .tools.lookup import SysList
 from .tools.quiet import STAY_QUIET
@@ -637,10 +640,12 @@ class MainService:
         now: datetime,
         cause: str | None,
         read_only: bool = False,
+        heard: Heard | None = None,
     ) -> tuple[TurnData, ToolContext]:
         """What a turn's tools work with: the running modules and their requests (only those that read, for a turn
         nobody asked for: a call to one not listed is refused at once), a TurnData of its own (what its modules
-        answered, what `show` put on screen), and where and when the turn is (a reminder set now goes there)."""
+        answered, what `show` put on screen), where and when the turn is (a reminder set now goes there), and what
+        Hansen's message names (`remember` will not pick one of several people named before it)."""
         running = [m for m in listed or [] if m.status == "running"]
         turn = TurnData(
             formatter=Formatter(currency=self.currency, zone=self.zone, today=self.today()),
@@ -658,6 +663,7 @@ class MainService:
                 "now": now,
                 "cause": cause,
                 "read_only": read_only,
+                "heard": heard or Heard(),
             }
         )
         return turn, ctx
@@ -1173,7 +1179,8 @@ class MainService:
             self._recall(text), self._modules(), self._offered(), self._reminder_list()
         )
         now = self.clock()
-        turn, ctx = self._turn_tools(modules, channel, thread_id, now, cause)
+        heard = Heard(named=named_in(pack), opened=opened_in(pack), before=thread.recent())
+        turn, ctx = self._turn_tools(modules, channel, thread_id, now, cause, heard=heard)
         modules = modules or []
         prompt = planner_prompt(
             self.today(),

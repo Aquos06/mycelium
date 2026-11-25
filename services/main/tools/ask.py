@@ -25,8 +25,11 @@ async def ask(_args: AskArgs, _ctx: ToolContext) -> dict[str, Any]:
 ASK = Tool(
     name="ask",
     description=(
-        "Ask Hansen to choose before you act, when the decision is his. Ends your turn; his answer arrives "
-        "as the next message. Never pretend to have acted."
+        "Ask Hansen to choose, with a button for each choice: when Hansen asks to pick (let me choose, a poll, "
+        "options as buttons), when the choice is Hansen's (the whole bill or only Hansen's half), and when you cannot "
+        "tell who or what Hansen means (a she, he or that place that could be more than one person or place in memory "
+        "or the chat). Never pick for Hansen, and never ask such a question in words: a question with a few answers "
+        "is this card. Ends your turn; the tap arrives as Hansen's next message. Never pretend to have acted."
     ),
     args=AskArgs,
     handler=ask,
