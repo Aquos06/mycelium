@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -49,7 +50,8 @@ class World:
         self.llm_delay = 0.0  # seconds the fake gateway takes per round
         self.remembered: list[dict] = []
         self.module_calls: list[tuple[str, dict]] = []
-        self.recall_reply: dict | None = PACK
+        self.recall_reply: dict | Callable[[str], dict] | None = PACK
+        self.recalled: list[str] = []  # each recall's query, in order
         self.grown: list[str] = []  # the modules the builder grew (rpc.sys.list `grown`)
         self.folders: list[str] | None = None  # every module folder on disk; None: not in the reply
         self.svc: MainService
@@ -84,8 +86,11 @@ class World:
         await msg.respond(reply)
 
     async def _recall(self, msg: Message):
+        self.recalled.append(msg.data["query"])
         if self.recall_reply is None:
             await msg.respond({"ok": False, "error": "index down"})
+        elif callable(self.recall_reply):  # a memory that answers by what the query names
+            await msg.respond(self.recall_reply(msg.data["query"]))
         else:
             await msg.respond(self.recall_reply)
 

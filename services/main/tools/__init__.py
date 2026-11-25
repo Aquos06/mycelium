@@ -17,10 +17,20 @@ Adding a tool is one argument model, one async handler and one Tool(...) in the 
 """
 
 from .ask import ASK, AskArgs
-from .base import Tool, ToolContext, ToolOutcome, ToolRegistry, ToolSpec, input_schema, validation_message
+from .base import Heard, Tool, ToolContext, ToolOutcome, ToolRegistry, ToolSpec, input_schema, validation_message
 from .change import CHANGE_MODULE, ChangeArgs
 from .delete import DELETE_MODULE, DeleteArgs
-from .memory import RECALL, REMEMBER, NoteType, RecallArgs, RecallPayload, RememberArgs, RememberPayload
+from .memory import (
+    RECALL,
+    REMEMBER,
+    NoteType,
+    RecallArgs,
+    RecallPayload,
+    RememberArgs,
+    RememberPayload,
+    named_in,
+    opened_in,
+)
 from .modules import ASK_MODULE, AskModuleArgs, may_write
 from .propose import PROPOSE_MODULE, ProposeArgs
 from .quiet import STAY_QUIET, StayQuietArgs
@@ -28,6 +38,7 @@ from .remind import CANCEL_REMINDER, REMIND, CancelReminderArgs, RemindArgs
 from .show import SHOW, ShowArgs
 
 __all__ = [
+    "Heard",
     "Tool",
     "ToolContext",
     "ToolOutcome",
@@ -52,6 +63,8 @@ __all__ = [
     "default_tools",
     "checkin_tools",
     "may_write",
+    "named_in",
+    "opened_in",
 ]
 
 

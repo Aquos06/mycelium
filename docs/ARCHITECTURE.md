@@ -458,6 +458,18 @@ A reply that comes back with no words at all (a reasoning model can leave its wh
 asked for once more, with a note that the turn's calls went through (a call it makes then is not run); if it is
 still empty, Main says what the calls did (saved, reminder set for…, here it is) or that its reply came out empty.
 The trace marks such a turn (`empty_check`).
+
+**Asking who, not guessing.** A fact saved to the wrong person is worse than a question, and a model given
+"remember he got promoted" after lunch with Jason and Kevin picks one. So `remember` refuses, in code, a note
+Hansen's message does not name when the message names none of its kind and the note is one of two or more of
+that kind named in the last two exchanges (memory's name rung, asked once a turn and only then, says what those
+messages name), or, with none of them named there, one of two or more people or places memory opened for the
+message itself ("she got the job", with Mei and Lin in memory). The one note of its kind named just before is
+who a "he" means. The refusal hands the planner the names as the choices for `ask`; Hansen's tap names one, and
+the next `remember` goes through. The price is a question when the message points at someone without a name
+memory knows ("my sister", unless sister is one of Lin's aliases). Hansen's own note is never held up, and a
+memory that does not answer lets the write go on. A reminder with no time is the same kind of question: an
+`ask` card of a few likely times, and Hansen can type another.
 A turn whose every round (four) called a tool gets one more call for its words, with a note that no more calls
 run (`wrap_up` in the trace). Its answer is sent only when it is words alone: text beside a call leads into that
 call, and a claim of a save or a reminder no call made cannot be asked again; then Main says it used all its steps.

@@ -10,7 +10,9 @@ with the right arguments, and how long does the turn take.
 
 Each case runs Main's own turn (main.service.MainService) on an in-memory bus, so the prompt, the tools offered,
 the validation of every call and the rounds are exactly Main's. The bus around it is a stub: memory answers
-recall with the case's pack (and an empty result for the `recall` tool), remember with ok, rpc.sys.list with the
+Main's recall of the message with the case's pack and every later recall (the `recall` tool, `remember` asking what
+the thread named) with the fixture notes its query names, each reply with the names it found (`used.names`), as
+memory's name rung does; remember with ok, rpc.sys.list with the
 case's modules, and each module's request with its fixture reply. Only the planner calls leave the process,
 through the gateway's own provider class built from services/gateway/providers.yaml, so nothing is written to
 the vault, no trace reaches the stack, and a case can run many times.
@@ -34,10 +36,12 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import statistics
 import sys
 import time
 from collections import Counter
+from collections.abc import Mapping
 from datetime import date, datetime
 from datetime import time as daytime
 from pathlib import Path
@@ -275,6 +279,12 @@ def check_suite(suite: Suite, tools: ToolRegistry) -> list[str]:
 # ---- the stack around Main -----------------------------------------------------------------------------
 
 
+def names_in(text: str, notes: Mapping[str, Any]) -> list[str]:
+    """The notes a text names by their slug, as words (ramen-place-xinyi as "ramen place xinyi")."""
+    words = text.lower().replace("-", " ")
+    return [n for n in notes if re.search(rf"\b{re.escape(n.replace('-', ' '))}\b", words)]
+
+
 class StubStack:
     """What memory, the supervisor and the modules answer for one case. Nothing leaves the process."""
 
@@ -282,7 +292,8 @@ class StubStack:
         self.pack = suite.pack_for(case)
         self.modules = suite.modules_for(case)
         self.retired = case.retired
-        self.paths = {Path(n.note).stem: n.note for n in suite.notes.values()}  # slug -> the note's path
+        self.lines = {Path(n.note).stem: n for n in suite.notes.values()}  # slug -> the note, as a pack line
+        self.paths = {slug: n.note for slug, n in self.lines.items()}  # slug -> the note's path
         self._recalls = 0
 
     async def attach(self, bus: InMemoryBus) -> None:
@@ -293,11 +304,15 @@ class StubStack:
         await bus.subscribe("rpc.mod.>", self._module)
 
     async def _recall(self, msg: Message) -> None:
-        # Main's own recall of the whole message comes first and gets the case's pack; every later one is the
-        # `recall` tool, which finds nothing more (the case is about whether it is called, not what it finds)
+        # Main's own recall of the whole message comes first and gets the case's pack; every later one (the `recall`
+        # tool, or `remember` asking what the thread named before a "he") opens only the notes its query names.
+        # `used.names` is the notes named in the query either way, as memory's name rung finds them.
         self._recalls += 1
-        items = self.pack if self._recalls == 1 else []
-        await msg.respond({"ok": True, "items": [i.model_dump() for i in items], "used": {}})
+        named = names_in(str(msg.data.get("query") or ""), self.lines)
+        items = (
+            self.pack if self._recalls == 1 else [self.lines[n].model_copy(update={"why": f"{n} named"}) for n in named]
+        )
+        await msg.respond({"ok": True, "items": [i.model_dump() for i in items], "used": {"names": named}})
 
     async def _remember(self, msg: Message) -> None:
         note = str(msg.data.get("note") or "note")
