@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation, ValidationError
@@ -21,6 +21,7 @@ from ..reminders import ReminderStore
 
 __all__ = [
     "Heard",
+    "Saved",
     "Tool",
     "ToolContext",
     "ToolOutcome",
@@ -40,6 +41,16 @@ class Heard(BaseModel):
     opened: dict[str, str] = Field(default_factory=dict)  # every note memory opened for the message: slug -> folder
     before: str = ""  # the last few messages of the thread, both sides: memory is asked about them only when needed
     named_before: dict[str, str] | None = None  # what memory found named in `before`, once asked (once a turn)
+
+
+class Saved(BaseModel):
+    """A fact `remember` wrote this turn, and what memory answered: the same fact again in the same turn (the model
+    saying it twice, once in other words) is not written a second time."""
+
+    note: str
+    fact: str
+    day: date | None = None
+    result: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolContext(BaseModel):
@@ -63,6 +74,7 @@ class ToolContext(BaseModel):
     cause: str | None = None
     read_only: bool = False  # a turn Main started (a check-in): a module is only read, never written
     heard: Heard = Field(default_factory=Heard)  # Hansen's message: what it names, and what came before it
+    saved: list[Saved] = Field(default_factory=list)  # the facts `remember` wrote this turn; Main renews it
 
 
 Handler = Callable[[Any, ToolContext], Awaitable[dict[str, Any]]]

@@ -644,8 +644,9 @@ class MainService:
     ) -> tuple[TurnData, ToolContext]:
         """What a turn's tools work with: the running modules and their requests (only those that read, for a turn
         nobody asked for: a call to one not listed is refused at once), a TurnData of its own (what its modules
-        answered, what `show` put on screen), where and when the turn is (a reminder set now goes there), and what
-        Hansen's message names (`remember` will not pick one of several people named before it)."""
+        answered, what `show` put on screen), where and when the turn is (a reminder set now goes there), what
+        Hansen's message names (`remember` will not pick one of several people named before it), and an empty list of
+        what `remember` saved (the same fact twice in one turn is written once)."""
         running = [m for m in listed or [] if m.status == "running"]
         turn = TurnData(
             formatter=Formatter(currency=self.currency, zone=self.zone, today=self.today()),
@@ -664,6 +665,7 @@ class MainService:
                 "cause": cause,
                 "read_only": read_only,
                 "heard": heard or Heard(),
+                "saved": [],
             }
         )
         return turn, ctx

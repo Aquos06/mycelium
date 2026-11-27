@@ -49,6 +49,7 @@ class World:
         self.llm_requests: list[dict] = []
         self.llm_delay = 0.0  # seconds the fake gateway takes per round
         self.remembered: list[dict] = []
+        self.remember_reply: dict | None = None  # what memory answers a remember; None: saved
         self.module_calls: list[tuple[str, dict]] = []
         self.recall_reply: dict | Callable[[str], dict] | None = PACK
         self.recalled: list[str] = []  # each recall's query, in order
@@ -96,7 +97,9 @@ class World:
 
     async def _remember(self, msg: Message):
         self.remembered.append(msg.data)
-        await msg.respond({"ok": True, "path": f"people/{msg.data['note']}.md", "created": False})
+        await msg.respond(
+            self.remember_reply or {"ok": True, "path": f"people/{msg.data['note']}.md", "created": False}
+        )
 
     async def _list(self, msg: Message):
         folders = {} if self.folders is None else {"folders": self.folders}
